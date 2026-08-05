@@ -38,7 +38,7 @@
     ],
     "windows": {
       "nsis": {
-        "installMode": "currentUser",
+        "installMode": "perMachine",
         "languages": ["SimpChinese", "English"],
         "displayLanguageSelector": true
       }
