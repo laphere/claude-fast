@@ -63,6 +63,17 @@ export default function App() {
     load();
     api.checkClaude().then(setClaudeOk).catch(() => setClaudeOk(false));
     api.getWorkspaceRoot().then(setWorkspaceRoot).catch(() => {});
+    // 安装模式首次启动：提示数据目录位置（scripts/config 实际存储处）
+    api
+      .getDataRoot()
+      .then((info) => {
+        if (info.installMode && !localStorage.getItem("cf-data-tip")) {
+          localStorage.setItem("cf-data-tip", "1");
+          setToast(`数据目录：${info.path}（启动脚本 scripts/ 与收藏保存在此）`);
+          window.setTimeout(() => setToast(null), 5000);
+        }
+      })
+      .catch(() => {});
   }, [load]);
 
   useEffect(() => {

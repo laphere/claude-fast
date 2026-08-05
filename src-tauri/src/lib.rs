@@ -41,6 +41,13 @@ pub struct CreateResult {
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
+pub struct DataRootInfo {
+    path: String,
+    install_mode: bool,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct WorkspaceProject {
     name: String,
     path: String,
@@ -412,6 +419,21 @@ fn get_workspace_root() -> String {
     WORKSPACE_ROOT.to_string()
 }
 
+/// 返回数据根信息：path = 数据根目录；installMode = true 表示处于安装模式
+/// （数据根在 %APPDATA% 而非 exe 所在目录）
+#[tauri::command]
+fn get_data_root() -> DataRootInfo {
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(Path::to_path_buf))
+        .unwrap_or_default();
+    let root = resolve_root_dir();
+    DataRootInfo {
+        path: root.to_string_lossy().to_string(),
+        install_mode: root != exe_dir,
+    }
+}
+
 // ---------------- 入口 ----------------
 
 // ---------------- 单元测试 ----------------
@@ -584,7 +606,8 @@ pub fn run() {
             open_folder,
             check_claude,
             scan_workspace,
-            get_workspace_root
+            get_workspace_root,
+            get_data_root
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

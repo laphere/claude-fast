@@ -16,4 +16,5 @@ export const api = {
     invoke<boolean[]>("check_launchers", { paths }),
   scanWorkspace: () => invoke<WorkspaceProject[]>("scan_workspace"),
   getWorkspaceRoot: () => invoke<string>("get_workspace_root"),
+  getDataRoot: () => invoke<{ path: string; installMode: boolean }>("get_data_root"),
 };
