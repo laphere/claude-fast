@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api } from "./lib/api";
-import type { Launcher } from "./types";
+import type { CloseAction, Launcher } from "./types";
 import Header from "./components/Header";
 import Toolbar from "./components/Toolbar";
 import ProjectList from "./components/ProjectList";
@@ -10,6 +11,8 @@ import NewLauncherDialog from "./components/NewLauncherDialog";
 import BatchAddDialog from "./components/BatchAddDialog";
 import HealthDialog from "./components/HealthDialog";
 import ConfirmDialog from "./components/ConfirmDialog";
+import SettingsDialog from "./components/SettingsDialog";
+import CloseChoiceDialog from "./components/CloseChoiceDialog";
 
 export type DialogKind = "new" | "batch" | "health" | null;
 
@@ -33,6 +36,58 @@ export default function App() {
   const [toast, setToast] = useState<string | null>(null);
   const [claudeOk, setClaudeOk] = useState<boolean | null>(null);
   const [workspaceRoot, setWorkspaceRoot] = useState("D:\\MyWorkspaces");
+  const [closeAction, setCloseAction] = useState<CloseAction>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [closeChoiceOpen, setCloseChoiceOpen] = useState(false);
+  const closeActionRef = useRef<CloseAction>(null);
+  closeActionRef.current = closeAction;
+
+  // ---------- 关闭窗口行为 ----------
+
+  // 拦截关闭：minimize → 隐藏到托盘；null（未设置）→ 弹窗询问；quit → 直接退出
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    getCurrentWindow()
+      .onCloseRequested(async (event) => {
+        const action = closeActionRef.current;
+        if (action === "quit") {
+          // 显式销毁窗口（不触发 CloseRequested，避免事件循环；否则窗口不关闭）
+          await getCurrentWindow().destroy();
+          return;
+        }
+        event.preventDefault();
+        if (action === "minimize") {
+          await getCurrentWindow().hide();
+        } else {
+          setCloseChoiceOpen(true);
+        }
+      })
+      .then((fn) => {
+        if (disposed) fn();
+        else unlisten = fn;
+      });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
+  const handleCloseChoice = useCallback(
+    async (action: "quit" | "minimize", remember: boolean) => {
+      setCloseChoiceOpen(false);
+      if (remember) {
+        setCloseAction(action);
+        await api.saveConfig(favorites, dark, action).catch(() => {});
+      }
+      if (action === "minimize") {
+        await getCurrentWindow().hide();
+      } else {
+        await api.quitApp();
+      }
+    },
+    [favorites, dark],
+  );
 
   // ---------- 数据加载 ----------
 
@@ -42,6 +97,7 @@ export default function App() {
       setLaunchers(list);
       setFavorites(cfg.favorites ?? []);
       setDark(cfg.dark ?? false);
+      setCloseAction(cfg.closeAction ?? null);
       // 选中项可能已被删除，清理
       setSelectedKey((k) => (k && list.some((l) => l.key === k) ? k : null));
       // 健康检查在后台异步执行（不阻塞列表渲染）；
@@ -90,14 +146,14 @@ export default function App() {
   // ---------- 收藏 / 主题 ----------
 
   const persistConfig = useCallback(
-    async (favs: string[], d: boolean) => {
+    async (favs: string[], d: boolean, ca?: CloseAction) => {
       try {
-        await api.saveConfig(favs, d);
+        await api.saveConfig(favs, d, ca === undefined ? closeAction : ca);
       } catch (e) {
         showToast("保存配置失败：" + String(e));
       }
     },
-    [showToast],
+    [showToast, closeAction],
   );
 
   const toggleFav = useCallback(
@@ -223,6 +279,7 @@ export default function App() {
         claudeOk={claudeOk}
         missingCount={missing.length}
         onHealth={() => setDialog("health")}
+        onSettings={() => setSettingsOpen(true)}
       />
 
       <Toolbar
@@ -320,6 +377,26 @@ export default function App() {
             await confirm.onOk();
             setConfirm(null);
           }}
+        />
+      )}
+
+      {settingsOpen && (
+        <SettingsDialog
+          closeAction={closeAction}
+          onClose={() => setSettingsOpen(false)}
+          onSave={async (action) => {
+            setCloseAction(action);
+            await persistConfig(favorites, dark, action);
+            setSettingsOpen(false);
+            showToast("设置已保存");
+          }}
+        />
+      )}
+
+      {closeChoiceOpen && (
+        <CloseChoiceDialog
+          onClose={() => setCloseChoiceOpen(false)}
+          onChoose={handleCloseChoice}
         />
       )}
 

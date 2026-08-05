@@ -5,8 +5,8 @@ import type { Config, CreateResult, Launcher, WorkspaceProject } from "../types"
 export const api = {
   listLaunchers: () => invoke<Launcher[]>("list_launchers"),
   loadConfig: () => invoke<Config>("load_config"),
-  saveConfig: (favorites: string[], dark: boolean) =>
-    invoke<void>("save_config", { favorites, dark }),
+  saveConfig: (favorites: string[], dark: boolean, closeAction?: string | null) =>
+    invoke<void>("save_config", { favorites, dark, closeAction }),
   createLauncher: (dir: string) => invoke<CreateResult>("create_launcher", { dir }),
   deleteLauncher: (file: string) => invoke<void>("delete_launcher", { file }),
   launchClaude: (file: string) => invoke<void>("launch_claude", { file }),
@@ -17,4 +17,5 @@ export const api = {
   scanWorkspace: () => invoke<WorkspaceProject[]>("scan_workspace"),
   getWorkspaceRoot: () => invoke<string>("get_workspace_root"),
   getDataRoot: () => invoke<{ path: string; installMode: boolean }>("get_data_root"),
+  quitApp: () => invoke<void>("quit_app"),
 };

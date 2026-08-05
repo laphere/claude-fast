@@ -30,6 +30,9 @@ pub struct Launcher {
 pub struct Config {
     favorites: Vec<String>,
     dark: bool,
+    /// 关闭窗口行为：None=每次询问；Some("quit")=直接退出；Some("minimize")=最小化到托盘
+    #[serde(default)]
+    close_action: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -197,9 +200,17 @@ fn load_config() -> Config {
 
 /// 保存配置：写临时文件 → 旧文件备份为 .bak → 原子替换
 #[tauri::command]
-fn save_config(favorites: Vec<String>, dark: bool) -> Result<(), String> {
+fn save_config(
+    favorites: Vec<String>,
+    dark: bool,
+    close_action: Option<String>,
+) -> Result<(), String> {
     let root = resolve_root_dir();
-    let cfg = Config { favorites, dark };
+    let cfg = Config {
+        favorites,
+        dark,
+        close_action,
+    };
     let json = serde_json::to_string_pretty(&cfg).map_err(|e| e.to_string())?;
     let cfg_path = root.join("config.json");
     let bak_path = root.join("config.json.bak");
@@ -591,10 +602,57 @@ mod tests {
     }
 }
 
+/// 退出程序（托盘菜单/前端调用；绕过关闭拦截直接退出）
+#[tauri::command]
+fn quit_app(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            use tauri::menu::{Menu, MenuItem};
+            use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+            use tauri::Manager;
+
+            let show_i = MenuItem::with_id(app, "show", "显示窗口", true, None::<&str>)?;
+            let quit_i = MenuItem::with_id(app, "quit", "退出程序", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&show_i, &quit_i])?;
+
+            TrayIconBuilder::with_id("main")
+                .icon(app.default_window_icon().unwrap().clone())
+                .tooltip("Claude Code 快速启动")
+                .menu(&menu)
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| match event.id().as_ref() {
+                    "show" => {
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.show();
+                            let _ = w.set_focus();
+                        }
+                    }
+                    "quit" => app.exit(0),
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        let app = tray.app_handle();
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.show();
+                            let _ = w.set_focus();
+                        }
+                    }
+                })
+                .build(app)?;
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             list_launchers,
             check_launchers,
@@ -607,7 +665,8 @@ pub fn run() {
             check_claude,
             scan_workspace,
             get_workspace_root,
-            get_data_root
+            get_data_root,
+            quit_app
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

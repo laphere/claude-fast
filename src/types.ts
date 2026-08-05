@@ -7,9 +7,13 @@ export interface Launcher {
   healthy?: boolean;
 }
 
+export type CloseAction = "quit" | "minimize" | null;
+
 export interface Config {
   favorites: string[];
   dark: boolean;
+  /** null/undefined = 每次询问；"quit" = 直接退出；"minimize" = 最小化到托盘 */
+  closeAction?: CloseAction;
 }
 
 export interface CreateResult {

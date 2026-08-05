@@ -4,9 +4,17 @@ interface Props {
   missingCount: number;
   onToggleTheme: () => void;
   onHealth: () => void;
+  onSettings: () => void;
 }
 
-export default function Header({ dark, claudeOk, missingCount, onToggleTheme, onHealth }: Props) {
+export default function Header({
+  dark,
+  claudeOk,
+  missingCount,
+  onToggleTheme,
+  onHealth,
+  onSettings,
+}: Props) {
   return (
     <header className="header">
       <div className="brand">
@@ -29,6 +37,9 @@ export default function Header({ dark, claudeOk, missingCount, onToggleTheme, on
               ? "claude 可用"
               : "claude 未找到"}
           {missingCount > 0 && <span className="badge">{missingCount} 失效</span>}
+        </button>
+        <button className="icon-btn" title="设置" onClick={onSettings}>
+          ⚙
         </button>
         <button className="icon-btn" title={dark ? "切换到浅色" : "切换到深色"} onClick={onToggleTheme}>
           {dark ? "☀" : "🌙"}
