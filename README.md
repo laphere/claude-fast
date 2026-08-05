@@ -6,21 +6,19 @@
 
 ```
 D:\MyWorkspaces\myProject\claude-fast\
-├── claude-fast.exe          图形界面主程序（Tauri 2 编译产物，复制自 src-tauri/target/release）
-├── scripts/                 启动脚本目录（全部 claude-*.bat 统一存放于此）
-│   ├── claude-<项目名>.bat  每个实际项目一个启动脚本（双击即用）
-│   └── claude-claude-fast.bat  本工具自身的启动条目（重新在此文件夹打开 Claude）
-├── config.json              运行时生成：收藏名单（favorites）+ 主题（dark）。严禁删除！
-├── config.json.bak          config.json 的上一份备份，主文件损坏时自动回退
 ├── src/                     前端源码（React + TypeScript + Vite）
 ├── src-tauri/               Rust 后端源码（Tauri 2）
+├── app-icon.png             图标源文件（tauri icon 输入）
+├── package.json / vite.config.ts / tsconfig.json / index.html
 ├── CLAUDE.md                项目说明（进入本文件夹时 Claude 自动加载）
 └── README.md
 ```
 
+> 本目录为**纯源码库**（与 GitHub 仓库一致）。程序本体通过**安装包**分发（`claude-fast_<版本>_x64-setup.exe`，安装到任意目录）；用户数据（启动脚本 `scripts/`、收藏 `config.json`）在安装版数据目录 `%APPDATA%\claude-fast`。
+
 ## 使用
 
-双击桌面上的「Claude 快速启动」快捷方式（或直接双击项目目录里的 `claude-fast.exe`）打开图形界面。
+双击桌面上的「claude 快速启动」快捷方式（或开始菜单的 `claude-fast`）打开图形界面。
 Tauri 应用为 GUI 程序，启动时**不会出现多余的 cmd 窗口**，关闭界面即完全退出。
 
 - **双击项目** → 在对应目录启动 Claude Code（列表中的 `claude-fast` 即是本工具自身）
@@ -50,8 +48,8 @@ cd src-tauri && cargo test
 npm run tauri build
 ```
 
-构建产物：`src-tauri/target/release/claude-fast.exe`（便携版，复制到项目根目录即可用）
-和 `src-tauri/target/release/bundle/nsis/claude-fast_<版本>_x64-setup.exe`（安装包）。
+构建产物：`src-tauri/target/release/bundle/nsis/claude-fast_<版本>_x64-setup.exe`（安装包，可选择安装目录、免管理员）
+和 `src-tauri/target/release/claude-fast.exe`（便携版，需与 config.json/scripts 同层放置）。
 
 ### 架构要点
 
