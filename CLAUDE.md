@@ -34,8 +34,10 @@
 npm install              # 前端依赖
 npm run tauri dev        # 开发模式（热更新）
 cd src-tauri && cargo test   # 后端单元测试（12 个用例：路径解析/bat 生成/配置/扫描/根目录定位）
-npm run tauri build      # 生产构建（exe + NSIS 安装包）
+npm run tauri build      # 生产构建（exe + NSIS 安装包，安装界面中英双语、可选安装目录、免管理员）
 ```
+
+> 安装包（NSIS，`installMode: currentUser`）安装到 `%LOCALAPPDATA%\Programs\claude-fast`，用户数据在 `%APPDATA%\claude-fast\`（首次运行自动创建 `scripts/`）；便携模式（exe 与 config.json/scripts 同层）数据仍在 exe 目录。两者由 `resolve_root_dir()` 自动区分。
 
 > ⚠️ **必须用 `npm run tauri build`（或 `npx tauri build`）构建，禁止直接 `cargo build --release`**：只有 tauri CLI 会自动加 `--features tauri/custom-protocol`，缺少该 feature 时产物是 dev 模式，运行时去连 `http://localhost:1420`（devUrl）导致白屏报「localhost 拒绝连接」。
 

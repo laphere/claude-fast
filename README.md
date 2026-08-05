@@ -55,7 +55,7 @@ npm run tauri build
 
 ### 架构要点
 
-- **数据目录定位**：exe 从自身所在目录向上逐级查找首个含 `config.json` + `scripts/` 子目录的目录（兼容旧的 `claude-claude-fast.bat` 标记），作为数据根目录。因此 exe 放在项目根即可直接运行，整个文件夹可移动到任意位置。
+- **数据目录定位（双模式）**：exe 从自身所在目录向上逐级查找首个含 `config.json` + `scripts/` 子目录的目录（兼容旧的 `claude-claude-fast.bat` 标记）——**便携模式**（开发目录/绿色版/整个文件夹移动）。找不到标记时回退到 **安装模式**：`%APPDATA%\claude-fast`（macOS 为 `~/Library/Application Support/claude-fast`），首次运行自动创建 `scripts/` 目录。因此：绿色版把 exe 放项目根即可用；安装版装到 Program Files（只读）也能正常读写用户数据。
 - **后端**（`src-tauri/src/lib.rs`）：扫描 `scripts/` 下的 `claude-*.bat`、解析 `cd /d "..."` 路径、健康检查、生成/删除启动脚本（新建一律写入 `scripts/`）、批量扫描工作区、启动 Claude、读写 `config.json`。
 - **config.json 保护**：`save_config` 采用「写临时文件 → 备份旧文件到 `.bak` → 原子替换」三步；`load_config` 读取失败时自动从 `.bak` 回退。**绝不删除 `config.json` / `.bak`**，否则用户的收藏丢失。
 - **启动脚本约定**：UTF-8 编码、CRLF 换行、`chcp 65001` 后输出中文、`call claude`（不加 `call` 时 cmd 不返回，错误处理不执行）、出错时 `pause` 保留窗口。

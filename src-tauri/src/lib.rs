@@ -55,10 +55,27 @@ fn is_root_dir(dir: &Path) -> bool {
         || dir.join("claude-claude-fast.bat").is_file()
 }
 
-/// 定位数据根目录（含 config.json 与 scripts/ 的目录）：
-/// 从 exe 所在目录向上逐级查找首个根目录标记。
-/// 发布模式：exe 直接放在项目根目录；开发模式：exe 在
-/// src-tauri/target/<profile>/ 下，向上两级即项目根。
+/// 安装模式数据根：%APPDATA%\claude-fast（Windows）/
+/// ~/Library/Application Support/claude-fast（macOS）。
+/// 安装包模式下 exe 位于 Program Files（只读），用户数据统一放这里。
+fn app_data_root() -> PathBuf {
+    #[cfg(windows)]
+    let base = std::env::var("APPDATA").unwrap_or_default();
+    #[cfg(target_os = "macos")]
+    let base = std::env::var("HOME")
+        .map(|h| format!("{}/Library/Application Support", h))
+        .unwrap_or_default();
+    #[cfg(not(any(windows, target_os = "macos")))]
+    let base = std::env::var("HOME").unwrap_or_default();
+    PathBuf::from(base).join("claude-fast")
+}
+
+/// 定位数据根目录（双模式）：
+/// 1. **便携模式**：exe 所在目录向上逐级查找首个根目录标记
+///    （config.json + scripts/，或旧标记 claude-claude-fast.bat）——
+///    开发目录、整体移动的文件夹、绿色版均走此路径。
+/// 2. **安装模式**：找不到便携标记时回退到应用数据目录
+///    （%APPDATA%\claude-fast），首次运行自动创建 scripts/ 子目录。
 fn resolve_root_dir() -> PathBuf {
     let exe = std::env::current_exe().unwrap_or_default();
     let mut dir = exe.parent().map(Path::to_path_buf).unwrap_or_default();
@@ -71,7 +88,10 @@ fn resolve_root_dir() -> PathBuf {
             None => break,
         }
     }
-    exe.parent().map(Path::to_path_buf).unwrap_or_default()
+    // 安装模式：应用数据目录（幂等创建 scripts/，保证「安装后自动生效」）
+    let app = app_data_root();
+    let _ = fs::create_dir_all(app.join(SCRIPTS_DIR));
+    app
 }
 
 /// 启动脚本目录（数据根下）
@@ -538,6 +558,14 @@ mod tests {
         fs::write(root.join("claude-claude-fast.bat"), "").unwrap();
         assert!(is_root_dir(&root));
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn app_data_root_points_to_claude_fast() {
+        let p = app_data_root();
+        assert!(!p.as_os_str().is_empty());
+        let s = p.to_string_lossy().to_lowercase();
+        assert!(s.contains("claude-fast"));
     }
 }
 
