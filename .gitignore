@@ -9,6 +9,9 @@ claude-fast.exe.WebView2/
 config.json
 config.json.bak
 
+# 启动脚本（含本机项目绝对路径，属用户数据，不入库）
+scripts/
+
 # 本机工具配置
 .reasonix/
 reasonix.toml
