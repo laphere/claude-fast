@@ -1,0 +1,19 @@
+# 依赖与构建产物
+node_modules/
+dist/
+src-tauri/target/
+claude-fast.exe
+claude-fast.exe.WebView2/
+
+# 运行时用户数据（收藏/主题，本地保留，不入库）
+config.json
+config.json.bak
+
+# 本机工具配置
+.reasonix/
+reasonix.toml
+
+# 系统/编辑器
+.DS_Store
+Thumbs.db
+*.log
