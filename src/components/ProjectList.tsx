@@ -6,6 +6,7 @@ interface Props {
   selectedKey: string | null;
   onSelect: (key: string) => void;
   onLaunch: (key: string) => void;
+  onOpenFolder: (key: string) => void;
   onToggleFav: (key: string) => void;
   onContextMenu: (x: number, y: number, key: string) => void;
 }
@@ -16,6 +17,7 @@ export default function ProjectList({
   selectedKey,
   onSelect,
   onLaunch,
+  onOpenFolder,
   onToggleFav,
   onContextMenu,
 }: Props) {
@@ -64,15 +66,27 @@ export default function ProjectList({
               <div className="row-path">{l.path ?? "（未解析到路径）"}</div>
             </div>
             {l.healthy !== false && (
-              <button
-                className="row-launch"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onLaunch(l.key);
-                }}
-              >
-                启动
-              </button>
+              <div className="row-actions">
+                <button
+                  className="row-open"
+                  title="打开项目文件夹"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onOpenFolder(l.key);
+                  }}
+                >
+                  📂
+                </button>
+                <button
+                  className="row-launch"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onLaunch(l.key);
+                  }}
+                >
+                  启动
+                </button>
+              </div>
             )}
           </div>
         );

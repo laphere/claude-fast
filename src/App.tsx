@@ -300,6 +300,10 @@ export default function App() {
           selectedKey={selectedKey}
           onSelect={setSelectedKey}
           onLaunch={launch}
+          onOpenFolder={(key) => {
+            const l = launchers.find((x) => x.key === key);
+            if (l?.path) openFolder(l);
+          }}
           onToggleFav={toggleFav}
           onContextMenu={(x, y, key) => setMenu({ x, y, key })}
         />

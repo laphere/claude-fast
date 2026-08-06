@@ -394,7 +394,15 @@ code {
   border: 1px solid var(--danger);
 }
 
-.row-launch {
+.row-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.row-launch,
+.row-open {
   flex-shrink: 0;
   display: inline-flex;
   align-items: center;
@@ -411,11 +419,18 @@ code {
   transition: opacity 0.12s, color 0.12s, border-color 0.12s;
 }
 
-.row:hover .row-launch {
+.row-open {
+  padding: 4px 7px;
+  font-size: 12px;
+}
+
+.row:hover .row-launch,
+.row:hover .row-open {
   opacity: 1;
 }
 
-.row-launch:hover {
+.row-launch:hover,
+.row-open:hover {
   color: var(--accent);
   border-color: var(--accent);
 }
