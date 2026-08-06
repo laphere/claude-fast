@@ -88,14 +88,8 @@ code {
 .brand-logo {
   width: 38px;
   height: 38px;
-  border-radius: 10px;
-  background: linear-gradient(135deg, #d97757, #b05230);
-  color: #fff;
-  font-size: 20px;
-  font-weight: 700;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  border-radius: 9px;
+  object-fit: contain;
   box-shadow: 0 2px 8px rgba(176, 82, 48, 0.35);
 }
 
@@ -119,6 +113,8 @@ code {
 .pill {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
+  line-height: 1;
   gap: 6px;
   padding: 5px 12px;
   border-radius: 999px;
@@ -166,6 +162,10 @@ code {
 .icon-btn {
   width: 30px;
   height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
   border-radius: 8px;
   border: 1px solid var(--border);
   background: var(--panel);
@@ -251,6 +251,10 @@ code {
 
 /* ============ 按钮 ============ */
 .btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
   padding: 7px 14px;
   border-radius: 8px;
   border: 1px solid var(--border);
@@ -392,6 +396,10 @@ code {
 
 .row-launch {
   flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
   font-size: 11.5px;
   padding: 4px 12px;
   border-radius: 7px;

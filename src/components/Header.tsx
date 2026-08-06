@@ -1,3 +1,5 @@
+import claudeLogo from "../assets/claude-logo.png";
+
 interface Props {
   dark: boolean;
   claudeOk: boolean | null;
@@ -18,7 +20,7 @@ export default function Header({
   return (
     <header className="header">
       <div className="brand">
-        <div className="brand-logo">C</div>
+        <img src={claudeLogo} className="brand-logo" alt="Claude" />
         <div>
           <h1>Claude Code 快速启动</h1>
           <div className="brand-sub">一键在你的项目目录中启动 Claude Code</div>
