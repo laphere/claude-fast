@@ -17,7 +17,7 @@
 - 每个 `claude-*.bat` 内容固定为：`cd /d "项目路径"` → 检查 `claude` 命令 → `call claude`。
 - **必须写 `call claude` 而不是 `claude`**：`claude` 是 `claude.cmd` shim，批处理调用其他 .cmd 不加 `call` 时 cmd 不返回，错误处理不执行。
 - 脚本约定：UTF-8 编码、CRLF 换行、`chcp 65001` 后输出中文、出错时 `pause` 保留窗口。
-- GUI 功能：收藏置顶（`favorites`）、健康检查（失效目录红色标记）、批量添加（扫描 MyWorkspaces 含 CLAUDE.md/.git 的项目）、深色主题（`dark`）、搜索过滤、右键菜单、新建/删除启动脚本，状态存 `config.json`。
+- GUI 功能：收藏置顶（`favorites`）、健康检查（失效目录红色标记）、批量添加（扫描 MyWorkspaces 含 CLAUDE.md/.git 的项目）、深色主题（`dark`）、搜索过滤、右键菜单、新建/删除启动脚本、单实例（重复启动自动把已有窗口调到前台，`tauri-plugin-single-instance`），状态存 `config.json`。
 - 健康检查**不阻塞启动**：`list_launchers` 只解析路径不做目录 stat（秒返回）；前端渲染后异步调用 `check_launchers` 并行检查（阻塞线程池执行），结果回来自动标红失效项；「健康检查」对话框打开时现场重新检查。
 - 收藏交互：点列表行左侧星标或右键菜单收藏；已收藏项目星标变金色并置顶。
 - 批量添加的命名：用项目相对 `D:\MyWorkspaces` 的路径，反斜杠替换为 `-`（如 `yaotu\tdc` → `claude-yaotu-tdc.bat`）；新建/批量添加生成的 bat 一律写入数据根的 `scripts/`。

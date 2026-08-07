@@ -612,6 +612,20 @@ fn quit_app(app: tauri::AppHandle) {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        // 单实例：再次启动时不再新建进程，而是把已有主窗口调到前台
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            use tauri::Manager;
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.show();
+                let _ = w.unminimize();
+                let _ = w.set_focus();
+                // Windows 前台锁定：进程不占前台时 SetForegroundWindow 可能被忽略，
+                // 先强制置顶再取消，确保窗口真正浮到最前（第二次启动时新进程刚获得
+                // 前台焦点，回调发生在旧进程里，若无此步可能只闪任务栏不弹窗）。
+                let _ = w.set_always_on_top(true);
+                let _ = w.set_always_on_top(false);
+            }
+        }))
         .setup(|app| {
             use tauri::menu::{Menu, MenuItem};
             use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
