@@ -1292,9 +1292,13 @@ fn parse_content_blocks(content: Option<&serde_json::Value>, role: &str) -> Vec<
 /// 只提取 user/assistant 消息，过滤元数据行 / sidechain / isMeta / 命令消息。
 /// **相邻同 message.id 的 assistant 行合并为一条**：Claude Code 流式写入把
 /// 一次响应拆成多行（每块一行，共享 usage），不合并会重复显示且统计虚高。
+/// **usage 按 message.id 全局只计一次**：同 id 的多行可能被 user/tool_result
+/// 行隔开（代理的多段迭代共用一个 message.id），段间被打断后各自成条显示，
+/// 但 usage 若跟着段走会被 aggregate_usage 重复累加（实测 21.3M 显示成 32.8M）。
 fn parse_session_messages(content: &str) -> Vec<SessionMessage> {
     let mut messages: Vec<SessionMessage> = Vec::new();
     let mut last_msg_id: Option<String> = None;
+    let mut usage_counted_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
     for line in content.lines() {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
             continue;
@@ -1335,6 +1339,18 @@ fn parse_session_messages(content: &str) -> Vec<SessionMessage> {
                 }
             }
         }
+        // usage 只在 id 首次出现时计入（HashSet::insert 返回 false = 已见过）；
+        // 无 id 的行无从去重，维持原样
+        let usage = match &msg_id {
+            Some(id) => {
+                if usage_counted_ids.insert(id.clone()) {
+                    parse_usage(msg.get("usage"))
+                } else {
+                    None
+                }
+            }
+            None => parse_usage(msg.get("usage")),
+        };
         messages.push(SessionMessage {
             kind: role.to_string(),
             blocks,
@@ -1343,7 +1359,7 @@ fn parse_session_messages(content: &str) -> Vec<SessionMessage> {
                 .and_then(|t| t.as_str())
                 .map(|s| s.to_string()),
             model: msg.get("model").and_then(|m| m.as_str()).map(|s| s.to_string()),
-            usage: parse_usage(msg.get("usage")),
+            usage,
         });
         last_msg_id = msg_id;
     }
@@ -3863,6 +3879,32 @@ mod tests {
         assert_eq!(stats.input_tokens, 150);
         assert_eq!(stats.output_tokens, 30);
         assert_eq!(stats.message_count, 3);
+    }
+
+    /// 非相邻同 message.id（同 id 的段被 user/tool_result 行隔开，如代理的
+    /// 多段迭代响应）：显示上各自成条，但 usage 只计一次——否则查看器
+    /// token 统计按段重复累加（实测同一会话 21.3M 被显示成 32.8M）
+    #[test]
+    fn session_usage_counts_split_msg_id_once() {
+        let jsonl = format!(
+            "{}\n{}\n{}\n{}\n{}\n",
+            // msg_a 第一段（带 usage）
+            r#"{"type":"assistant","message":{"id":"msg_a","role":"assistant","content":[{"type":"text","text":"段1"}],"usage":{"input_tokens":100,"output_tokens":20,"cache_read_input_tokens":5}},"timestamp":"t1"}"#,
+            // user 行（tool_result）打断相邻合并链
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]},"timestamp":"t2"}"#,
+            // msg_a 第二段：同 id、usage 相同 → 显示成新条目，但 usage 不再计入
+            r#"{"type":"assistant","message":{"id":"msg_a","role":"assistant","content":[{"type":"text","text":"段2"}],"usage":{"input_tokens":100,"output_tokens":20,"cache_read_input_tokens":5}},"timestamp":"t3"}"#,
+            r#"{"type":"user","message":{"role":"user","content":"继续"},"timestamp":"t4"}"#,
+            // 新响应（不同 id）→ 正常计入
+            r#"{"type":"assistant","message":{"id":"msg_b","role":"assistant","content":[{"type":"text","text":"新响应"}],"usage":{"input_tokens":50,"output_tokens":10}},"timestamp":"t5"}"#,
+        );
+        let messages = parse_session_messages(&jsonl);
+        assert_eq!(messages.len(), 5); // 段1 / user / 段2 / user / 新响应 各自成条
+        let stats = aggregate_usage(&messages);
+        assert_eq!(stats.input_tokens, 150); // msg_a 只计一次（100+50）
+        assert_eq!(stats.output_tokens, 30);
+        assert_eq!(stats.cache_read_tokens, 5);
+        assert_eq!(stats.total_tokens, 185);
     }
 
     /// 跨天会话的每日会话数只归属最后活跃日：任意窗口内每日累加 = 去重会话数，
