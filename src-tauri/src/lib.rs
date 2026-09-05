@@ -1441,6 +1441,63 @@ async fn get_session_messages(
     Ok(slice_messages(parse_session_messages(&content), offset, limit))
 }
 
+/// 对话进度条的一格：一条用户发言（左侧导航轨用）
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionUserPrompt {
+    /// 消息全局序号（与 get_session_messages 的序号一致，点击定位用）
+    index: usize,
+    /// 发言文本（清洗后，供悬停预览）
+    text: String,
+    timestamp: Option<String>,
+}
+
+/// 提取全量用户发言（对话进度条）：只有带文本的 user 消息算数——
+/// 命令消息（<command-name> 等）、本地命令回显、工具结果消息、
+/// 中断提示都不算用户发言。
+fn user_prompts_impl(content: &str) -> Vec<SessionUserPrompt> {
+    parse_session_messages(content)
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, m)| {
+            if m.kind != "user" {
+                return None;
+            }
+            let text = m
+                .blocks
+                .iter()
+                .filter(|b| b.kind == "text")
+                .filter_map(|b| b.text.as_deref())
+                .collect::<Vec<_>>()
+                .join(" ");
+            if text.contains("<command-name>")
+                || text.contains("<command-message>")
+                || text.contains("<local-command-stdout>")
+                || text.trim_start().starts_with("[Request interrupted")
+            {
+                return None;
+            }
+            let cleaned = clean_summary(&text);
+            if cleaned.is_empty() {
+                return None;
+            }
+            Some(SessionUserPrompt {
+                index,
+                text: cleaned,
+                timestamp: m.timestamp,
+            })
+        })
+        .collect()
+}
+
+/// 会话全量用户发言（对话进度条导航）。在 Tauri 线程池执行，不阻塞 UI。
+#[tauri::command]
+async fn get_session_user_prompts(file: String) -> Result<Vec<SessionUserPrompt>, String> {
+    let (path, _) = validate_session_file(&file)?;
+    let content = fs::read_to_string(&path).map_err(|e| format!("读取会话文件失败：{e}"))?;
+    Ok(user_prompts_impl(&content))
+}
+
 // ---------------- 会话全文搜索（会话域增强包） ----------------
 
 /// 构造命中上下文片段：命中处前后各 radius 字节，回退到字符边界后切片。
@@ -3733,6 +3790,32 @@ mod tests {
     }
 
     #[test]
+    fn user_prompts_skip_commands_tool_results_and_interruptions() {
+        let jsonl = format!(
+            "{}\n{}\n{}\n{}\n{}\n{}\n",
+            // 命令消息：不算发言
+            r#"{"type":"user","message":{"role":"user","content":"<command-name>/clear</command-name><command-message>clear</command-message>"},"timestamp":"t1"}"#,
+            // 真实发言 1
+            r#"{"type":"user","message":{"role":"user","content":"修复登录页面的 bug"},"timestamp":"t2"}"#,
+            // assistant 回复
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"好的"}],"model":"m"},"timestamp":"t3"}"#,
+            // 工具结果消息：不算发言
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"tu1","content":"ok"}]},"timestamp":"t4"}"#,
+            // 中断提示：不算发言
+            r#"{"type":"user","message":{"role":"user","content":"[Request interrupted by user for tool use]"},"timestamp":"t5"}"#,
+            // system-reminder 包裹的上下文被剥离，只留真实发言
+            r#"{"type":"user","message":{"role":"user","content":"<system-reminder>background context</system-reminder>再看一下测试"},"timestamp":"t6"}"#,
+        );
+        let prompts = user_prompts_impl(&jsonl);
+        assert_eq!(prompts.len(), 2);
+        // index 是 parse_session_messages 的全局序号；命令消息在解析层就被丢弃不占位
+        assert_eq!(prompts[0].index, 0);
+        assert_eq!(prompts[0].text, "修复登录页面的 bug");
+        assert_eq!(prompts[1].index, 4);
+        assert_eq!(prompts[1].text, "再看一下测试");
+    }
+
+    #[test]
     fn make_snippet_never_panics_on_boundaries() {
         let text = "你好，这是一段中文测试文本，用于验证搜索片段是否安全。";
         // 命中 0 字节处（关键词恰好从开头）→ 片段以关键词开头且不超原文
@@ -4263,6 +4346,7 @@ pub fn run() {
             purge_session,
             purge_trash,
             get_session_messages,
+            get_session_user_prompts,
             search_session_messages,
             export_session,
             get_usage_stats,

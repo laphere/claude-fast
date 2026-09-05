@@ -640,16 +640,32 @@ code {
 .viewer-body {
   flex: 1;
   overflow-y: auto;
-  padding: 14px 18px;
+  /* 右内边距 = 左内边距 18 + 进度轨道 58，抵消轨道占位，
+     内容相对整个查看区左右对称；滚动条仍在最右不受影响 */
+  padding: 14px 76px 14px 18px;
   display: flex;
   flex-direction: column;
-  gap: 18px;
-  /* 居中窄列：消息条落在页面中间，不顶满宽度 */
-  width: 100%;
-  max-width: 480px;
-  margin: 0 auto;
+  gap: 12px;
   /* 覆盖 body 的 user-select: none，允许选择复制会话内容 */
   user-select: text;
+}
+
+/* 内容列收窄（限宽居中），滚动条仍贴 viewer-body 最右侧 */
+.viewer-body > * {
+  width: 100%;
+  max-width: 800px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* 用户消息不受内容列限宽：整行铺满、贴页面右缘；助手内容仍在居中列 */
+.viewer-body > .msg-user {
+  max-width: none;
+}
+
+/* 右侧滚动条滑块适当加长（长会话默认太短，不便拖拽定位） */
+.viewer-body::-webkit-scrollbar-thumb {
+  min-height: 72px;
 }
 
 .viewer-truncated {
@@ -703,49 +719,72 @@ code {
 /* ---- 对话进度条（左侧用户发言导航轨） ---- */
 
 .msg-rail {
-  flex: 0 0 18px;
+  /* 无视觉底色但保留较宽的透明命中列：滚轮滚动发生在容器上，
+     列宽即滚轮操作区宽度，太窄容易一晃鼠标就滚到左侧列表/右侧内容 */
+  flex: 0 0 58px;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 3px;
-  padding: 12px 0;
-  border-right: none;
-  background: transparent;
+  gap: 0; /* 视觉间距由命中区的负 margin 控制（见下） */
   overflow-y: auto;
   scrollbar-width: none; /* 轨道自身不露滚动条，滚轮即可 */
+}
+
+/* 格子少时上下居中；格子多撑满后 margin 自动归零、恢复滚动 */
+.msg-rail-tick:first-child {
+  margin-top: auto;
+}
+
+.msg-rail-tick:last-child {
+  margin-bottom: auto;
 }
 
 .msg-rail::-webkit-scrollbar {
   display: none;
 }
 
+/* 横条视觉本体画在 ::before；按钮本体是放大的透明命中区，悬停不必精确对准。
+   负 margin 抵消命中区高出横条的部分：视觉间距不变，相邻命中区轻微重叠、
+   悬停可连续扫过 */
 .msg-rail-tick {
   flex: 0 0 auto;
-  width: 9px;
-  height: 3px;
+  width: 100%; /* 命中区横向铺满轨道列，悬停不必对准中间细条 */
+  height: 12px;
+  margin: -1.5px 0;
   padding: 0;
   border: none;
-  border-radius: 2px;
-  background: var(--dim);
-  opacity: 0.55;
+  background: none;
   cursor: pointer;
-  transition: opacity 0.12s, background 0.12s, width 0.12s;
+  position: relative;
 }
 
-.msg-rail-tick:hover {
-  background: var(--accent);
-  opacity: 1;
+/* 视觉本体用 border-top 画而不用色块高度：border 宽度由浏览器统一取整，
+   同一计算宽度在任意显示缩放下渲染厚度一致；色块方案（height: 3px）在
+   125%/150% 缩放下每个条的亚像素相位不同，会取整成 4px/5px 粗细相间 */
+.msg-rail-tick::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 12px;
+  height: 0;
+  border-top: 3px solid var(--dim);
+  border-radius: 2px;
+  opacity: 0.55;
+  transition: opacity 0.15s ease, border-color 0.15s ease;
 }
 
-.msg-rail-tick.active {
-  background: var(--accent);
+/* 悬停/选中只变颜色，粗细长短与常态一致 */
+.msg-rail-tick:hover::before,
+.msg-rail-tick.active::before {
+  border-top-color: var(--accent);
   opacity: 1;
-  width: 13px;
 }
 
 .msg-rail-tip {
   position: absolute;
-  left: 26px;
+  left: 42px;
   z-index: 45;
   width: 320px;
   max-height: 300px;
@@ -1251,14 +1290,15 @@ mark {
 }
 
 .msg-user {
-  align-items: flex-start;
+  align-items: flex-end;
 }
 
-/* 用户发言：无底色、不隔离，仅以左侧细线与助手发言区分（文档流样式） */
 .msg-user-body {
-  max-width: 100%;
-  border-left: 2px solid var(--accent);
-  padding: 2px 0 2px 10px;
+  max-width: 85%;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  padding: 8px 12px;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -1355,10 +1395,10 @@ mark {
 .md-body pre {
   font-size: 12px;
   line-height: 1.5;
-  background: transparent;
-  border: none;
-  border-radius: 0;
-  padding: 4px 0;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 8px 10px;
   overflow-x: auto;
   margin: 0.5em 0;
 }
@@ -1436,9 +1476,9 @@ mark {
 .tool-row,
 .tool-result {
   font-size: 12.5px;
-  border: none;
-  border-radius: 0;
-  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
   margin: 2px 0;
 }
 
@@ -1493,9 +1533,9 @@ mark {
 /* ============ 代码变更卡片（Claude Code 风格 diff） ============ */
 .diff-card {
   font-size: 12.5px;
-  border: none;
-  border-radius: 0;
-  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
   margin: 2px 0;
   overflow: hidden;
 }
@@ -1636,7 +1676,7 @@ mark {
   font-weight: 600;
   color: var(--muted);
   padding: 5px 10px 3px;
-  background: transparent;
+  background: var(--panel-2);
   user-select: none;
   display: flex;
   align-items: baseline;

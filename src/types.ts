@@ -129,6 +129,15 @@ export interface SessionSearchHit {
   snippet: string;
 }
 
+/** 对话进度条的一格：一条用户发言（左侧导航轨用） */
+export interface SessionUserPrompt {
+  /** 消息全局序号（与 get_session_messages 的序号一致，点击定位用） */
+  index: number;
+  /** 发言文本（清洗后，供悬停预览） */
+  text: string;
+  timestamp?: string | null;
+}
+
 /** 单个模型的用量汇总（统计口径：sidechain 子代理消息也计入） */
 export interface ModelUsage {
   /** 完整模型名（前端简化显示日期后缀） */
