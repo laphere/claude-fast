@@ -11,6 +11,7 @@ import type {
   SessionInfo,
   SessionMessages,
   SessionSearchHit,
+  SessionUserPrompt,
   TrashedSession,
   UsageStats,
 } from "../types";
@@ -61,6 +62,9 @@ export const api = {
   /** 会话内全文搜索（返回命中消息序号与上下文片段） */
   searchSessionMessages: (file: string, keyword: string) =>
     invoke<SessionSearchHit[]>("search_session_messages", { file, keyword }),
+  /** 会话全量用户发言（对话进度条导航轨） */
+  getSessionUserPrompts: (file: string) =>
+    invoke<SessionUserPrompt[]>("get_session_user_prompts", { file }),
   /** 导出会话到指定路径（markdown / jsonl），返回写入的字节数 */
   exportSession: (file: string, destPath: string, format: "markdown" | "jsonl") =>
     invoke<number>("export_session", { file, destPath, format }),

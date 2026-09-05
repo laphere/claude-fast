@@ -10,6 +10,7 @@ import type {
   SessionMessage,
   SessionSearchHit,
   SessionUsageStats,
+  SessionUserPrompt,
 } from "../types";
 
 interface Props {
@@ -504,12 +505,28 @@ export default function SessionViewer({
   const [filesOpen, setFilesOpen] = useState(false);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
 
+  // ---------- 对话进度条（左侧用户发言导航轨） ----------
+  /** 全量用户发言（后端提取，index 与消息全局序号一致） */
+  const [prompts, setPrompts] = useState<SessionUserPrompt[]>([]);
+  /** 视口当前所在的用户发言序号（高亮跟随滚动） */
+  const [activePrompt, setActivePrompt] = useState<number | null>(null);
+  /** 悬停气泡：格子对应的发言 + 相对 viewer-main 的纵向位置 */
+  const [railTip, setRailTip] = useState<{
+    prompt: SessionUserPrompt;
+    top: number;
+  } | null>(null);
+  const mainRef = useRef<HTMLDivElement>(null);
+  const scrollRafRef = useRef(0);
+  const prevFileRef = useRef<string | null>(null);
+
   // 初始加载：默认取最后 500 条（session 切换或点「刷新」时重新加载）
   useEffect(() => {
     if (!session) {
       setMessages([]);
       setStats(null);
       setSearchResults(null);
+      setPrompts([]);
+      prevFileRef.current = null;
       return;
     }
     // 切换会话时重置搜索与面板状态
@@ -518,6 +535,13 @@ export default function SessionViewer({
     setSearchResults(null);
     setFilesOpen(false);
     setExportMenuOpen(false);
+    if (prevFileRef.current !== session.file) {
+      // 仅切换会话时清空进度条（点「刷新」保留旧数据避免闪烁）
+      setPrompts([]);
+      setActivePrompt(null);
+      setRailTip(null);
+      prevFileRef.current = session.file;
+    }
     let cancelled = false;
     scrollToBottomRef.current = true;
     setLoading(true);
@@ -535,6 +559,13 @@ export default function SessionViewer({
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
+    // 进度条数据并行加载（失败不打扰主内容，只少一条导航轨）
+    api
+      .getSessionUserPrompts(session.file)
+      .then((p) => {
+        if (!cancelled) setPrompts(p);
+      })
+      .catch(() => {});
     return () => {
       cancelled = true;
     };
@@ -575,12 +606,41 @@ export default function SessionViewer({
     setLoadingMore(false);
   }, [session, loadingMore, hasMore, offset, onToast]);
 
+  // 进度条高亮跟随滚动：视口顶部附近最近的那条用户发言
+  const updateActivePrompt = useCallback(() => {
+    const body = bodyRef.current;
+    if (!body || prompts.length === 0) {
+      setActivePrompt(null);
+      return;
+    }
+    const bodyTop = body.getBoundingClientRect().top;
+    let active: number | null = null;
+    for (const p of prompts) {
+      if (p.index < offset) continue; // 更早的分页未加载
+      if (p.index >= offset + messages.length) break;
+      const el = body.querySelector(`[data-msg-index="${p.index}"]`);
+      if (!el) continue;
+      if (el.getBoundingClientRect().top - bodyTop <= 140) active = p.index;
+      else break;
+    }
+    setActivePrompt(active);
+  }, [prompts, offset, messages.length]);
+
+  // 消息/分页/进度数据变化后重算高亮（等 DOM 提交）
+  useEffect(() => {
+    if (loading) return;
+    const id = requestAnimationFrame(updateActivePrompt);
+    return () => cancelAnimationFrame(id);
+  }, [loading, updateActivePrompt]);
+
   // 滚到顶部附近自动加载更早
   const onScroll = useCallback(() => {
     const body = bodyRef.current;
-    if (!body || body.scrollTop > 40) return;
-    void loadMore();
-  }, [loadMore]);
+    if (body && body.scrollTop <= 40) void loadMore();
+    // 进度条高亮用 rAF 节流，一帧最多算一次
+    cancelAnimationFrame(scrollRafRef.current);
+    scrollRafRef.current = requestAnimationFrame(updateActivePrompt);
+  }, [loadMore, updateActivePrompt]);
 
   // tool_use / tool_result 跨消息关联
   const { resultMap, toolNames } = useMemo(() => {
@@ -693,6 +753,17 @@ export default function SessionViewer({
     },
     [session, offset, messages, onToast],
   );
+
+  /** 悬停格子：气泡浮在轨道右侧，纵向对齐格子并夹在可视区内 */
+  const openRailTip = (p: SessionUserPrompt, btn: HTMLElement) => {
+    const main = mainRef.current;
+    if (!main) return;
+    const mr = main.getBoundingClientRect();
+    const br = btn.getBoundingClientRect();
+    const TIP_MAX = 300; // 与 CSS max-height 一致
+    const top = Math.max(8, Math.min(br.top - mr.top - 10, mr.height - TIP_MAX - 8));
+    setRailTip({ prompt: p, top });
+  };
 
   // ---------- 变更文件聚合 ----------
 
@@ -905,7 +976,20 @@ export default function SessionViewer({
         </div>
       )}
 
-      <div className="viewer-main">
+      <div className="viewer-main" ref={mainRef}>
+        {prompts.length > 0 && (
+          <div className="msg-rail" onMouseLeave={() => setRailTip(null)}>
+            {prompts.map((p) => (
+              <button
+                key={p.index}
+                className={`msg-rail-tick ${activePrompt === p.index ? "active" : ""}`}
+                onClick={() => void jumpTo(p.index)}
+                onMouseEnter={(e) => openRailTip(p, e.currentTarget)}
+                aria-label={`定位到用户发言：${p.text}`}
+              />
+            ))}
+          </div>
+        )}
         <div className="viewer-body" ref={bodyRef} onScroll={onScroll}>
           {loading ? (
             <div className="viewer-empty">加载中…</div>
@@ -933,6 +1017,15 @@ export default function SessionViewer({
             </>
           )}
         </div>
+
+        {railTip && (
+          <div className="msg-rail-tip" style={{ top: railTip.top }}>
+            <div className="msg-rail-tip-time">
+              用户 · {formatTime(railTip.prompt.timestamp)}
+            </div>
+            <div className="msg-rail-tip-text">{railTip.prompt.text}</div>
+          </div>
+        )}
 
         {filesOpen && (
           <div className="viewer-files">
