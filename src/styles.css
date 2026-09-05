@@ -663,7 +663,11 @@ code {
   padding: 14px 18px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 18px;
+  /* 居中窄列：消息条落在页面中间，不顶满宽度 */
+  width: 100%;
+  max-width: 480px;
+  margin: 0 auto;
   /* 覆盖 body 的 user-select: none，允许选择复制会话内容 */
   user-select: text;
 }
@@ -713,6 +717,79 @@ code {
   flex: 1;
   display: flex;
   min-height: 0;
+  position: relative; /* 悬停气泡（msg-rail-tip）的定位基准 */
+}
+
+/* ---- 对话进度条（左侧用户发言导航轨） ---- */
+
+.msg-rail {
+  flex: 0 0 18px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 12px 0;
+  border-right: none;
+  background: transparent;
+  overflow-y: auto;
+  scrollbar-width: none; /* 轨道自身不露滚动条，滚轮即可 */
+}
+
+.msg-rail::-webkit-scrollbar {
+  display: none;
+}
+
+.msg-rail-tick {
+  flex: 0 0 auto;
+  width: 9px;
+  height: 3px;
+  padding: 0;
+  border: none;
+  border-radius: 2px;
+  background: var(--dim);
+  opacity: 0.55;
+  cursor: pointer;
+  transition: opacity 0.12s, background 0.12s, width 0.12s;
+}
+
+.msg-rail-tick:hover {
+  background: var(--accent);
+  opacity: 1;
+}
+
+.msg-rail-tick.active {
+  background: var(--accent);
+  opacity: 1;
+  width: 13px;
+}
+
+.msg-rail-tip {
+  position: absolute;
+  left: 26px;
+  z-index: 45;
+  width: 320px;
+  max-height: 300px;
+  overflow-y: auto;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  padding: 10px 12px;
+  pointer-events: none; /* 纯预览，不挡住下方内容的悬停 */
+}
+
+.msg-rail-tip-time {
+  font-size: 10.5px;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+.msg-rail-tip-text {
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text);
+  word-break: break-word;
+  user-select: text;
 }
 
 /* ---- 关键词高亮与消息闪烁定位 ---- */
@@ -1194,15 +1271,14 @@ mark {
 }
 
 .msg-user {
-  align-items: flex-end;
+  align-items: flex-start;
 }
 
+/* 用户发言：无底色、不隔离，仅以左侧细线与助手发言区分（文档流样式） */
 .msg-user-body {
-  max-width: 85%;
-  background: var(--accent-soft);
-  border: 1px solid var(--accent);
-  border-radius: 10px;
-  padding: 8px 12px;
+  max-width: 100%;
+  border-left: 2px solid var(--accent);
+  padding: 2px 0 2px 10px;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -1299,10 +1375,10 @@ mark {
 .md-body pre {
   font-size: 12px;
   line-height: 1.5;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  padding: 8px 10px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  padding: 4px 0;
   overflow-x: auto;
   margin: 0.5em 0;
 }
@@ -1380,9 +1456,9 @@ mark {
 .tool-row,
 .tool-result {
   font-size: 12.5px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--panel);
+  border: none;
+  border-radius: 0;
+  background: transparent;
   margin: 2px 0;
 }
 
@@ -1437,9 +1513,9 @@ mark {
 /* ============ 代码变更卡片（Claude Code 风格 diff） ============ */
 .diff-card {
   font-size: 12.5px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--panel);
+  border: none;
+  border-radius: 0;
+  background: transparent;
   margin: 2px 0;
   overflow: hidden;
 }
@@ -1580,7 +1656,7 @@ mark {
   font-weight: 600;
   color: var(--muted);
   padding: 5px 10px 3px;
-  background: var(--panel-2);
+  background: transparent;
   user-select: none;
   display: flex;
   align-items: baseline;
