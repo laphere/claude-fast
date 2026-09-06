@@ -22,6 +22,11 @@ import SessionContextMenu from "./components/SessionContextMenu";
 
 export type DialogKind = "new" | "batch" | "health" | null;
 
+/** 会话进行中 = 正在启动/思考中（"关闭其他会话"时跳过这类 tab） */
+function isBusyPhase(phase: string | undefined): boolean {
+  return phase === "thinking" || phase === "starting";
+}
+
 interface ConfirmState {
   title: string;
   message: string;
@@ -514,6 +519,36 @@ export default function App() {
     [chats, refreshSessions],
   );
 
+  /** 关闭除 keepId 外的其他会话；进行中（思考中/启动中）的会话跳过不关 */
+  const closeOtherChats = useCallback(
+    (keepId: string) => {
+      const closing = chats.filter(
+        (c) => c.id !== keepId && !isBusyPhase(chatStatus[c.id]),
+      );
+      if (closing.length === 0) return;
+      for (const c of closing) void refreshSessions(c.key);
+      const ids = new Set(closing.map((c) => c.id));
+      setChats((prev) => prev.filter((c) => !ids.has(c.id)));
+      // 当前 tab 被关（不可能，keepId 保留）→ 兜底激活保留的 tab
+      setActiveChatId((cur) => (cur && ids.has(cur) ? keepId : cur));
+      setChatStatus((prev) => {
+        const copy = { ...prev };
+        for (const c of closing) delete copy[c.id];
+        return copy;
+      });
+    },
+    [chats, chatStatus, refreshSessions],
+  );
+
+  /** 关闭全部会话 */
+  const closeAllChats = useCallback(() => {
+    if (chats.length === 0) return;
+    for (const c of chats) void refreshSessions(c.key);
+    setChats([]);
+    setActiveChatId(null);
+    setChatStatus({});
+  }, [chats, refreshSessions]);
+
   // ---------- 渲染 ----------
 
   return (
@@ -568,6 +603,8 @@ export default function App() {
               statusByTab={chatStatus}
               onSelect={setActiveChatId}
               onClose={closeChat}
+              onCloseOthers={closeOtherChats}
+              onCloseAll={closeAllChats}
             />
           )}
           {chats.map((c) => (
