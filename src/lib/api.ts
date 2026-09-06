@@ -1,10 +1,12 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, Channel } from "@tauri-apps/api/core";
 import {
   isEnabled as autostartIsEnabled,
   enable as autostartEnable,
   disable as autostartDisable,
 } from "@tauri-apps/plugin-autostart";
 import type {
+  ChatEvent,
+  ChatPermissionMode,
   ClaudeProject,
   Config,
   Project,
@@ -81,6 +83,26 @@ export const api = {
   getDataRoot: () =>
     invoke<{ path: string; installMode: boolean }>("get_data_root"),
   quitApp: () => invoke("quit_app"),
+  // ---------- app 内直接对话 ----------
+  /** 启动对话进程（sessionFile 为 null = 新对话；permissionMode = 初始权限模式），
+   *  返回跟踪用的会话 id；事件经 Channel 流式推送（chat_start 之前把 onmessage 挂好） */
+  chatStart: (
+    projectPath: string,
+    sessionFile: string | null,
+    permissionMode: ChatPermissionMode,
+    onEvent: Channel<ChatEvent>,
+  ) => invoke<string>("chat_start", { projectPath, sessionFile, permissionMode, onEvent }),
+  chatSend: (sessionId: string, text: string) =>
+    invoke("chat_send", { sessionId, text }),
+  /** 中断当前轮（等价终端里的 Esc） */
+  chatInterrupt: (sessionId: string) => invoke("chat_interrupt", { sessionId }),
+  /** 运行中切换权限模式（等价终端 Shift+Tab；CLI 回执失败会以 error 事件浮出） */
+  chatSetPermissionMode: (sessionId: string, mode: ChatPermissionMode) =>
+    invoke("chat_set_permission_mode", { sessionId, mode }),
+  chatPermissionResponse: (sessionId: string, requestId: string, allow: boolean) =>
+    invoke("chat_permission_response", { sessionId, requestId, allow }),
+  /** 关闭对话进程（关 stdin 优雅退出，超时强杀） */
+  chatClose: (sessionId: string) => invoke("chat_close", { sessionId }),
   // ---------- 开机自启动 ----------
   /** 当前平台是否支持开机自启动（如不支持则设置项不显示） */
   isAutostartSupported: () => invoke<boolean>("autostart_supported"),

@@ -8,6 +8,8 @@ interface Props {
   favorites: string[];
   onClose: () => void;
   onToggleFav: (key: string) => void;
+  /** 在终端中启动 Claude Code（原项目行「+」按钮收进菜单） */
+  onLaunch: (l: Project) => void;
   onOpenFolder: (l: Project) => void;
   onCopyPath: (l: Project) => void;
   onRemove: (l: Project) => void;
@@ -16,10 +18,12 @@ interface Props {
 
 export default function ContextMenu({
   x,
-  y,    project,
+  y,
+  project,
   favorites,
   onClose,
   onToggleFav,
+  onLaunch,
   onOpenFolder,
   onCopyPath,
   onRemove,
@@ -62,6 +66,17 @@ export default function ContextMenu({
           <button className="context-item" onClick={() => { onToggleFav(project.key); onClose(); }}>
             {isFav ? "☆ 取消收藏" : "★ 收藏（置顶）"}
           </button>
+          {project.healthy !== false && (
+            <button
+              className="context-item"
+              onClick={() => {
+                onLaunch(project);
+                onClose();
+              }}
+            >
+              ▶ 在终端中启动 Claude Code
+            </button>
+          )}
           <button className="context-item" onClick={() => { onOpenFolder(project); onClose(); }}>
             打开所在文件夹
           </button>

@@ -1,5 +1,10 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
+use tauri::Manager;
+
+/// app 内直接对话：托管官方 claude CLI 子进程（stdio stream-json）
+pub mod chat;
+
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -4353,8 +4358,21 @@ pub fn run() {
             resume_session,
             get_data_root,
             autostart_supported,
-            quit_app
+            quit_app,
+            chat::chat_start,
+            chat::chat_send,
+            chat::chat_interrupt,
+            chat::chat_set_permission_mode,
+            chat::chat_permission_response,
+            chat::chat_close
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .manage(chat::ChatManager::default())
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            // 退出时清理全部对话子进程：关 stdin 优雅退出，超时强杀（防残留 claude 进程）
+            if let tauri::RunEvent::Exit = event {
+                app_handle.state::<chat::ChatManager>().stop_all();
+            }
+        });
 }

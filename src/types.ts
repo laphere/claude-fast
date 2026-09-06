@@ -138,6 +138,71 @@ export interface SessionUserPrompt {
   timestamp?: string | null;
 }
 
+// ---------------- app 内直接对话（chat.rs ChatEvent 对齐） ----------------
+
+/** 权限模式（与官方 CLI --permission-mode 取值一致，v2.1.x 共 6 种，等价终端 Shift+Tab） */
+export type ChatPermissionMode =
+  | "manual"
+  | "auto"
+  | "acceptEdits"
+  | "plan"
+  | "bypassPermissions"
+  | "dontAsk";
+
+/** 单条 assistant 消息的 token 用量 */
+export interface ChatUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+}
+
+/** 后端 chat 模块经 ipc::Channel 推送的流式事件（tag = type） */
+export type ChatEvent =
+  | { type: "session_ready"; sessionId: string; model?: string | null }
+  | { type: "status"; state: "thinking" | "idle" }
+  | { type: "content_start"; kind: "text" | "thinking" }
+  | { type: "delta"; kind: "text" | "thinking" | "tool_input"; text: string }
+  | { type: "tool_use_start"; toolUseId: string; name: string }
+  | { type: "tool_use_complete"; toolUseId: string; name: string; input: unknown }
+  | { type: "tool_result"; toolUseId: string; isError: boolean; text: string }
+  | { type: "message_complete"; usage: ChatUsage }
+  | { type: "permission_request"; requestId: string; toolName: string; input: unknown }
+  | { type: "permission_cancelled"; requestId: string }
+  | {
+      type: "turn_end";
+      isError: boolean;
+      resultText?: string | null;
+      usage?: ChatUsage | null;
+    }
+  | { type: "exited"; code: number | null; stderrTail?: string | null }
+  | { type: "error"; message: string };
+
+/** 对话视图内的一条渲染条目（工具调用合并其执行结果，展开即看） */
+export type ChatItem =
+  | { id: number; kind: "user"; text: string }
+  | { id: number; kind: "text"; text: string; streaming: boolean }
+  | { id: number; kind: "thinking"; text: string; streaming: boolean }
+  | {
+      id: number;
+      kind: "tool_use";
+      toolUseId: string;
+      name: string;
+      input: unknown;
+      hasResult: boolean;
+      isError: boolean;
+      /** 配对到的执行结果文本（无主结果仍单独成条 tool_result） */
+      resultText?: string;
+    }
+  | { id: number; kind: "tool_result"; toolUseId: string; isError: boolean; text: string };
+
+/** 对话中的权限确认请求 */
+export interface ChatPermissionRequest {
+  requestId: string;
+  toolName: string;
+  input: unknown;
+}
+
 /** 单个模型的用量汇总（统计口径：sidechain 子代理消息也计入） */
 export interface ModelUsage {
   /** 完整模型名（前端简化显示日期后缀） */

@@ -16,7 +16,8 @@ import CloseChoiceDialog from "./components/CloseChoiceDialog";
 import RenameDialog from "./components/RenameDialog";
 import TrashDialog from "./components/TrashDialog";
 import StatsDialog from "./components/StatsDialog";
-import SessionViewer from "./components/SessionViewer";
+import ChatView from "./components/ChatView";
+import SessionContextMenu from "./components/SessionContextMenu";
 
 export type DialogKind = "new" | "batch" | "health" | null;
 
@@ -55,11 +56,22 @@ export default function App() {
     session: SessionInfo;
     key: string;
   } | null>(null);
-  // ---------- 会话内容（v2.0.0 阶段二） ----------
-  const [activeSession, setActiveSession] = useState<{
-    session: SessionInfo;
+  /** 会话行右键菜单（重命名/终端继续） */
+  const [sessionMenu, setSessionMenu] = useState<{
+    x: number;
+    y: number;
     key: string;
-    projectPath: string | null;
+    session: SessionInfo;
+  } | null>(null);
+  // ---------- app 内直接对话（会话查看页已并入 ChatView） ----------
+  // ---------- app 内直接对话 ----------
+  const [activeChat, setActiveChat] = useState<{
+    projectPath: string;
+    title: string;
+    /** null = 新对话 */
+    session: SessionInfo | null;
+    /** 所属项目 key（返回时刷新会话列表用） */
+    key: string;
   } | null>(null);
   const closeActionRef = useRef<CloseAction>(null);
   closeActionRef.current = closeAction;
@@ -377,10 +389,6 @@ export default function App() {
       try {
         await api.deleteSession(session.file);
         await refreshSessions(key);
-        // 右侧正显示该会话 → 清空
-        setActiveSession((cur) =>
-          cur && cur.session.file === session.file ? null : cur,
-        );
         showToast(`已删除「${session.title}」，可在回收站恢复`);
       } catch (e) {
         showToast("删除失败：" + String(e));
@@ -402,20 +410,6 @@ export default function App() {
     [deleteSession],
   );
 
-  // ---------- 会话内容（v2.0.0 阶段二） ----------
-
-  const loadSessionMessages = useCallback(
-    async (key: string, session: SessionInfo) => {
-      const launcher = items.find((x) => x.key === key);
-      setActiveSession({
-        session,
-        key,
-        projectPath: launcher?.path ?? null,
-      });
-    },
-    [items],
-  );
-
   const resumeSession = useCallback(
     async (key: string, session: SessionInfo) => {
       const launcher = items.find((x) => x.key === key);
@@ -432,6 +426,45 @@ export default function App() {
     },
     [items, showToast],
   );
+
+  // ---------- app 内直接对话 ----------
+
+  /** 在 app 内新开对话（claude 工作目录 = 项目路径） */
+  const startInAppChat = useCallback(
+    (key: string) => {
+      const l = items.find((x) => x.key === key);
+      if (!l?.path) {
+        showToast("该项目未解析到路径，无法对话");
+        return;
+      }
+      if (l.healthy === false) {
+        showToast(`目录不存在，无法对话：${l.path}`);
+        return;
+      }
+      setActiveChat({ projectPath: l.path, title: l.name, session: null, key });
+    },
+    [items, showToast],
+  );
+
+  /** 在 app 内继续已有会话 */
+  const continueInAppChat = useCallback(
+    (key: string, session: SessionInfo) => {
+      const l = items.find((x) => x.key === key);
+      if (!l?.path) {
+        showToast("该项目未解析到路径，无法对话");
+        return;
+      }
+      setActiveChat({ projectPath: l.path, title: session.title, session, key });
+    },
+    [items, showToast],
+  );
+
+  /** 返回列表：关闭对话进程并刷新该项目会话（新对话已落盘 jsonl） */
+  const closeChat = useCallback(() => {
+    const key = activeChat?.key;
+    setActiveChat(null);
+    if (key) void refreshSessions(key);
+  }, [activeChat, refreshSessions]);
 
   // ---------- 渲染 ----------
 
@@ -463,31 +496,31 @@ export default function App() {
             favorites={favorites}
             selectedKey={selectedKey}
             expandedKey={expandedKey}
-            activeSessionFile={activeSession?.session.file ?? null}
+            activeSessionFile={activeChat?.session?.file ?? null}
             sessionsByKey={sessionsByKey}
             onSelect={setSelectedKey}
-            onLaunch={launch}
             onToggleFav={toggleFav}
             dragEnabled={search.trim() === ""}
             onReorderFavorite={reorderFavorites}
             onToggleExpand={toggleExpand}
             onRenameSession={(key, session) => setRenameTarget({ session, key })}
             onDeleteSession={confirmDeleteSession}
-            onOpenSession={loadSessionMessages}
-            onResumeSession={resumeSession}
+            onSessionContextMenu={(x, y, key, session) =>
+              setSessionMenu({ x, y, key, session })
+            }            onChatProject={startInAppChat}
+            onChatSession={continueInAppChat}
             onContextMenu={(x, y, key) => setMenu({ x, y, key })}
           />
         </div>
-        <SessionViewer
-          session={activeSession?.session ?? null}
-          projectPath={activeSession?.projectPath ?? null}
-          onResume={() => {
-            if (activeSession) {
-              resumeSession(activeSession.key, activeSession.session);
-            }
-          }}
-          onToast={showToast}
-        />
+        {activeChat && (
+          <ChatView
+            projectPath={activeChat.projectPath}
+            title={activeChat.title}
+            session={activeChat.session}
+            onBack={closeChat}
+            onToast={showToast}
+          />
+        )}
       </main>
 
       <StatusBar
@@ -505,6 +538,7 @@ export default function App() {
           favorites={favorites}
           onClose={() => setMenu(null)}
           onToggleFav={toggleFav}
+          onLaunch={(l) => launch(l.key)}
           onOpenFolder={openFolder}
           onCopyPath={copyPath}
           onRemove={confirmRemove}
@@ -512,6 +546,17 @@ export default function App() {
             setMenu(null);
             setDialog("health");
           }}
+        />
+      )}
+
+      {sessionMenu && (
+        <SessionContextMenu
+          x={sessionMenu.x}
+          y={sessionMenu.y}
+          session={sessionMenu.session}
+          onClose={() => setSessionMenu(null)}
+          onResumeTerminal={() => resumeSession(sessionMenu.key, sessionMenu.session)}
+          onRename={() => setRenameTarget({ session: sessionMenu.session, key: sessionMenu.key })}
         />
       )}
 

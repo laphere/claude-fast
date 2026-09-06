@@ -1,7 +1,7 @@
 import { useCallback, useState } from "react";
 import type { DragEvent } from "react";
 import type { Project, SessionInfo } from "../types";
-import { PencilIcon, PlayIcon, TrashIcon } from "./Icons";
+import { ChatIcon, TrashIcon } from "./Icons";
 
 interface Props {
   items: Project[];
@@ -14,7 +14,6 @@ interface Props {
   /** 各项目的会话缓存：undefined = 未加载；null = 加载中；数组 = 已加载 */
   sessionsByKey: Record<string, SessionInfo[] | null | undefined>;
   onSelect: (key: string) => void;
-  onLaunch: (key: string) => void;
   onToggleFav: (key: string) => void;
   /** 收藏项拖拽排序：把 draggedKey 移动到 targetKey 之前/之后 */
   onReorderFavorite: (draggedKey: string, targetKey: string, before: boolean) => void;
@@ -23,8 +22,12 @@ interface Props {
   onToggleExpand: (key: string) => void;
   onRenameSession: (key: string, session: SessionInfo) => void;
   onDeleteSession: (key: string, session: SessionInfo) => void;
-  onOpenSession: (key: string, session: SessionInfo) => void;
-  onResumeSession: (key: string, session: SessionInfo) => void;
+  /** 会话行右键菜单（查看内容/终端继续/重命名收进菜单） */
+  onSessionContextMenu: (x: number, y: number, key: string, session: SessionInfo) => void;
+  /** app 内新开对话 */
+  onChatProject: (key: string) => void;
+  /** app 内继续已有会话（点击会话行 = 直接进入对话） */
+  onChatSession: (key: string, session: SessionInfo) => void;
   onContextMenu: (x: number, y: number, key: string) => void;
 }
 
@@ -48,15 +51,14 @@ export default function ProjectList({
   activeSessionFile,
   sessionsByKey,
   onSelect,
-  onLaunch,
   onToggleFav,
   onReorderFavorite,
   dragEnabled,
   onToggleExpand,
-  onRenameSession,
   onDeleteSession,
-  onOpenSession,
-  onResumeSession,
+  onSessionContextMenu,
+  onChatProject,
+  onChatSession,
   onContextMenu,
 }: Props) {
   // ---------- 收藏拖拽排序（仅临时视觉状态，顺序真源在 App 的 favorites 数组）----------
@@ -179,8 +181,18 @@ export default function ProjectList({
               {l.healthy !== false && (
                 <div className="row-actions">
                   <button
+                    className="row-icon row-icon-chat"
+                    title="app 内对话（新建会话）"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onChatProject(l.key);
+                    }}
+                  >
+                    <ChatIcon />
+                  </button>
+                  <button
                     className="row-icon row-icon-more"
-                    title="更多操作（与右键菜单相同）"
+                    title="更多操作（与右键菜单相同：终端启动/打开文件夹/收藏等）"
                     onClick={(e) => {
                       e.stopPropagation();
                       onSelect(l.key);
@@ -188,16 +200,6 @@ export default function ProjectList({
                     }}
                   >
                     ⋯
-                  </button>
-                  <button
-                    className="row-icon row-icon-add"
-                    title="启动 Claude Code（新建会话）"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onLaunch(l.key);
-                    }}
-                  >
-                    +
                   </button>
                 </div>
               )}
@@ -217,8 +219,13 @@ export default function ProjectList({
                       className={`session-row ${
                         s.file === activeSessionFile ? "active" : ""
                       }`}
-                      onClick={() => onOpenSession(l.key, s)}
-                      title="点击查看会话内容"
+                      onClick={() => onChatSession(l.key, s)}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        onSessionContextMenu(e.clientX, e.clientY, l.key, s);
+                      }}
+                      title="点击在 app 内继续对话，右键更多操作"
                     >
                       <div className="session-body">
                         <div className="session-title">{s.title}</div>
@@ -227,26 +234,6 @@ export default function ProjectList({
                           {s.summary && ` · ${s.summary}`}
                         </div>
                       </div>
-                      <button
-                        className="session-rename session-resume"
-                        title="继续对话（resume）"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onResumeSession(l.key, s);
-                        }}
-                      >
-                        <PlayIcon />
-                      </button>
-                      <button
-                        className="session-rename session-edit"
-                        title="重命名会话"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onRenameSession(l.key, s);
-                        }}
-                      >
-                        <PencilIcon />
-                      </button>
                       <button
                         className="session-rename session-del"
                         title="删除会话（移入回收站，可恢复）"
