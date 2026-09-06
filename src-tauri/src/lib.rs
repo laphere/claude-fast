@@ -1700,7 +1700,7 @@ fn render_session_markdown(messages: &[SessionMessage], title: &str) -> String {
     }
     let title = title.trim();
     let mut out = format!(
-        "# {}\n> 导出自 Claude助手 · {} 条消息\n",
+        "# {}\n> 导出自 CC Desktop · {} 条消息\n",
         if title.is_empty() { "未命名会话" } else { title },
         messages.len()
     );
@@ -4310,7 +4310,7 @@ pub fn run() {
 
             TrayIconBuilder::with_id("main")
                 .icon(app.default_window_icon().unwrap().clone())
-                .tooltip("Claude助手")
+                .tooltip("CC Desktop")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id().as_ref() {

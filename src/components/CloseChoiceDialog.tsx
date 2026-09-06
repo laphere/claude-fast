@@ -11,7 +11,7 @@ export default function CloseChoiceDialog({ onClose, onChoose }: Props) {
   const [remember, setRemember] = useState(false);
 
   return (
-    <Modal title="关闭 Claude助手" width={420} onClose={onClose}>
+    <Modal title="关闭 CC Desktop" width={420} onClose={onClose}>
       <div style={{ marginBottom: 16 }}>
         关闭窗口后要做什么？
       </div>

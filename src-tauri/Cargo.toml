@@ -1,7 +1,7 @@
 [package]
 name = "claude-fast"
 version = "2.0.0"
-description = "Claude助手"
+description = "CC Desktop"
 edition = "2021"
 
 [lib]

@@ -1,4 +1,4 @@
-# Claude助手（claude-fast）
+# CC Desktop（claude-fast）
 
 一键在项目目录启动 Claude Code 的桌面应用：**Tauri 2 + React + TypeScript（前端）+ Rust（后端）**，Windows + macOS 双平台，不限定工作区目录。
 
@@ -93,4 +93,4 @@ npm run tauri build          # 生产构建
 # macOS 通吃包（Intel + Apple Silicon）：npm run tauri build -- --target universal-apple-darwin
 ```
 
-构建产物：Windows 为 NSIS 安装包（`src-tauri/target/release/bundle/nsis/Claude助手_<版本>_x64-setup.exe`，`installMode: perMachine`、安装界面中英双语、免管理员），安装到 `%LOCALAPPDATA%\Programs\Claude助手`；macOS 为 `bundle/macos/Claude助手.app` 与 `bundle/dmg/*.dmg`。便携 exe 从 `src-tauri/target/release/` 复制（须与 config.json/scripts 同层）。
+构建产物：Windows 为 NSIS 安装包（`src-tauri/target/release/bundle/nsis/CC Desktop_<版本>_x64-setup.exe`，`installMode: perMachine`、安装界面中英双语、免管理员），安装到 `%LOCALAPPDATA%\Programs\CC Desktop`；macOS 为 `bundle/macos/CC Desktop.app` 与 `bundle/dmg/*.dmg`。便携 exe 从 `src-tauri/target/release/` 复制（须与 config.json/scripts 同层）。

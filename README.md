@@ -1,4 +1,4 @@
-# Claude助手
+# CC Desktop
 
 在任意项目目录中一键启动 Claude Code，无需手动进目录、开终端、敲命令。支持 Windows 与 macOS。
 
@@ -14,11 +14,11 @@ claude-fast/
 └── README.md
 ```
 
-> 本目录为**纯源码库**（与 GitHub 仓库一致）。程序本体通过**安装包**分发（Windows：`Claude助手_<版本>_x64-setup.exe`；macOS：`.app` + `Claude助手_<版本>_<架构>.dmg`）；用户数据（项目清单与收藏 `config.json`）在安装版数据目录 `%APPDATA%\claude-fast`（macOS 为 `~/Library/Application Support/claude-fast`）。
+> 本目录为**纯源码库**（与 GitHub 仓库一致）。程序本体通过**安装包**分发（Windows：`CC Desktop_<版本>_x64-setup.exe`；macOS：`.app` + `CC Desktop_<版本>_<架构>.dmg`）；用户数据（项目清单与收藏 `config.json`）在安装版数据目录 `%APPDATA%\claude-fast`（macOS 为 `~/Library/Application Support/claude-fast`）。
 
 ## 使用
 
-双击桌面上的「Claude助手」快捷方式（或开始菜单的 `Claude助手`）打开图形界面。
+双击桌面上的「CC Desktop」快捷方式（或开始菜单的 `CC Desktop`）打开图形界面。
 Tauri 应用为 GUI 程序，启动时**不会出现多余的 cmd 窗口**，关闭界面即完全退出。
 
 - **启动 Claude Code** → 点击项目行内的「**+**」按钮，新开终端窗口进入该项目目录并运行 claude（`/k` 模式，claude 退出后窗口保留可看输出）
@@ -58,11 +58,11 @@ npm run tauri build -- --target universal-apple-darwin
 
 > 首次在 macOS 上构建前，建议先跑 `cd src-tauri && cargo test`——它会编译全部 mac 分支代码并执行 mac 专属测试（如 resume 脚本生成），是最快的验证方式。
 
-构建产物（Windows）：`src-tauri/target/release/bundle/nsis/Claude助手_<版本>_x64-setup.exe`（安装包，可选择安装目录、免管理员）
+构建产物（Windows）：`src-tauri/target/release/bundle/nsis/CC Desktop_<版本>_x64-setup.exe`（安装包，可选择安装目录、免管理员）
 和 `src-tauri/target/release/claude-fast.exe`（便携版，需与 config.json/scripts 同层放置）。
 
-构建产物（macOS）：`src-tauri/target/release/bundle/macos/Claude助手.app`（拖入「应用程序」即可）
-和 `src-tauri/target/release/bundle/dmg/Claude助手_<版本>_<架构>.dmg`（安装镜像；<架构> 为 aarch64 / x86_64 / universal，取决于构建目标）。
+构建产物（macOS）：`src-tauri/target/release/bundle/macos/CC Desktop.app`（拖入「应用程序」即可）
+和 `src-tauri/target/release/bundle/dmg/CC Desktop_<版本>_<架构>.dmg`（安装镜像；<架构> 为 aarch64 / x86_64 / universal，取决于构建目标）。
 
 ### 架构要点
 

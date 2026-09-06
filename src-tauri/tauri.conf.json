@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Claude助手",
+  "productName": "CC Desktop",
   "version": "2.0.0",
   "identifier": "com.claudefast.launcher",
   "build": {
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Claude助手",
+        "title": "CC Desktop",
         "width": 920,
         "height": 660,
         "minWidth": 680,

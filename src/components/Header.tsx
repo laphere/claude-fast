@@ -23,7 +23,7 @@ export default function Header({
       <div className="brand">
         <img src={claudeLogo} className="brand-logo" alt="Claude" />
         <div>
-          <h1>Claude助手</h1>
+          <h1>CC Desktop</h1>
           <div className="brand-sub">一键在你的项目目录中启动 Claude Code</div>
         </div>
       </div>
