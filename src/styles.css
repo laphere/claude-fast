@@ -2407,8 +2407,11 @@ mark {
   gap: 4px;
   padding: 6px 10px 0;
   border-bottom: 1px solid var(--border);
-  /* tab 多时仍可横向滚动（Shift+滚轮/拖拽），但不显示滚动条 */
+  /* tab 多时用滚轮横向滚动（ChatTabs onWheel），两个方向都不显示滚动条；
+     overflow-y 必须显式 hidden——否则按 CSS 规则随 overflow-x 归为 auto，
+     激活 tab 的 box-shadow 等任何 1px 竖向溢出都会顶出竖向滚动条 */
   overflow-x: auto;
+  overflow-y: hidden;
   flex-shrink: 0;
   scrollbar-width: none;
 }
@@ -2441,18 +2444,9 @@ mark {
 .chat-tab.active {
   background: var(--panel);
   color: var(--text);
-  /* 盖住 tab 栏的底边线，形成"接入"效果 */
-  position: relative;
-}
-
-.chat-tab.active::after {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: -1px;
-  height: 1px;
-  background: var(--panel);
+  /* 盖住 tab 栏的底边线，形成"接入"效果——box-shadow 不参与布局/溢出，
+     不能用 ::after 定位到 bottom:-1px（1px 竖向溢出会顶出滚动条） */
+  box-shadow: 0 1px 0 0 var(--panel);
 }
 
 .chat-tab-title {
