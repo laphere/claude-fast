@@ -659,7 +659,10 @@ export default function ChatView({
   useEffect(() => {
     const body = bodyRef.current;
     if (!body) return;
+    // 初始定位：滚动标记在内容真正渲染出来后才消费——加载中（空 body）
+    // 就消费会把标记浪费掉，导致打开历史会话停留在开头而不是最新内容
     if (scrollToBottomRef.current) {
+      if (historyLoading || (history.length === 0 && items.length === 0)) return;
       body.scrollTop = body.scrollHeight;
       scrollToBottomRef.current = false;
       return;
