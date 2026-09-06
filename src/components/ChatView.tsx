@@ -53,14 +53,15 @@ interface Props {
 /** 每页历史消息数（与后端 MAX_SESSION_MESSAGES 一致） */
 const PAGE_SIZE = 500;
 
-/** 权限模式选项（与 CLI --permission-mode 取值一致，等价终端 Shift+Tab 循环切换） */
+/** 权限模式选项：与终端 Shift+Tab 循环的 5 种对齐。
+ *  dontAsk 虽是 --permission-mode 的合法取值，但终端交互循环里没有
+ *  （程序化调用用），故不进下拉 */
 const MODE_OPTIONS: Array<{ value: ChatPermissionMode; label: string; title: string }> = [
   { value: "manual", label: "手动确认", title: "每个工具执行前都弹窗确认（原 default，推荐）" },
   { value: "auto", label: "自动模式", title: "自动执行常见安全操作，敏感操作仍确认" },
   { value: "acceptEdits", label: "接受编辑", title: "自动允许文件编辑，其他工具仍需确认" },
   { value: "plan", label: "计划模式", title: "只读分析并给出计划，不执行修改" },
   { value: "bypassPermissions", label: "跳过权限", title: "全部工具直接执行，不再确认（危险）" },
-  { value: "dontAsk", label: "不询问", title: "不弹确认——会触发确认的操作直接拒绝执行" },
 ];
 
 let nextItemId = 1;
