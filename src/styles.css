@@ -2158,6 +2158,7 @@ mark {
   flex: 1;
   min-height: 0;
   display: flex;
+  position: relative; /* 悬停气泡（msg-rail-tip）的定位基准 */
 }
 
 .chat-body {
@@ -2487,4 +2488,98 @@ mark {
 .chat-tab-close:hover {
   color: var(--danger);
   background: var(--danger-soft);
+}
+
+/* ============ 对话进度条（左侧用户发言导航轨，自 v1.0.0 查看页移植） ============ */
+
+.msg-rail {
+  /* 无视觉底色但保留较宽的透明命中列：滚轮滚动发生在容器上，
+     列宽即滚轮操作区宽度，太窄容易一晃鼠标就滚到左侧列表/右侧内容 */
+  flex: 0 0 58px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0; /* 视觉间距由命中区的负 margin 控制（见下） */
+  overflow-y: auto;
+  scrollbar-width: none; /* 轨道自身不露滚动条，滚轮即可 */
+}
+
+.msg-rail-tick:first-child {
+  margin-top: auto;
+}
+
+.msg-rail-tick:last-child {
+  margin-bottom: auto;
+}
+
+.msg-rail::-webkit-scrollbar {
+  display: none;
+}
+
+/* 横条视觉本体画在 ::before；按钮本体是放大的透明命中区，悬停不必精确对准。
+   负 margin 抵消命中区高出横条的部分：视觉间距不变，相邻命中区轻微重叠、
+   悬停可连续扫过 */
+.msg-rail-tick {
+  flex: 0 0 auto;
+  width: 100%; /* 命中区横向铺满轨道列，悬停不必对准中间细条 */
+  height: 12px;
+  margin: -1.5px 0;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  position: relative;
+}
+
+/* 视觉本体用 border-top 画而不用色块高度：border 宽度由浏览器统一取整，
+   同一计算宽度在任意显示缩放下渲染厚度一致；色块方案（height: 3px）在
+   125%/150% 缩放下每个条的亚像素相位不同，会取整成 4px/5px 粗细相间 */
+.msg-rail-tick::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 12px;
+  height: 0;
+  border-top: 3px solid var(--dim);
+  border-radius: 2px;
+  opacity: 0.55;
+  transition: opacity 0.15s ease, border-color 0.15s ease;
+}
+
+/* 悬停/选中只变颜色，粗细长短与常态一致 */
+.msg-rail-tick:hover::before,
+.msg-rail-tick.active::before {
+  border-top-color: var(--accent);
+  opacity: 1;
+}
+
+.msg-rail-tip {
+  position: absolute;
+  left: 42px;
+  z-index: 45;
+  width: 320px;
+  max-height: 300px;
+  overflow-y: auto;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  padding: 10px 12px;
+  pointer-events: none; /* 纯预览，不挡住下方内容的悬停 */
+}
+
+.msg-rail-tip-time {
+  font-size: 10.5px;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+.msg-rail-tip-text {
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text);
+  word-break: break-word;
+  user-select: text;
 }

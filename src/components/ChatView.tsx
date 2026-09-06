@@ -21,6 +21,7 @@ import {
   ToolUseRow,
   activitySummary,
   fmtTokens,
+  formatTime,
 } from "./MessageParts";
 import { FileIcon, SearchIcon, StopIcon } from "./Icons";
 import type {
@@ -34,6 +35,7 @@ import type {
   SessionMessage,
   SessionSearchHit,
   SessionUsageStats,
+  SessionUserPrompt,
 } from "../types";
 
 interface Props {
@@ -148,6 +150,19 @@ export default function ChatView({
   const [searchResults, setSearchResults] = useState<SessionSearchHit[] | null>(null);
   const [filesOpen, setFilesOpen] = useState(false);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
+
+  // ---------- 对话进度条（左侧用户发言导航轨，自 v1.0.0 查看页移植） ----------
+  /** 全量用户发言（后端 get_session_user_prompts 提取，index = 历史消息全局序号） */
+  const [prompts, setPrompts] = useState<SessionUserPrompt[]>([]);
+  /** 视口当前所在的用户发言序号（高亮跟随滚动） */
+  const [activePrompt, setActivePrompt] = useState<number | null>(null);
+  /** 悬停气泡：发言 + 相对 chat-main 的纵向位置 */
+  const [railTip, setRailTip] = useState<{
+    prompt: SessionUserPrompt;
+    top: number;
+  } | null>(null);
+  const mainRef = useRef<HTMLDivElement>(null);
+  const scrollRafRef = useRef(0);
 
   /** 后端跟踪的会话 id（chat_start 返回，chat_send 等凭它寻址） */
   const sessionKeyRef = useRef<string | null>(null);
@@ -341,6 +356,9 @@ export default function ChatView({
       setHistory([]);
       setStats(null);
       setSearchResults(null);
+      setPrompts([]);
+      setActivePrompt(null);
+      setRailTip(null);
       return;
     }
     setSearchOpen(false);
@@ -365,6 +383,13 @@ export default function ChatView({
       .finally(() => {
         if (!cancelled) setHistoryLoading(false);
       });
+    // 进度条数据并行加载（失败不打扰主内容，只少一条导航轨）
+    api
+      .getSessionUserPrompts(session.file)
+      .then((p) => {
+        if (!cancelled) setPrompts(p);
+      })
+      .catch(() => {});
     return () => {
       cancelled = true;
     };
@@ -571,6 +596,55 @@ export default function ChatView({
     },
     [session, histOffset, history.length, onToast],
   );
+
+  // ---------- 对话进度条（导航轨高亮/悬停，自 v1.0.0 查看页移植） ----------
+
+  /** 轨道高亮跟随滚动：视口顶部附近最近的那条用户发言
+   *  （含实时区的用户气泡——全局序号 = histOffset + history.length + 实时序号） */
+  const updateActivePrompt = useCallback(() => {
+    const body = bodyRef.current;
+    if (!body || prompts.length === 0) {
+      setActivePrompt(null);
+      return;
+    }
+    const bodyTop = body.getBoundingClientRect().top;
+    let active: number | null = null;
+    for (const p of prompts) {
+      if (p.index < histOffset) continue; // 更早的分页未加载
+      if (p.index >= histOffset + history.length) break;
+      const el = body.querySelector(`[data-msg-index="${p.index}"]`);
+      if (!el) continue;
+      if (el.getBoundingClientRect().top - bodyTop <= 140) active = p.index;
+      else break;
+    }
+    setActivePrompt(active);
+  }, [prompts, histOffset, history.length]);
+
+  // 消息/分页/进度数据变化后重算高亮（等 DOM 提交）
+  useEffect(() => {
+    if (historyLoading) return;
+    const id = requestAnimationFrame(updateActivePrompt);
+    return () => cancelAnimationFrame(id);
+  }, [historyLoading, updateActivePrompt]);
+
+  const onChatScroll = useCallback(() => {
+    const body = bodyRef.current;
+    if (body && body.scrollTop <= 40) void loadMore();
+    // 高亮用 rAF 节流，一帧最多算一次
+    cancelAnimationFrame(scrollRafRef.current);
+    scrollRafRef.current = requestAnimationFrame(updateActivePrompt);
+  }, [loadMore, updateActivePrompt]);
+
+  /** 悬停格子：气泡浮在轨道右侧，纵向对齐格子并夹在可视区内 */
+  const openRailTip = useCallback((p: SessionUserPrompt, btn: HTMLElement) => {
+    const main = mainRef.current;
+    if (!main) return;
+    const mr = main.getBoundingClientRect();
+    const br = btn.getBoundingClientRect();
+    const TIP_MAX = 300; // 与 CSS max-height 一致
+    const top = Math.max(8, Math.min(br.top - mr.top - 10, mr.height - TIP_MAX - 8));
+    setRailTip({ prompt: p, top });
+  }, []);
 
   // ---------- 变更文件聚合（历史 + 实时，原查看页逻辑扩展） ----------
 
@@ -1068,8 +1142,21 @@ export default function ChatView({
         </div>
       )}
 
-      <div className="chat-main">
-        <div className="chat-body" ref={bodyRef}>
+      <div className="chat-main" ref={mainRef}>
+        {session && prompts.length > 0 && (
+          <div className="msg-rail" onMouseLeave={() => setRailTip(null)}>
+            {prompts.map((p) => (
+              <button
+                key={p.index}
+                className={`msg-rail-tick ${activePrompt === p.index ? "active" : ""}`}
+                onClick={() => void jumpTo(p.index)}
+                onMouseEnter={(e) => openRailTip(p, e.currentTarget)}
+                aria-label={`定位到用户发言：${p.text}`}
+              />
+            ))}
+          </div>
+        )}
+        <div className="chat-body" ref={bodyRef} onScroll={onChatScroll}>
           {historyLoading ? (
             <div className="viewer-empty">加载历史消息…</div>
           ) : history.length === 0 && items.length === 0 ? (
@@ -1082,6 +1169,15 @@ export default function ChatView({
             renderStream()
           )}
         </div>
+
+        {railTip && (
+          <div className="msg-rail-tip" style={{ top: railTip.top }}>
+            <div className="msg-rail-tip-time">
+              用户 · {railTip.prompt.timestamp ? formatTime(railTip.prompt.timestamp) : ""}
+            </div>
+            <div className="msg-rail-tip-text">{railTip.prompt.text}</div>
+          </div>
+        )}
 
         {filesOpen && (
           <div className="viewer-files">
