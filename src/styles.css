@@ -2136,7 +2136,8 @@ mark {
   color: var(--muted);
   border: 1px solid var(--border);
   border-radius: 999px;
-  padding: 3px 10px;
+  /* 墨迹补偿，勿改对称：normal 行高下 YaHei 墨迹偏下 ~1px，上让 1 下补 1（总高不变） */
+  padding: 2px 10px 4px;
   white-space: nowrap;
 }
 
