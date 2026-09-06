@@ -2094,3 +2094,60 @@ mark {
 ::-webkit-scrollbar-thumb:hover {
   background: var(--dim);
 }
+
+/* ============ 活动组（Claude Code 终端风格的思考/工具折叠摘要行） ============ */
+
+.activity {
+  border-left: 2px solid var(--border);
+  margin: 2px 0;
+}
+
+.activity-summary {
+  cursor: pointer;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 8px;
+  color: var(--muted);
+  font-size: 12.5px;
+  list-style: none;
+}
+
+.activity-summary::-webkit-details-marker {
+  display: none;
+}
+
+.activity-summary:hover {
+  color: var(--text);
+}
+
+.activity-caret {
+  flex-shrink: 0;
+  font-size: 9px;
+  transition: transform 0.12s;
+}
+
+.activity[open] > .activity-summary .activity-caret {
+  transform: rotate(90deg);
+}
+
+.activity-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity-body {
+  padding: 2px 0 4px 6px;
+}
+
+/* 工具行内合并显示的执行结果（折叠展开后可见） */
+.tool-result-ok {
+  color: var(--muted);
+}
+
+.tool-result-error {
+  color: var(--danger);
+}

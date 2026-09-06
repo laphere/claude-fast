@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { save } from "@tauri-apps/plugin-dialog";
@@ -179,8 +179,20 @@ function editSummary(oldCount: number, newCount: number): string {
   return parts.join(", ");
 }
 
-/** 代码变更卡片：Claude Code 风格 */
-function CodeChangeCard({ block }: { block: ContentBlock }) {
+/** 代码变更卡片内的错误输出（工具执行出错时显示在 diff 末尾） */
+function ToolErrorOutput({ resultBlock }: { resultBlock?: ContentBlock | null }) {
+  if (!resultBlock?.isError || !resultBlock.text) return null;
+  return <pre className="tool-body tool-result-error">{resultBlock.text.slice(0, 4000)}</pre>;
+}
+
+/** 代码变更卡片：Claude Code 风格（resultBlock 出错时在 diff 末尾附错误输出） */
+function CodeChangeCard({
+  block,
+  resultBlock,
+}: {
+  block: ContentBlock;
+  resultBlock?: ContentBlock | null;
+}) {
   const name = block.name ?? "";
   const input = (block.input ?? {}) as Record<string, unknown>;
   const filePath = (input.file_path as string) ?? "";
@@ -205,6 +217,7 @@ function CodeChangeCard({ block }: { block: ContentBlock }) {
             <DiffLineRow key={i} line={dl} />
           ))}
         </div>
+        <ToolErrorOutput resultBlock={resultBlock} />
       </details>
     );
   }
@@ -229,6 +242,7 @@ function CodeChangeCard({ block }: { block: ContentBlock }) {
             />
           ))}
         </div>
+        <ToolErrorOutput resultBlock={resultBlock} />
       </details>
     );
   }
@@ -269,6 +283,7 @@ function CodeChangeCard({ block }: { block: ContentBlock }) {
             <div className="diff-empty">No edits</div>
           )}
         </div>
+        <ToolErrorOutput resultBlock={resultBlock} />
       </details>
     );
   }
@@ -276,19 +291,22 @@ function CodeChangeCard({ block }: { block: ContentBlock }) {
   return null;
 }
 
-/** 工具调用行：代码变更工具用 Claude Code diff，其他工具用摘要+JSON */
+/** 工具调用行（默认折叠）：代码变更工具展开显示 diff，其他工具展开显示输入 JSON
+ *  与执行结果——每次工具调用只占一行摘要，结果不再单独渲染成卡片 */
 function ToolUseRow({
   block,
   hasResult,
   isError,
+  resultBlock,
 }: {
   block: ContentBlock;
   hasResult: boolean;
   isError: boolean;
+  resultBlock?: ContentBlock | null;
 }) {
   const name = block.name ?? "工具";
   if (name === "Edit" || name === "Write" || name === "MultiEdit") {
-    return <CodeChangeCard block={block} />;
+    return <CodeChangeCard block={block} resultBlock={resultBlock} />;
   }
   return (
     <details className="tool-row" open={false}>
@@ -300,8 +318,13 @@ function ToolUseRow({
         </span>
       </summary>
       <pre className="tool-body">
-        {block.input ? JSON.stringify(block.input, null, 2).slice(0, 4000) : ""}
+        {block.input ? JSON.stringify(block.input, null, 2).slice(0, 4000) : "（无输入）"}
       </pre>
+      {resultBlock && (
+        <pre className={`tool-body ${isError ? "tool-result-error" : "tool-result-ok"}`}>
+          {`── 执行结果 ──\n` + (resultBlock.text ?? "").slice(0, 4000)}
+        </pre>
+      )}
     </details>
   );
 }
@@ -339,81 +362,115 @@ function ThinkingBlock({ text }: { text: string }) {
   );
 }
 
-/** 单条消息（data-msg-index 供搜索/文件面板定位跳转） */
-function Message({
+// ---- 活动组（Claude Code 终端风格）：思考+工具调用折叠成一行摘要，点击展开 ----
+
+/** 工具名 → 摘要动词短语（数量由调用方聚合） */
+function toolPhrase(name: string, count: number): string {
+  switch (name) {
+    case "Read":
+      return `读取 ${count} 个文件`;
+    case "Glob":
+    case "Grep":
+      return `搜索 ${count} 次`;
+    case "Bash":
+      return `执行 ${count} 条命令`;
+    case "Edit":
+    case "MultiEdit":
+    case "Write":
+      return `编辑 ${count} 个文件`;
+    case "WebFetch":
+    case "WebSearch":
+      return `联网查询 ${count} 次`;
+    case "TodoWrite":
+      return "更新任务列表";
+    case "Task":
+    case "Agent":
+      return `派出子代理 ${count} 次`;
+    default:
+      return `${name} × ${count}`;
+  }
+}
+
+/** 从一段活动内容生成摘要行（如「思考 · 读取 2 个文件 · 执行 1 条命令」） */
+function activitySummary(
+  entries: Array<{ kind: string; name?: string | null }>,
+): string {
+  const hasThinking = entries.some((e) => e.kind === "thinking");
+  const counts = new Map<string, number>();
+  for (const e of entries) {
+    if (e.kind !== "tool_use") continue;
+    const key = e.name ?? "工具";
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  const phrases = [...counts.entries()].map(([name, n]) => toolPhrase(name, n));
+  const parts = [...(hasThinking ? ["思考"] : []), ...phrases];
+  return parts.length > 0 ? parts.join(" · ") : "执行操作";
+}
+
+/** 活动组容器：默认折叠（终端里 Ctrl+O 的等价物），点击摘要行展开 */
+function ActivityGroup({
+  summary,
+  children,
+}: {
+  summary: string;
+  children: ReactNode;
+}) {
+  return (
+    <details className="activity">
+      <summary className="activity-summary">
+        <span className="activity-caret">▶</span>
+        <span className="activity-label">{summary}</span>
+      </summary>
+      <div className="activity-body">{children}</div>
+    </details>
+  );
+}
+
+/** 用户消息（data-msg-index 供搜索/文件面板定位跳转；工具结果已并入工具行，仅渲染无主结果） */
+function UserMessage({
   msg,
-  resultMap,
+  resultBlocks,
   toolNames,
   msgIndex,
 }: {
   msg: SessionMessage;
-  resultMap: Map<string, boolean>;
+  resultBlocks: Map<string, ContentBlock>;
   toolNames: Map<string, string>;
   msgIndex: number;
 }) {
-  if (msg.kind === "user") {
-    const texts = msg.blocks.filter((b) => b.kind === "text");
-    const results = msg.blocks.filter((b) => b.kind === "tool_result");
-    if (texts.length === 0 && results.length > 0) {
-      return (
-        <div className="msg msg-tool-result-only" data-msg-index={msgIndex}>
-          {results.map((b, i) => (
-            <ToolResultCard
-              key={i}
-              block={b}
-              toolName={b.toolUseId ? toolNames.get(b.toolUseId) ?? null : null}
-            />
-          ))}
-        </div>
-      );
-    }
+  const texts = msg.blocks.filter((b) => b.kind === "text" && b.text);
+  const orphanResults = msg.blocks.filter(
+    (b) => b.kind === "tool_result" && b.toolUseId && !resultBlocks.has(b.toolUseId),
+  );
+  if (texts.length === 0 && orphanResults.length === 0) return null;
+  if (texts.length === 0) {
     return (
-      <div className="msg msg-user" data-msg-index={msgIndex}>
-        <div className="msg-user-body">
-          {texts.map((b, i) => (
-            <MarkdownText key={i} text={b.text ?? ""} />
-          ))}
-          {results.map((b, i) => (
-            <ToolResultCard
-              key={`r${i}`}
-              block={b}
-              toolName={b.toolUseId ? toolNames.get(b.toolUseId) ?? null : null}
-            />
-          ))}
-          <div className="msg-time">{formatTime(msg.timestamp)}</div>
-        </div>
+      <div className="msg msg-tool-result-only" data-msg-index={msgIndex}>
+        {orphanResults.map((b, i) => (
+          <ToolResultCard
+            key={i}
+            block={b}
+            toolName={b.toolUseId ? toolNames.get(b.toolUseId) ?? null : null}
+          />
+        ))}
       </div>
     );
   }
   return (
-    <div className="msg msg-assistant" data-msg-index={msgIndex}>
-      <div className="msg-head">
-        <span className="msg-model">{msg.model ?? "Claude"}</span>
-        <span className="msg-time">{formatTime(msg.timestamp)}</span>
+    <div className="msg msg-user" data-msg-index={msgIndex}>
+      <div className="msg-user-body">
+        {texts.map((b, i) => (
+          <MarkdownText key={i} text={b.text ?? ""} />
+        ))}
+        {orphanResults.map((b, i) => (
+          <ToolResultCard
+            key={`r${i}`}
+            block={b}
+            toolName={b.toolUseId ? toolNames.get(b.toolUseId) ?? null : null}
+          />
+        ))}
+        <div className="msg-time">{formatTime(msg.timestamp)}</div>
       </div>
-      {msg.blocks.map((b, i) => {
-        switch (b.kind) {
-          case "text":
-            return <MarkdownText key={i} text={b.text ?? ""} />;
-          case "thinking":
-            return <ThinkingBlock key={i} text={b.text ?? ""} />;
-          case "tool_use": {
-            const id = b.toolUseId ?? `${i}`;
-            // data-block-idx 供搜索命中/文件面板跳转时定位并展开该工具行
-            return (
-              <div key={i} data-block-idx={`${msgIndex}-${i}`}>
-                <ToolUseRow
-                  block={b}
-                  hasResult={resultMap.has(id)}
-                  isError={resultMap.get(id) ?? false}
-                />
-              </div>
-            );
-          }
-          default:
-            return null;
-        }
-      })}
     </div>
   );
 }
@@ -642,14 +699,17 @@ export default function SessionViewer({
     scrollRafRef.current = requestAnimationFrame(updateActivePrompt);
   }, [loadMore, updateActivePrompt]);
 
-  // tool_use / tool_result 跨消息关联
-  const { resultMap, toolNames } = useMemo(() => {
+  // tool_use / tool_result 跨消息关联：resultMap 供状态标记，resultBlocks
+  // 供折叠展开时在工具行内直接看执行结果（结果不再单独渲染成卡片）
+  const { resultMap, resultBlocks, toolNames } = useMemo(() => {
     const resultMap = new Map<string, boolean>();
+    const resultBlocks = new Map<string, ContentBlock>();
     const toolNames = new Map<string, string>();
     for (const m of messages) {
       for (const b of m.blocks) {
         if (b.kind === "tool_result" && b.toolUseId) {
           resultMap.set(b.toolUseId, !!b.isError);
+          if (!resultBlocks.has(b.toolUseId)) resultBlocks.set(b.toolUseId, b);
         }
       }
     }
@@ -660,7 +720,7 @@ export default function SessionViewer({
         }
       }
     }
-    return { resultMap, toolNames };
+    return { resultMap, resultBlocks, toolNames };
   }, [messages]);
 
   // ---------- 搜索 ----------
@@ -741,11 +801,15 @@ export default function SessionViewer({
         void flash.offsetWidth;
         flash.classList.add("msg-flash");
         if (blockIndex !== undefined) {
-          // data-block-idx 在外层包装 div 上；details（diff 卡/工具行）是它的子元素
+          // data-block-idx 在外层包装 div 上；details（diff 卡/工具行）是它的子元素。
+          // 卡片可能嵌在折叠的活动组里，需要一并展开外层组
           const card = body.querySelector(
             `[data-block-idx="${globalIndex}-${blockIndex}"] details`,
           );
-          if (card) card.setAttribute("open", "");
+          if (card) {
+            card.setAttribute("open", "");
+            card.closest("details.activity")?.setAttribute("open", "");
+          }
         }
       };
       if (needFrame) requestAnimationFrame(locate);
@@ -841,6 +905,79 @@ export default function SessionViewer({
     },
     [session, onToast],
   );
+
+  /** 消息列表渲染（Claude Code 终端风格）：连续的思考/工具块**跨消息**合并为活动组，
+   *  遇到用户消息或助手文本收口——jsonl 里一轮工具循环拆成多条 assistant 消息，
+   *  按单条消息分组会出现「思考·读取→搜索→思考」碎行。
+   *  data-msg-index（文本/用户气泡）与 data-block-idx（工具行）供搜索/文件跳转 */
+  const renderMessages = () => {
+    const nodes: ReactNode[] = [];
+    let buf: Array<{ block: ContentBlock; msgIndex: number; blockIdx: number }> = [];
+    const flush = () => {
+      if (buf.length === 0) return;
+      const entries = buf;
+      buf = [];
+      nodes.push(
+        <div key={`act-${entries[0].msgIndex}-${entries[0].blockIdx}`} className="msg msg-assistant">
+          <ActivityGroup
+            summary={activitySummary(
+              entries.map((e) => ({ kind: e.block.kind, name: e.block.name })),
+            )}
+          >
+            {entries.map((e, i) =>
+              e.block.kind === "thinking" ? (
+                <ThinkingBlock key={i} text={e.block.text ?? ""} />
+              ) : (
+                <div key={i} data-block-idx={`${e.msgIndex}-${e.blockIdx}`}>
+                  <ToolUseRow
+                    block={e.block}
+                    hasResult={resultMap.has(e.block.toolUseId ?? "")}
+                    isError={resultMap.get(e.block.toolUseId ?? "") ?? false}
+                    resultBlock={resultBlocks.get(e.block.toolUseId ?? "") ?? null}
+                  />
+                </div>
+              ),
+            )}
+          </ActivityGroup>
+        </div>,
+      );
+    };
+    messages.forEach((m, i) => {
+      const msgIndex = offset + i;
+      if (m.kind === "user") {
+        flush();
+        nodes.push(
+          <UserMessage
+            key={msgIndex}
+            msg={m}
+            resultBlocks={resultBlocks}
+            toolNames={toolNames}
+            msgIndex={msgIndex}
+          />,
+        );
+        return;
+      }
+      for (let bi = 0; bi < m.blocks.length; bi++) {
+        const b = m.blocks[bi];
+        if (b.kind === "text" && b.text) {
+          flush();
+          nodes.push(
+            <div key={`${msgIndex}-t${bi}`} className="msg msg-assistant" data-msg-index={msgIndex}>
+              <div className="msg-head">
+                <span className="msg-model">{m.model ?? "Claude"}</span>
+                <span className="msg-time">{formatTime(m.timestamp)}</span>
+              </div>
+              <MarkdownText text={b.text} />
+            </div>,
+          );
+        } else if (b.kind === "thinking" || b.kind === "tool_use") {
+          buf.push({ block: b, msgIndex, blockIdx: bi });
+        }
+      }
+    });
+    flush();
+    return nodes;
+  };
 
   if (!session) {
     return (
@@ -1011,9 +1148,7 @@ export default function SessionViewer({
               ) : offset > 0 ? (
                 <div className="viewer-truncated">已到会话开头</div>
               ) : null}
-              {messages.map((m, i) => (
-                <Message key={i} msg={m} resultMap={resultMap} toolNames={toolNames} msgIndex={offset + i} />
-              ))}
+              {renderMessages()}
             </>
           )}
         </div>
