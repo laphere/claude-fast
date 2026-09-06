@@ -22,7 +22,7 @@ import {
   activitySummary,
   fmtTokens,
 } from "./MessageParts";
-import { BackIcon, FileIcon, SearchIcon, StopIcon } from "./Icons";
+import { FileIcon, SearchIcon, StopIcon } from "./Icons";
 import type {
   ChatEvent,
   ChatItem,
@@ -43,8 +43,6 @@ interface Props {
   title: string;
   /** 续聊的会话（null = 新对话） */
   session: SessionInfo | null;
-  /** 关闭此对话 tab（多会话并行时 = 关闭标签页） */
-  onBack: () => void;
   onToast: (msg: string) => void;
   /** 对话状态变化上报（多会话 tab 的进行中标记） */
   onStatusChange?: (phase: ChatStatus["phase"]) => void;
@@ -108,7 +106,6 @@ export default function ChatView({
   projectPath,
   title,
   session,
-  onBack,
   onToast,
   onStatusChange,
 }: Props) {
@@ -894,10 +891,6 @@ export default function ChatView({
   return (
     <div className="chat">
       <div className="chat-head">
-        <button className="btn" onClick={onBack} title="返回会话列表（关闭对话进程）">
-          <BackIcon />
-          返回
-        </button>
         <div className="chat-head-body">
           <div className="viewer-title">{title}</div>
           <div className="viewer-meta">

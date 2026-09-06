@@ -579,7 +579,6 @@ export default function App() {
                 projectPath={c.projectPath}
                 title={c.title}
                 session={c.session}
-                onBack={() => closeChat(c.id)}
                 onToast={showToast}
                 onStatusChange={(phase) =>
                   setChatStatus((prev) =>
