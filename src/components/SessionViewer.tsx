@@ -945,6 +945,14 @@ export default function SessionViewer({
     messages.forEach((m, i) => {
       const msgIndex = offset + i;
       if (m.kind === "user") {
+        // 纯工具结果的 user 消息（结果已并入工具行）必须整体跳过且**不 flush**——
+        // 否则每轮工具循环都会在此断组，活动组又碎成「思考·读取→搜索→思考」
+        const hasContent =
+          m.blocks.some((b) => b.kind === "text" && b.text) ||
+          m.blocks.some(
+            (b) => b.kind === "tool_result" && b.toolUseId && !resultBlocks.has(b.toolUseId),
+          );
+        if (!hasContent) return;
         flush();
         nodes.push(
           <UserMessage
