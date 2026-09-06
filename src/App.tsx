@@ -442,25 +442,25 @@ export default function App() {
 
   // ---------- app 内直接对话（多会话 tab 并行） ----------
 
-  /** 打开一个对话 tab（已存在同会话的 tab 则只激活） */
+  /** 打开一个对话 tab（已存在同会话的 tab 则只激活）。
+   *  id 必须在 updater 外生成、updater 保持纯函数——React（StrictMode 下）
+   *  会多次调用 updater，在内部生成 id / 写外部变量会导致 activeChatId
+   *  与 tab 实际 id 不一致（表现为第一个会话要点两次） */
   const openChatTab = useCallback(
     (tab: { projectPath: string; title: string; session: SessionInfo | null; key: string }) => {
-      let id: string | null = null;
-      setChats((prev) => {
-        // 续聊同一会话不允许开两个进程（会分叉历史），只激活已有 tab
-        const dup =
-          tab.session && prev.find((c) => c.session?.file === tab.session!.file);
-        if (dup) {
-          id = dup.id;
-          return prev;
-        }
-        id = newChatTabId();
-        return [...prev, { id, ...tab }];
-      });
-      // setChats 的 updater 可能同步执行也可能异步，id 兜底再取一次
-      if (id) setActiveChatId(id);
+      // 续聊同一会话不允许开两个进程（会分叉历史），只激活已有 tab
+      const dup = tab.session
+        ? chats.find((c) => c.session?.file === tab.session!.file)
+        : undefined;
+      if (dup) {
+        setActiveChatId(dup.id);
+        return;
+      }
+      const id = newChatTabId();
+      setChats((prev) => [...prev, { id, ...tab }]);
+      setActiveChatId(id);
     },
-    [],
+    [chats],
   );
 
   /** 在 app 内新开对话（claude 工作目录 = 项目路径） */
@@ -496,16 +496,14 @@ export default function App() {
   /** 关闭对话 tab：卸载 ChatView（其 unmount 会优雅关闭进程）并刷新该项目会话列表 */
   const closeChat = useCallback(
     (tabId: string) => {
-      setChats((prev) => {
-        const tab = prev.find((c) => c.id === tabId);
-        if (tab) void refreshSessions(tab.key);
-        const rest = prev.filter((c) => c.id !== tabId);
-        // 关闭的是当前 tab → 激活相邻 tab
-        setActiveChatId((cur) =>
-          cur === tabId ? rest[rest.length - 1]?.id ?? null : cur,
-        );
-        return rest;
-      });
+      const tab = chats.find((c) => c.id === tabId);
+      if (tab) void refreshSessions(tab.key);
+      const rest = chats.filter((c) => c.id !== tabId);
+      setChats(rest);
+      // 关闭的是当前 tab → 激活相邻 tab
+      setActiveChatId((cur) =>
+        cur === tabId ? rest[rest.length - 1]?.id ?? null : cur,
+      );
       setChatStatus((prev) => {
         if (!(tabId in prev)) return prev;
         const copy = { ...prev };
@@ -513,7 +511,7 @@ export default function App() {
         return copy;
       });
     },
-    [refreshSessions],
+    [chats, refreshSessions],
   );
 
   // ---------- 渲染 ----------
