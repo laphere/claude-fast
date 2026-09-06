@@ -1370,7 +1370,7 @@ mark {
 /* ============ Markdown 正文（cc-haha 同方案：marked + DOMPurify） ============ */
 .md-body {
   font-size: 13.5px;
-  line-height: 1.65;
+  line-height: 1.75;
   word-break: break-word;
 }
 
@@ -1383,14 +1383,14 @@ mark {
 }
 
 .md-body p {
-  margin: 0.4em 0;
+  margin: 0.75em 0;
 }
 
 .md-body h1,
 .md-body h2,
 .md-body h3,
 .md-body h4 {
-  margin: 0.7em 0 0.35em;
+  margin: 1em 0 0.45em;
   line-height: 1.3;
   font-weight: 600;
 }
@@ -1413,12 +1413,12 @@ mark {
 
 .md-body ul,
 .md-body ol {
-  margin: 0.4em 0;
+  margin: 0.6em 0;
   padding-left: 1.6em;
 }
 
 .md-body li {
-  margin: 0.2em 0;
+  margin: 0.35em 0;
 }
 
 .md-body code {
@@ -1517,7 +1517,7 @@ mark {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--panel);
-  margin: 2px 0;
+  margin: 4px 0;
 }
 
 .tool-summary {
@@ -2184,10 +2184,10 @@ mark {
   min-width: 0;
   min-height: 0;
   overflow-y: auto;
-  padding: 16px 20px;
+  padding: 18px 22px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 14px;
 }
 
 .chat-msg {
@@ -2331,7 +2331,7 @@ mark {
 
 .activity {
   border-left: 2px solid var(--border);
-  margin: 2px 0;
+  margin: 6px 0;
 }
 
 .activity-summary {
@@ -2340,7 +2340,7 @@ mark {
   display: flex;
   align-items: center;
   gap: 7px;
-  padding: 4px 8px;
+  padding: 6px 8px;
   color: var(--muted);
   font-size: 12.5px;
   list-style: none;
@@ -2378,7 +2378,7 @@ mark {
 }
 
 .activity-body {
-  padding: 2px 0 4px 6px;
+  padding: 4px 0 4px 6px;
 }
 
 /* 权限模式选择器（等价终端 Shift+Tab） */
