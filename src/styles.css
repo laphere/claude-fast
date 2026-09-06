@@ -2380,3 +2380,113 @@ mark {
 .chat-mode:hover {
   border-color: var(--dim);
 }
+
+/* ============ 多会话 tab（并行对话） ============ */
+
+/* 右侧对话列：tab 栏 + 全部已打开的对话页（非激活页 display:none 保持进程与状态） */
+.chat-col {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.chat-page {
+  flex: 1;
+  min-height: 0;
+  display: none;
+}
+
+.chat-page-active {
+  display: flex;
+}
+
+.chat-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 6px 10px 0;
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  flex-shrink: 0;
+  /* 细滚动条场景下去掉底边视觉断裂 */
+  scrollbar-width: thin;
+}
+
+.chat-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px 5px 10px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-bottom: none;
+  border-radius: 8px 8px 0 0;
+  background: var(--panel-2);
+  color: var(--muted);
+  cursor: pointer;
+  max-width: 180px;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.chat-tab:hover {
+  color: var(--text);
+}
+
+.chat-tab.active {
+  background: var(--panel);
+  color: var(--text);
+  /* 盖住 tab 栏的底边线，形成"接入"效果 */
+  position: relative;
+}
+
+.chat-tab.active::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 1px;
+  background: var(--panel);
+}
+
+.chat-tab-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 进行中标记（思考中/启动中） */
+.chat-tab-dot {
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: chat-tab-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes chat-tab-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.chat-tab-close {
+  flex-shrink: 0;
+  border: none;
+  background: none;
+  color: var(--dim);
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 3px;
+  border-radius: 4px;
+}
+
+.chat-tab-close:hover {
+  color: var(--danger);
+  background: var(--danger-soft);
+}

@@ -17,6 +17,7 @@ import RenameDialog from "./components/RenameDialog";
 import TrashDialog from "./components/TrashDialog";
 import StatsDialog from "./components/StatsDialog";
 import ChatView from "./components/ChatView";
+import ChatTabs from "./components/ChatTabs";
 import SessionContextMenu from "./components/SessionContextMenu";
 
 export type DialogKind = "new" | "batch" | "health" | null;
@@ -63,16 +64,28 @@ export default function App() {
     key: string;
     session: SessionInfo;
   } | null>(null);
-  // ---------- app 内直接对话（会话查看页已并入 ChatView） ----------
-  // ---------- app 内直接对话 ----------
-  const [activeChat, setActiveChat] = useState<{
-    projectPath: string;
-    title: string;
-    /** null = 新对话 */
-    session: SessionInfo | null;
-    /** 所属项目 key（返回时刷新会话列表用） */
-    key: string;
-  } | null>(null);
+  // ---------- app 内直接对话（多会话 tab 并行） ----------
+  const [chats, setChats] = useState<
+    Array<{
+      /** tab 唯一 id */
+      id: string;
+      projectPath: string;
+      title: string;
+      /** null = 新对话 */
+      session: SessionInfo | null;
+      /** 所属项目 key（关闭 tab 时刷新会话列表用） */
+      key: string;
+    }>
+  >([]);
+  const [activeChatId, setActiveChatId] = useState<string | null>(null);
+  /** 各 tab 的对话状态（思考中给 tab 打点） */
+  const [chatStatus, setChatStatus] = useState<Record<string, string>>({});
+  const nextChatTabId = useRef(`chat-1`);
+  const newChatTabId = () => {
+    const id = nextChatTabId.current;
+    nextChatTabId.current = `chat-${Number(id.slice(5)) + 1}`;
+    return id;
+  };
   const closeActionRef = useRef<CloseAction>(null);
   closeActionRef.current = closeAction;
 
@@ -427,7 +440,28 @@ export default function App() {
     [items, showToast],
   );
 
-  // ---------- app 内直接对话 ----------
+  // ---------- app 内直接对话（多会话 tab 并行） ----------
+
+  /** 打开一个对话 tab（已存在同会话的 tab 则只激活） */
+  const openChatTab = useCallback(
+    (tab: { projectPath: string; title: string; session: SessionInfo | null; key: string }) => {
+      let id: string | null = null;
+      setChats((prev) => {
+        // 续聊同一会话不允许开两个进程（会分叉历史），只激活已有 tab
+        const dup =
+          tab.session && prev.find((c) => c.session?.file === tab.session!.file);
+        if (dup) {
+          id = dup.id;
+          return prev;
+        }
+        id = newChatTabId();
+        return [...prev, { id, ...tab }];
+      });
+      // setChats 的 updater 可能同步执行也可能异步，id 兜底再取一次
+      if (id) setActiveChatId(id);
+    },
+    [],
+  );
 
   /** 在 app 内新开对话（claude 工作目录 = 项目路径） */
   const startInAppChat = useCallback(
@@ -441,9 +475,9 @@ export default function App() {
         showToast(`目录不存在，无法对话：${l.path}`);
         return;
       }
-      setActiveChat({ projectPath: l.path, title: l.name, session: null, key });
+      openChatTab({ projectPath: l.path, title: l.name, session: null, key });
     },
-    [items, showToast],
+    [items, showToast, openChatTab],
   );
 
   /** 在 app 内继续已有会话 */
@@ -454,17 +488,33 @@ export default function App() {
         showToast("该项目未解析到路径，无法对话");
         return;
       }
-      setActiveChat({ projectPath: l.path, title: session.title, session, key });
+      openChatTab({ projectPath: l.path, title: session.title, session, key });
     },
-    [items, showToast],
+    [items, showToast, openChatTab],
   );
 
-  /** 返回列表：关闭对话进程并刷新该项目会话（新对话已落盘 jsonl） */
-  const closeChat = useCallback(() => {
-    const key = activeChat?.key;
-    setActiveChat(null);
-    if (key) void refreshSessions(key);
-  }, [activeChat, refreshSessions]);
+  /** 关闭对话 tab：卸载 ChatView（其 unmount 会优雅关闭进程）并刷新该项目会话列表 */
+  const closeChat = useCallback(
+    (tabId: string) => {
+      setChats((prev) => {
+        const tab = prev.find((c) => c.id === tabId);
+        if (tab) void refreshSessions(tab.key);
+        const rest = prev.filter((c) => c.id !== tabId);
+        // 关闭的是当前 tab → 激活相邻 tab
+        setActiveChatId((cur) =>
+          cur === tabId ? rest[rest.length - 1]?.id ?? null : cur,
+        );
+        return rest;
+      });
+      setChatStatus((prev) => {
+        if (!(tabId in prev)) return prev;
+        const copy = { ...prev };
+        delete copy[tabId];
+        return copy;
+      });
+    },
+    [refreshSessions],
+  );
 
   // ---------- 渲染 ----------
 
@@ -496,7 +546,7 @@ export default function App() {
             favorites={favorites}
             selectedKey={selectedKey}
             expandedKey={expandedKey}
-            activeSessionFile={activeChat?.session?.file ?? null}
+            activeSessionFile={activeChatId ? chats.find((c) => c.id === activeChatId)?.session?.file ?? null : null}
             sessionsByKey={sessionsByKey}
             onSelect={setSelectedKey}
             onToggleFav={toggleFav}
@@ -512,15 +562,43 @@ export default function App() {
             onContextMenu={(x, y, key) => setMenu({ x, y, key })}
           />
         </div>
-        {activeChat && (
-          <ChatView
-            projectPath={activeChat.projectPath}
-            title={activeChat.title}
-            session={activeChat.session}
-            onBack={closeChat}
-            onToast={showToast}
-          />
-        )}
+        <div className="chat-col">
+          {chats.length > 0 && (
+            <ChatTabs
+              tabs={chats.map((c) => ({ id: c.id, title: c.title }))}
+              activeId={activeChatId}
+              statusByTab={chatStatus}
+              onSelect={setActiveChatId}
+              onClose={closeChat}
+            />
+          )}
+          {chats.map((c) => (
+            <div
+              key={c.id}
+              className={c.id === activeChatId ? "chat-page chat-page-active" : "chat-page"}
+            >
+              <ChatView
+                projectPath={c.projectPath}
+                title={c.title}
+                session={c.session}
+                onBack={() => closeChat(c.id)}
+                onToast={showToast}
+                onStatusChange={(phase) =>
+                  setChatStatus((prev) =>
+                    prev[c.id] === phase ? prev : { ...prev, [c.id]: phase },
+                  )
+                }
+              />
+            </div>
+          ))}
+          {chats.length === 0 && (
+            <div className="viewer-empty" style={{ flex: 1 }}>
+              <div className="empty-icon">💬</div>
+              <div>点击项目行 💬 新建对话，或点击会话直接继续</div>
+              <div className="empty-sub">可同时打开多个对话，标签页切换</div>
+            </div>
+          )}
+        </div>
       </main>
 
       <StatusBar

@@ -43,8 +43,11 @@ interface Props {
   title: string;
   /** 续聊的会话（null = 新对话） */
   session: SessionInfo | null;
+  /** 关闭此对话 tab（多会话并行时 = 关闭标签页） */
   onBack: () => void;
   onToast: (msg: string) => void;
+  /** 对话状态变化上报（多会话 tab 的进行中标记） */
+  onStatusChange?: (phase: ChatStatus["phase"]) => void;
 }
 
 /** 每页历史消息数（与后端 MAX_SESSION_MESSAGES 一致） */
@@ -100,7 +103,14 @@ type StreamEntry =
     }
   | { t: "orphanResult"; key: string; block: ContentBlock };
 
-export default function ChatView({ projectPath, title, session, onBack, onToast }: Props) {
+export default function ChatView({
+  projectPath,
+  title,
+  session,
+  onBack,
+  onToast,
+  onStatusChange,
+}: Props) {
   // ---------- 实时流（本次 sitting 的消息） ----------
   const [items, setItems] = useState<ChatItem[]>([]);
   const [input, setInput] = useState("");
@@ -750,6 +760,11 @@ export default function ChatView({ projectPath, title, session, onBack, onToast 
     },
     [toolNames, items],
   );
+
+  // 状态变化上报给 tab 栏（多会话并行的进行中标记）
+  useEffect(() => {
+    onStatusChange?.(status.phase);
+  }, [status.phase, onStatusChange]);
 
   const statusLabel = useMemo(() => {
     switch (status.phase) {
