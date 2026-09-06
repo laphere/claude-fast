@@ -2407,10 +2407,14 @@ mark {
   gap: 4px;
   padding: 6px 10px 0;
   border-bottom: 1px solid var(--border);
+  /* tab 多时仍可横向滚动（Shift+滚轮/拖拽），但不显示滚动条 */
   overflow-x: auto;
   flex-shrink: 0;
-  /* 细滚动条场景下去掉底边视觉断裂 */
-  scrollbar-width: thin;
+  scrollbar-width: none;
+}
+
+.chat-tabs::-webkit-scrollbar {
+  display: none;
 }
 
 .chat-tab {
