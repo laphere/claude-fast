@@ -540,14 +540,24 @@ export default function App() {
     [chats, chatStatus, refreshSessions],
   );
 
-  /** 关闭全部会话 */
+  /** 关闭全部会话；进行中（思考中/启动中）的会话跳过不关（与"关闭其他"同规则） */
   const closeAllChats = useCallback(() => {
-    if (chats.length === 0) return;
-    for (const c of chats) void refreshSessions(c.key);
-    setChats([]);
-    setActiveChatId(null);
-    setChatStatus({});
-  }, [chats, refreshSessions]);
+    const closing = chats.filter((c) => !isBusyPhase(chatStatus[c.id]));
+    if (closing.length === 0) return;
+    for (const c of closing) void refreshSessions(c.key);
+    const ids = new Set(closing.map((c) => c.id));
+    const remaining = chats.filter((c) => !ids.has(c.id));
+    setChats(remaining);
+    // 当前 tab 被关闭 → 激活剩余的最后一个 tab（可能就是进行中被保留的那个）
+    setActiveChatId((cur) =>
+      cur && ids.has(cur) ? remaining[remaining.length - 1]?.id ?? null : cur,
+    );
+    setChatStatus((prev) => {
+      const copy = { ...prev };
+      for (const c of closing) delete copy[c.id];
+      return copy;
+    });
+  }, [chats, chatStatus, refreshSessions]);
 
   // ---------- 渲染 ----------
 

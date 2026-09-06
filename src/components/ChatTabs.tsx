@@ -131,6 +131,12 @@ export default function ChatTabs({
           </button>
           <button
             className="context-item"
+            disabled={tabs.every((t) => isBusyPhase(statusByTab[t.id]))}
+            title={
+              tabs.some((t) => isBusyPhase(statusByTab[t.id]))
+                ? "进行中的会话不会关闭"
+                : undefined
+            }
             onClick={() => {
               onCloseAll();
               setMenu(null);
