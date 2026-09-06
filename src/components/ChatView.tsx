@@ -59,7 +59,7 @@ const MODE_OPTIONS: Array<{ value: ChatPermissionMode; label: string; title: str
   { value: "auto", label: "自动模式", title: "自动执行常见安全操作，敏感操作仍确认" },
   { value: "acceptEdits", label: "接受编辑", title: "自动允许文件编辑，其他工具仍需确认" },
   { value: "plan", label: "计划模式", title: "只读分析并给出计划，不执行修改" },
-  { value: "bypassPermissions", label: "跳过权限", title: "全部工具直接执行，不再确认（危险）" },
+  { value: "bypassPermissions", label: "完全权限", title: "全部工具直接执行，不再确认（危险）" },
 ];
 
 let nextItemId = 1;
