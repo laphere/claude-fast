@@ -51,27 +51,25 @@ interface Props {
 /** 每页历史消息数（与后端 MAX_SESSION_MESSAGES 一致） */
 const PAGE_SIZE = 500;
 
-/** 权限模式选项：「跟随配置」= 不传 --permission-mode（CLI 按 settings.json 的
- *  defaultMode 决定，与终端默认行为一致），仅在首条消息前可选；其余 5 种与终端
- *  Shift+Tab 循环对齐，支持运行中热切换。
+/** 权限模式选项（与终端 Shift+Tab 循环的 5 种对齐，支持运行中热切换）。
+ *  spawn 时不传 --permission-mode（跟随 settings.json 的 defaultMode，与终端
+ *  默认行为一致）；下拉初始选中项 = 解析配置得到的默认模式，session_ready 后
+ *  以 CLI init 上报的实际模式为准。
  *  dontAsk 虽是 --permission-mode 的合法取值，但终端交互循环里没有
- *  （程序化调用用），故不进下拉 */
-const MODE_OPTIONS: Array<{
-  value: ChatPermissionMode | "follow";
-  label: string;
-  title: string;
-}> = [
-  {
-    value: "follow",
-    label: "跟随配置",
-    title: "跟随 Claude Code settings.json 的 defaultMode（与终端默认行为一致）",
-  },
+ *  （程序化调用用），故不进下拉；配置里若配了它，会以原始名动态加入下拉显示 */
+const MODE_OPTIONS: Array<{ value: string; label: string; title: string }> = [
   { value: "manual", label: "手动确认", title: "每个工具执行前都弹窗确认（原 default，推荐）" },
   { value: "auto", label: "自动模式", title: "自动执行常见安全操作，敏感操作仍确认" },
   { value: "acceptEdits", label: "接受编辑", title: "自动允许文件编辑，其他工具仍需确认" },
   { value: "plan", label: "计划模式", title: "只读分析并给出计划，不执行修改" },
   { value: "bypassPermissions", label: "完全权限", title: "全部工具直接执行，不再确认（危险）" },
 ];
+
+/** settings.json 的 "default" 与 CLI flag 的 manual 同义，归一为 manual 显示 */
+function normalizeMode(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  return raw === "default" ? "manual" : raw;
+}
 
 let nextItemId = 1;
 
@@ -123,11 +121,12 @@ export default function ChatView({
   // ---------- 实时流（本次 sitting 的消息） ----------
   const [items, setItems] = useState<ChatItem[]>([]);
   const [input, setInput] = useState("");
-  /** 权限模式：follow = 不传 flag 跟随 settings.json；其余为显式模式。
-   *  session_ready 后会被 CLI 上报的实际模式覆盖（回显） */
-  const [mode, setMode] = useState<ChatPermissionMode | "follow">("follow");
-  /** 进程已启动（「跟随配置」是 spawn 时行为，此后不可再选） */
-  const [started, setStarted] = useState(false);
+  /** 当前选中权限模式（原始字符串，"default" 归一为 manual；null = 配置读取中）。
+   *  初始值 = settings.json 解析结果；session_ready 后以 CLI init 上报的实际
+   *  模式为准。用户改选后显式传 flag（spawn 时）/热切换（运行中） */
+  const [mode, setMode] = useState<string | null>(null);
+  /** 用户是否手动改选过模式——改选过才在 spawn 时显式传 flag，否则跟随配置 */
+  const modeTouchedRef = useRef(false);
   const [status, setStatus] = useState<ChatStatus>({ phase: "idle" });
   const [permissions, setPermissions] = useState<ChatPermissionRequest[]>([]);
   const [usage, setUsage] = useState<ChatUsage | null>(null);
@@ -164,12 +163,14 @@ export default function ChatView({
     switch (ev.type) {
       case "session_ready":
         setRealSessionId(ev.sessionId);
-        // 回显实际生效的模式（跟随配置时 CLI 上报 settings.json 的结果）
-        if (
-          ev.permissionMode &&
-          MODE_OPTIONS.some((o) => o.value === ev.permissionMode)
-        ) {
-          setMode(ev.permissionMode as ChatPermissionMode);
+        // 以 CLI init 上报的实际生效模式为准（校正显示；并复位改选标记，
+        // 此后的偏差归配置/CLI，用户再次改选才会显式传 flag）
+        {
+          const reported = normalizeMode(ev.permissionMode);
+          if (reported) {
+            setMode(reported);
+            modeTouchedRef.current = false;
+          }
         }
         break;
       case "status":
@@ -320,6 +321,21 @@ export default function ChatView({
 
   // ---------- 历史 jsonl 加载（原查看页逻辑） ----------
 
+  /** 读取 settings.json 解析出的默认模式（项目 local > 项目 > 用户级），
+   *  作为下拉初始选中项——与终端打开时默认所处模式一致 */
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .chatDefaultPermissionMode(projectPath)
+      .then((raw) => {
+        if (!cancelled) setMode(normalizeMode(raw));
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [projectPath]);
+
   useEffect(() => {
     if (!session) {
       setHistory([]);
@@ -407,12 +423,12 @@ export default function ChatView({
         .chatStart(
           projectPath,
           session?.file ?? null,
-          mode === "follow" ? null : mode,
+          // 用户改选过 → 显式传 flag；否则跟随 settings.json（不传 flag）
+          modeTouchedRef.current && mode ? (mode as ChatPermissionMode) : null,
           channel,
         )
         .then((key) => {
           sessionKeyRef.current = key;
-          setStarted(true);
           setStatus({ phase: "idle" });
           return key;
         })
@@ -450,15 +466,16 @@ export default function ChatView({
     }
   }, [onToast]);
 
-  /** 切换权限模式：「跟随配置」只在进程未启动时可选（spawn 时行为）；
-   *  已启动则经 control 协议热切换 */
+  /** 改选权限模式：立即热切换（进程已启动）；进程未启动时记住选择，
+   *  spawn 时显式传 flag（覆盖配置默认） */
   const changeMode = useCallback(
-    async (m: ChatPermissionMode | "follow") => {
+    async (m: string) => {
       setMode(m);
+      modeTouchedRef.current = true;
       const key = sessionKeyRef.current;
-      if (!key || m === "follow") return;
+      if (!key) return;
       try {
-        await api.chatSetPermissionMode(key, m);
+        await api.chatSetPermissionMode(key, m as ChatPermissionMode);
       } catch (e) {
         onToast("切换模式失败：" + String(e));
       }
@@ -1130,18 +1147,24 @@ export default function ChatView({
       <div className="chat-composer">
         <select
           className="chat-mode"
-          value={mode}
-          onChange={(e) => void changeMode(e.target.value as ChatPermissionMode | "follow")}
+          value={mode ?? ""}
+          onChange={(e) => void changeMode(e.target.value)}
           title="权限模式（等价终端里的 Shift+Tab 切换）"
         >
+          {mode === null && (
+            <option value="" disabled hidden>
+              读取配置…
+            </option>
+          )}
+          {/* 配置了下拉之外的值（如 dontAsk）→ 以原始名动态加入显示 */}
+          {mode !== null && !MODE_OPTIONS.some((o) => o.value === mode) && (
+            <option value={mode} title="当前生效模式（来自 settings.json 配置）">
+              {mode}
+            </option>
+          )}
           {MODE_OPTIONS.map((o) => (
-            <option
-              key={o.value}
-              value={o.value}
-              title={o.title}
-              disabled={o.value === "follow" && started}
-            >
-              {o.value === "follow" && started ? "跟随配置（已按配置启动）" : o.label}
+            <option key={o.value} value={o.value} title={o.title}>
+              {o.label}
             </option>
           ))}
         </select>

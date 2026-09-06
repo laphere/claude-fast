@@ -14,7 +14,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -669,6 +669,61 @@ impl ChatManager {
     }
 }
 
+/// 从候选 settings.json 路径中解析 permissions.defaultMode（先到先得）
+fn read_default_mode_from(paths: &[PathBuf]) -> Option<String> {
+    for path in paths {
+        if let Ok(content) = std::fs::read_to_string(path) {
+            if let Ok(v) = serde_json::from_str::<Value>(&content) {
+                if let Some(mode) = v
+                    .pointer("/permissions/defaultMode")
+                    .and_then(Value::as_str)
+                {
+                    let mode = mode.trim();
+                    if !mode.is_empty() {
+                        return Some(mode.to_string());
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn home_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        std::env::var("USERPROFILE").ok().map(PathBuf::from)
+    }
+    #[cfg(not(windows))]
+    {
+        std::env::var("HOME").ok().map(PathBuf::from)
+    }
+}
+
+/// defaultMode 候选文件（优先级从高到低）：项目 settings.local.json >
+/// 项目 settings.json > 用户级 settings.json（CLAUDE_CONFIG_DIR 优先于 ~/.claude）。
+/// 企业管理策略文件不在读取范围（罕见场景）。
+fn default_mode_candidate_paths(project_path: &str) -> Vec<PathBuf> {
+    let proj = Path::new(project_path);
+    let mut paths = vec![
+        proj.join(".claude").join("settings.local.json"),
+        proj.join(".claude").join("settings.json"),
+    ];
+    if let Ok(dir) = std::env::var("CLAUDE_CONFIG_DIR") {
+        paths.push(PathBuf::from(dir).join("settings.json"));
+    } else if let Some(home) = home_dir() {
+        paths.push(home.join(".claude").join("settings.json"));
+    }
+    paths
+}
+
+/// 解析项目/用户配置的默认权限模式（permissions.defaultMode）。
+/// 未配置返回 None（= CLI 自身默认，spawn 时不传 flag 即跟随）。
+#[tauri::command]
+pub fn chat_default_permission_mode(project_path: String) -> Option<String> {
+    read_default_mode_from(&default_mode_candidate_paths(project_path.trim()))
+}
+
 /// 定位 claude 可执行文件（缓存）。Windows 上 `Command::new("claude")` 只解析
 /// .exe 而官方安装常是 .cmd，必须先 `where claude` 拿全路径；macOS 用 command -v。
 /// 均限 3 秒超时（PATH 含网络盘时防卡死，与 check_claude 同策略）。
@@ -1143,6 +1198,48 @@ mod tests {
             &events[0],
             ChatEvent::SessionReady { permission_mode: None, .. }
         ));
+    }
+
+    #[test]
+    fn default_mode_precedence_and_parse() {
+        let root = std::env::temp_dir().join(format!(
+            "cf-mode-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let local = root.join(".claude/settings.local.json");
+        let proj = root.join(".claude/settings.json");
+        std::fs::create_dir_all(local.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(proj.parent().unwrap()).unwrap();
+        // 仅项目级配置
+        std::fs::write(&proj, r#"{"permissions":{"defaultMode":"plan"}}"#).unwrap();
+        assert_eq!(
+            read_default_mode_from(&[local.clone(), proj.clone()]),
+            Some("plan".into())
+        );
+        // local 优先于项目级
+        std::fs::write(&local, r#"{"permissions":{"defaultMode":"bypassPermissions"}}"#)
+            .unwrap();
+        assert_eq!(
+            read_default_mode_from(&[local.clone(), proj.clone()]),
+            Some("bypassPermissions".into())
+        );
+        // 非法 JSON / 空串跳过
+        std::fs::write(&local, "not json").unwrap();
+        assert_eq!(
+            read_default_mode_from(&[local, proj]),
+            Some("plan".into())
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn default_mode_none_when_missing() {
+        let missing = std::env::temp_dir().join("cf-mode-missing-settings.json");
+        assert_eq!(read_default_mode_from(&[missing]), None);
     }
 
     #[test]

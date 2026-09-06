@@ -4360,6 +4360,7 @@ pub fn run() {
             autostart_supported,
             quit_app,
             chat::chat_start,
+            chat::chat_default_permission_mode,
             chat::chat_send,
             chat::chat_interrupt,
             chat::chat_set_permission_mode,
