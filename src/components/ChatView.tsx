@@ -161,6 +161,8 @@ export default function ChatView({
     prompt: SessionUserPrompt;
     top: number;
   } | null>(null);
+  /** 悬停中的横条序号（波浪动效：相邻条按距离递减变宽） */
+  const [railHover, setRailHover] = useState<number | null>(null);
   const mainRef = useRef<HTMLDivElement>(null);
   const scrollRafRef = useRef(0);
 
@@ -1144,16 +1146,30 @@ export default function ChatView({
 
       <div className="chat-main" ref={mainRef}>
         {session && prompts.length > 0 && (
-          <div className="msg-rail" onMouseLeave={() => setRailTip(null)}>
-            {prompts.map((p) => (
-              <button
-                key={p.index}
-                className={`msg-rail-tick ${activePrompt === p.index ? "active" : ""}`}
-                onClick={() => void jumpTo(p.index)}
-                onMouseEnter={(e) => openRailTip(p, e.currentTarget)}
-                aria-label={`定位到用户发言：${p.text}`}
-              />
-            ))}
+          <div
+            className="msg-rail"
+            onMouseLeave={() => {
+              setRailTip(null);
+              setRailHover(null);
+            }}
+          >
+            {prompts.map((p, i) => {
+              // 波浪动效：悬停条最长，相邻条按距离递减（d0/d1/d2 三档）
+              const d = railHover === null ? -1 : Math.abs(i - railHover);
+              const wave = d === 0 ? "d0" : d === 1 ? "d1" : d === 2 ? "d2" : "";
+              return (
+                <button
+                  key={p.index}
+                  className={`msg-rail-tick ${wave} ${activePrompt === p.index ? "active" : ""}`}
+                  onClick={() => void jumpTo(p.index)}
+                  onMouseEnter={(e) => {
+                    setRailHover(i);
+                    openRailTip(p, e.currentTarget);
+                  }}
+                  aria-label={`定位到用户发言：${p.text}`}
+                />
+              );
+            })}
           </div>
         )}
         <div className="chat-body" ref={bodyRef} onScroll={onChatScroll}>
