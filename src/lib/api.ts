@@ -84,12 +84,13 @@ export const api = {
     invoke<{ path: string; installMode: boolean }>("get_data_root"),
   quitApp: () => invoke("quit_app"),
   // ---------- app 内直接对话 ----------
-  /** 启动对话进程（sessionFile 为 null = 新对话；permissionMode = 初始权限模式），
+  /** 启动对话进程（sessionFile 为 null = 新对话；permissionMode 为 null =
+   *  跟随 settings.json 的 defaultMode，不传 --permission-mode），
    *  返回跟踪用的会话 id；事件经 Channel 流式推送（chat_start 之前把 onmessage 挂好） */
   chatStart: (
     projectPath: string,
     sessionFile: string | null,
-    permissionMode: ChatPermissionMode,
+    permissionMode: ChatPermissionMode | null,
     onEvent: Channel<ChatEvent>,
   ) => invoke<string>("chat_start", { projectPath, sessionFile, permissionMode, onEvent }),
   chatSend: (sessionId: string, text: string) =>

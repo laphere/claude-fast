@@ -159,7 +159,13 @@ export interface ChatUsage {
 
 /** 后端 chat 模块经 ipc::Channel 推送的流式事件（tag = type） */
 export type ChatEvent =
-  | { type: "session_ready"; sessionId: string; model?: string | null }
+  | {
+      type: "session_ready";
+      sessionId: string;
+      model?: string | null;
+      /** init 事件上报的实际生效权限模式（跟随 settings.json 时的回显依据） */
+      permissionMode?: string | null;
+    }
   | { type: "status"; state: "thinking" | "idle" }
   | { type: "content_start"; kind: "text" | "thinking" }
   | { type: "delta"; kind: "text" | "thinking" | "tool_input"; text: string }

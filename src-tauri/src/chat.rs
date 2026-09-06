@@ -51,10 +51,12 @@ pub struct ChatUsage {
     rename_all_fields = "camelCase"
 )]
 pub enum ChatEvent {
-    /// system(init)：CLI 就绪（真实 session id 以此为准——resume 可能派生新 id）
+    /// system(init)：CLI 就绪（真实 session id / 实际生效的权限模式以此为准——
+    /// resume 可能派生新 id；不传 --permission-mode 时跟随 settings.json）
     SessionReady {
         session_id: String,
         model: Option<String>,
+        permission_mode: Option<String>,
     },
     /// 轮次状态：thinking = 新一轮开始；idle = 本轮结束
     Status { state: String },
@@ -176,14 +178,13 @@ pub const PERMISSION_MODES: [&str; 6] = [
 
 /// spawn 参数向量（纯函数）：新对话 --session-id / 续聊 --resume，
 /// 模型为空/缺省时不传 --model（用 CLI 默认）。
-/// permission_mode 由调用方保证在 PERMISSION_MODES 内（manual/auto/acceptEdits/
-/// plan/bypassPermissions/dontAsk）——manual 每个工具都确认，bypass 不再发
-/// can_use_tool 直接执行，plan 只读规划。
+/// permission_mode 为 None 时不传 --permission-mode——CLI 跟随
+/// settings.json 的 defaultMode（终端默认行为）；传值时须在 PERMISSION_MODES 内。
 fn build_cli_args(
     session_id: &str,
     resume: bool,
     model: Option<&str>,
-    permission_mode: &str,
+    permission_mode: Option<&str>,
 ) -> Vec<String> {
     let mut args = vec![
         "--print".to_string(),
@@ -194,9 +195,11 @@ fn build_cli_args(
         "stream-json".to_string(),
         // 桌面对话依赖增量事件；缺了它只有轮次结束才见到完整消息（cc-haha 同款注释场景）
         "--include-partial-messages".to_string(),
-        "--permission-mode".to_string(),
-        permission_mode.to_string(),
     ];
+    if let Some(mode) = permission_mode {
+        args.push("--permission-mode".to_string());
+        args.push(mode.to_string());
+    }
     if resume {
         args.push("--resume".to_string());
     } else {
@@ -516,7 +519,7 @@ impl Default for StreamAssembler {
     }
 }
 
-/// system(init) → SessionReady（真实 session id / model）
+/// system(init) → SessionReady（真实 session id / 实际生效的权限模式）
 fn system_ready_events(msg: &Value) -> Vec<ChatEvent> {
     if msg.get("subtype").and_then(Value::as_str) != Some("init") {
         return Vec::new();
@@ -528,6 +531,10 @@ fn system_ready_events(msg: &Value) -> Vec<ChatEvent> {
             .unwrap_or("")
             .to_string(),
         model: msg.get("model").and_then(Value::as_str).map(str::to_string),
+        permission_mode: msg
+            .get("permissionMode")
+            .and_then(Value::as_str)
+            .map(str::to_string),
     }]
 }
 
@@ -827,10 +834,15 @@ pub async fn chat_start(
     if !Path::new(&dir).is_dir() {
         return Err("项目路径不存在".to_string());
     }
-    let permission_mode = permission_mode.unwrap_or_else(|| "manual".to_string());
-    if !PERMISSION_MODES.contains(&permission_mode.as_str()) {
-        return Err(format!("未知权限模式：{permission_mode}"));
-    }
+    let permission_mode = permission_mode
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    if let Some(mode) = permission_mode {
+        if !PERMISSION_MODES.contains(&mode) {
+            return Err(format!("未知权限模式：{mode}"));
+        }
+    } // None = 不传 --permission-mode，跟随 settings.json 的 defaultMode
     let (session_id, resume) = match &session_file {
         Some(file) => {
             let (_, id) = super::validate_session_file(file)?;
@@ -841,7 +853,7 @@ pub async fn chat_start(
     let exe = tauri::async_runtime::spawn_blocking(resolve_claude_exe)
         .await
         .map_err(|e| format!("定位 claude 失败：{e}"))??;
-    let args = build_cli_args(&session_id, resume, None, &permission_mode);
+    let args = build_cli_args(&session_id, resume, None, permission_mode);
     let manager = state.inner().clone();
     let event = on_event;
     let key = session_id.clone();
@@ -1066,18 +1078,26 @@ mod tests {
 
     #[test]
     fn cli_args_new_session_and_model() {
-        let args = build_cli_args("abc", false, Some("sonnet"), "manual");
+        let args = build_cli_args("abc", false, Some("sonnet"), Some("manual"));
         assert!(args.contains(&"--session-id".to_string()));
         assert!(!args.contains(&"--resume".to_string()));
         let pos = args.iter().position(|a| a == "--session-id").unwrap();
         assert_eq!(args[pos + 1], "abc");
         assert!(args.windows(2).any(|w| w[0] == "--model" && w[1] == "sonnet"));
-        assert!(args.windows(2).any(|w| w[0] == "--permission-mode"));
+        let pos = args.iter().position(|a| a == "--permission-mode").unwrap();
+        assert_eq!(args[pos + 1], "manual");
+    }
+
+    #[test]
+    fn cli_args_omits_permission_mode_when_none() {
+        // 不传模式 = 跟随 settings.json 的 defaultMode（CLI 默认行为）
+        let args = build_cli_args("abc", true, None, None);
+        assert!(!args.contains(&"--permission-mode".to_string()));
     }
 
     #[test]
     fn cli_args_resume_and_blank_model_omitted() {
-        let args = build_cli_args("abc", true, Some("  "), "manual");
+        let args = build_cli_args("abc", true, Some("  "), Some("manual"));
         assert!(args.contains(&"--resume".to_string()));
         assert!(!args.contains(&"--session-id".to_string()));
         assert!(!args.contains(&"--model".to_string()));
@@ -1089,10 +1109,10 @@ mod tests {
 
     #[test]
     fn cli_args_permission_mode_passed_through() {
-        let args = build_cli_args("abc", false, None, "plan");
+        let args = build_cli_args("abc", false, None, Some("plan"));
         let pos = args.iter().position(|a| a == "--permission-mode").unwrap();
         assert_eq!(args[pos + 1], "plan");
-        let args = build_cli_args("abc", false, None, "bypassPermissions");
+        let args = build_cli_args("abc", false, None, Some("bypassPermissions"));
         assert!(args.contains(&"bypassPermissions".to_string()));
     }
 
@@ -1103,6 +1123,26 @@ mod tests {
         assert_eq!(v["request_id"], "req-1");
         assert_eq!(v["request"]["subtype"], "set_permission_mode");
         assert_eq!(v["request"]["mode"], "acceptEdits");
+    }
+
+    #[test]
+    fn translate_system_init_reports_permission_mode() {
+        let mut asm = StreamAssembler::new();
+        let events = asm.translate(
+            r#"{"type":"system","subtype":"init","session_id":"s-9","permissionMode":"bypassPermissions"}"#,
+        );
+        assert!(matches!(
+            &events[0],
+            ChatEvent::SessionReady { permission_mode: Some(mode), .. } if mode == "bypassPermissions"
+        ));
+        // 无该字段 → None
+        let events = asm.translate(
+            r#"{"type":"system","subtype":"init","session_id":"s-9"}"#,
+        );
+        assert!(matches!(
+            &events[0],
+            ChatEvent::SessionReady { permission_mode: None, .. }
+        ));
     }
 
     #[test]

@@ -51,10 +51,21 @@ interface Props {
 /** 每页历史消息数（与后端 MAX_SESSION_MESSAGES 一致） */
 const PAGE_SIZE = 500;
 
-/** 权限模式选项：与终端 Shift+Tab 循环的 5 种对齐。
+/** 权限模式选项：「跟随配置」= 不传 --permission-mode（CLI 按 settings.json 的
+ *  defaultMode 决定，与终端默认行为一致），仅在首条消息前可选；其余 5 种与终端
+ *  Shift+Tab 循环对齐，支持运行中热切换。
  *  dontAsk 虽是 --permission-mode 的合法取值，但终端交互循环里没有
  *  （程序化调用用），故不进下拉 */
-const MODE_OPTIONS: Array<{ value: ChatPermissionMode; label: string; title: string }> = [
+const MODE_OPTIONS: Array<{
+  value: ChatPermissionMode | "follow";
+  label: string;
+  title: string;
+}> = [
+  {
+    value: "follow",
+    label: "跟随配置",
+    title: "跟随 Claude Code settings.json 的 defaultMode（与终端默认行为一致）",
+  },
   { value: "manual", label: "手动确认", title: "每个工具执行前都弹窗确认（原 default，推荐）" },
   { value: "auto", label: "自动模式", title: "自动执行常见安全操作，敏感操作仍确认" },
   { value: "acceptEdits", label: "接受编辑", title: "自动允许文件编辑，其他工具仍需确认" },
@@ -112,7 +123,11 @@ export default function ChatView({
   // ---------- 实时流（本次 sitting 的消息） ----------
   const [items, setItems] = useState<ChatItem[]>([]);
   const [input, setInput] = useState("");
-  const [mode, setMode] = useState<ChatPermissionMode>("manual");
+  /** 权限模式：follow = 不传 flag 跟随 settings.json；其余为显式模式。
+   *  session_ready 后会被 CLI 上报的实际模式覆盖（回显） */
+  const [mode, setMode] = useState<ChatPermissionMode | "follow">("follow");
+  /** 进程已启动（「跟随配置」是 spawn 时行为，此后不可再选） */
+  const [started, setStarted] = useState(false);
   const [status, setStatus] = useState<ChatStatus>({ phase: "idle" });
   const [permissions, setPermissions] = useState<ChatPermissionRequest[]>([]);
   const [usage, setUsage] = useState<ChatUsage | null>(null);
@@ -149,6 +164,13 @@ export default function ChatView({
     switch (ev.type) {
       case "session_ready":
         setRealSessionId(ev.sessionId);
+        // 回显实际生效的模式（跟随配置时 CLI 上报 settings.json 的结果）
+        if (
+          ev.permissionMode &&
+          MODE_OPTIONS.some((o) => o.value === ev.permissionMode)
+        ) {
+          setMode(ev.permissionMode as ChatPermissionMode);
+        }
         break;
       case "status":
         if (ev.state === "thinking") {
@@ -382,9 +404,15 @@ export default function ChatView({
       const channel = new Channel<ChatEvent>();
       channel.onmessage = handleEvent;
       startPromiseRef.current = api
-        .chatStart(projectPath, session?.file ?? null, mode, channel)
+        .chatStart(
+          projectPath,
+          session?.file ?? null,
+          mode === "follow" ? null : mode,
+          channel,
+        )
         .then((key) => {
           sessionKeyRef.current = key;
+          setStarted(true);
           setStatus({ phase: "idle" });
           return key;
         })
@@ -422,12 +450,13 @@ export default function ChatView({
     }
   }, [onToast]);
 
-  /** 切换权限模式：未启动时作为初始模式；已启动经 control 协议热切换 */
+  /** 切换权限模式：「跟随配置」只在进程未启动时可选（spawn 时行为）；
+   *  已启动则经 control 协议热切换 */
   const changeMode = useCallback(
-    async (m: ChatPermissionMode) => {
+    async (m: ChatPermissionMode | "follow") => {
       setMode(m);
       const key = sessionKeyRef.current;
-      if (!key) return;
+      if (!key || m === "follow") return;
       try {
         await api.chatSetPermissionMode(key, m);
       } catch (e) {
@@ -1102,12 +1131,17 @@ export default function ChatView({
         <select
           className="chat-mode"
           value={mode}
-          onChange={(e) => void changeMode(e.target.value as ChatPermissionMode)}
+          onChange={(e) => void changeMode(e.target.value as ChatPermissionMode | "follow")}
           title="权限模式（等价终端里的 Shift+Tab 切换）"
         >
           {MODE_OPTIONS.map((o) => (
-            <option key={o.value} value={o.value} title={o.title}>
-              {o.label}
+            <option
+              key={o.value}
+              value={o.value}
+              title={o.title}
+              disabled={o.value === "follow" && started}
+            >
+              {o.value === "follow" && started ? "跟随配置（已按配置启动）" : o.label}
             </option>
           ))}
         </select>
