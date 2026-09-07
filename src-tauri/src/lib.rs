@@ -5,6 +5,15 @@ use tauri::Manager;
 /// app 内直接对话：托管官方 claude CLI 子进程（stdio stream-json）
 pub mod chat;
 
+/// Claude Code 供应商配置切换（移植自 cc-switch 最小核心）
+pub mod provider;
+
+/// 拉取供应商可用模型列表（移植自 cc-switch model_fetch）
+pub mod model_fetch;
+
+/// Coding Plan 套餐用量查询（移植自 cc-switch coding_plan 适配器）
+pub mod usage_query;
+
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -68,6 +77,12 @@ pub struct Config {
     /// 关闭窗口行为：None=每次询问；Some("quit")=直接退出；Some("minimize")=最小化到托盘
     #[serde(default)]
     close_action: Option<String>,
+    /// Claude Code 供应商清单（供应商切换功能）
+    #[serde(default)]
+    providers: Vec<provider::ProviderInfo>,
+    /// 当前启用供应商 id（None=尚未启用过）
+    #[serde(default)]
+    current_provider: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -540,14 +555,20 @@ fn save_config_to(
     dark: bool,
     close_action: Option<String>,
 ) -> Result<(), String> {
-    let cfg = Config {
-        favorites,
-        projects,
-        excluded,
-        dark,
-        close_action,
-    };
-    let json = serde_json::to_string_pretty(&cfg).map_err(|e| e.to_string())?;
+    // 读改写而非重建：保留 save_config 参数之外的字段（providers / current_provider），
+    // 否则设置对话框一保存就会把供应商清单清空
+    let mut cfg = load_config_from(root);
+    cfg.favorites = favorites;
+    cfg.projects = projects;
+    cfg.excluded = excluded;
+    cfg.dark = dark;
+    cfg.close_action = close_action;
+    save_config_file(root, &cfg)
+}
+
+/// 配置落盘三步保护：写临时文件 → 旧文件备份为 .bak → 原子替换
+fn save_config_file(root: &Path, cfg: &Config) -> Result<(), String> {
+    let json = serde_json::to_string_pretty(cfg).map_err(|e| e.to_string())?;
     let cfg_path = root.join("config.json");
     let bak_path = root.join("config.json.bak");
     let tmp_path = root.join("config.json.tmp");
@@ -558,6 +579,285 @@ fn save_config_to(
     fs::rename(&tmp_path, &cfg_path).map_err(|e| e.to_string())?;
     Ok(())
 }
+
+// ---------------- 供应商切换（移植自 cc-switch） ----------------
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderListState {
+    providers: Vec<provider::ProviderInfo>,
+    current_id: Option<String>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderSwitchOutcome {
+    list: ProviderListState,
+    warnings: Vec<String>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderImportOutcome {
+    list: ProviderListState,
+    imported: usize,
+    skipped: usize,
+    warnings: Vec<String>,
+}
+
+#[tauri::command]
+fn provider_list() -> ProviderListState {
+    provider_list_from(&provider::claude_config_dir(), &resolve_root_dir())
+}
+
+fn provider_list_from(config_dir: &Path, root: &Path) -> ProviderListState {
+    let mut cfg = load_config_from(root);
+    // 首次使用：自动把 live 配置整文件收编为 default 供应商（cc-switch 语义），
+    // 清单为空时 current 必然失效，导入后直接指向 default
+    if cfg.providers.is_empty() {
+        if let Some(p) = provider::import_default_from(config_dir) {
+            cfg.providers.push(p.clone());
+            cfg.current_provider = Some(p.id);
+            let _ = save_config_file(root, &cfg);
+        }
+    }
+    // current 指向失效（被删等）时归 None
+    if let Some(cur) = cfg.current_provider.clone() {
+        if !cfg.providers.iter().any(|p| p.id == cur) {
+            cfg.current_provider = None;
+        }
+    }
+    ProviderListState {
+        providers: cfg.providers,
+        current_id: cfg.current_provider,
+    }
+}
+
+#[tauri::command]
+fn provider_save(provider: provider::ProviderInfo) -> Result<ProviderListState, String> {
+    provider_save_from(&provider::claude_config_dir(), &resolve_root_dir(), provider)
+}
+
+fn provider_save_from(
+    _config_dir: &Path,
+    root: &Path,
+    input: provider::ProviderInfo,
+) -> Result<ProviderListState, String> {
+    let mut p = input;
+    if p.name.trim().is_empty() {
+        return Err("供应商名称不能为空".to_string());
+    }
+    if !p.settings_config.is_object() {
+        return Err("settingsConfig 必须是 JSON 对象".to_string());
+    }
+    let mut cfg = load_config_from(root);
+    if p.id.is_empty() {
+        p.id = uuid::Uuid::new_v4().to_string();
+        cfg.providers.push(p);
+    } else {
+        match cfg.providers.iter_mut().find(|e| e.id == p.id) {
+            Some(slot) => *slot = p,
+            None => cfg.providers.push(p),
+        }
+    }
+    save_config_file(root, &cfg)?;
+    Ok(ProviderListState {
+        providers: cfg.providers,
+        current_id: cfg.current_provider,
+    })
+}
+
+#[tauri::command]
+fn provider_delete(id: String) -> Result<ProviderListState, String> {
+    provider_delete_from(&provider::claude_config_dir(), &resolve_root_dir(), &id)
+}
+
+fn provider_delete_from(
+    _config_dir: &Path,
+    root: &Path,
+    id: &str,
+) -> Result<ProviderListState, String> {
+    let mut cfg = load_config_from(root);
+    if cfg.current_provider.as_deref() == Some(id) {
+        return Err("不能删除当前启用的供应商，请先切换到其他供应商".to_string());
+    }
+    let before = cfg.providers.len();
+    cfg.providers.retain(|p| p.id != id);
+    if cfg.providers.len() == before {
+        return Err(format!("供应商 {id} 不存在"));
+    }
+    save_config_file(root, &cfg)?;
+    Ok(ProviderListState {
+        providers: cfg.providers,
+        current_id: cfg.current_provider,
+    })
+}
+
+#[tauri::command]
+fn provider_switch(id: String) -> Result<ProviderSwitchOutcome, String> {
+    provider_switch_from(&provider::claude_config_dir(), &resolve_root_dir(), &id)
+}
+
+fn provider_switch_from(
+    config_dir: &Path,
+    root: &Path,
+    id: &str,
+) -> Result<ProviderSwitchOutcome, String> {
+    let mut cfg = load_config_from(root);
+    let warnings = provider::switch_provider_from(
+        config_dir,
+        &mut cfg.providers,
+        &mut cfg.current_provider,
+        id,
+    )?;
+    save_config_file(root, &cfg)?;
+    Ok(ProviderSwitchOutcome {
+        list: ProviderListState {
+            providers: cfg.providers,
+            current_id: cfg.current_provider,
+        },
+        warnings,
+    })
+}
+
+#[tauri::command]
+fn provider_import_ccswitch(file_path: String) -> Result<ProviderImportOutcome, String> {
+    provider_import_ccswitch_from(
+        &provider::claude_config_dir(),
+        &resolve_root_dir(),
+        &file_path,
+    )
+}
+
+fn provider_import_ccswitch_from(
+    _config_dir: &Path,
+    root: &Path,
+    file_path: &str,
+) -> Result<ProviderImportOutcome, String> {
+    let raw = fs::read(file_path).map_err(|e| format!("读取备份失败: {e}"))?;
+    let text = String::from_utf8_lossy(strip_bom(&raw)).into_owned();
+    let (mut imported, backup_current, mut warnings) = provider::parse_ccswitch_sql(&text);
+    if imported.is_empty() {
+        return Err(
+            "备份中未找到 Claude 供应商：请确认选择的是 CC Switch「导出配置」生成的 SQL 备份文件"
+                .to_string(),
+        );
+    }
+    let mut cfg = load_config_from(root);
+    let mut added = 0usize;
+    let mut skipped = 0usize;
+    for p in imported.drain(..) {
+        if cfg.providers.iter().any(|e| e.id == p.id) {
+            skipped += 1; // 与现有清单同 id：保留现状，幂等导入
+            continue;
+        }
+        cfg.providers.push(p);
+        added += 1;
+    }
+    // 备份中标记为当前的供应商：仅当本地尚无有效 current 时采纳。
+    // live 文件本就是该供应商的配置，这里只对齐标记、不写盘。
+    let current_valid = cfg
+        .current_provider
+        .as_ref()
+        .map(|c| cfg.providers.iter().any(|p| &p.id == c))
+        .unwrap_or(false);
+    if !current_valid {
+        if let Some(cid) = backup_current {
+            if cfg.providers.iter().any(|p| p.id == cid) {
+                cfg.current_provider = Some(cid);
+            }
+        }
+    }
+    save_config_file(root, &cfg)?;
+    if skipped > 0 {
+        warnings.push(format!("{skipped} 个供应商与现有清单重复，已跳过"));
+    }
+    Ok(ProviderImportOutcome {
+        list: ProviderListState {
+            providers: cfg.providers,
+            current_id: cfg.current_provider,
+        },
+        imported: added,
+        skipped,
+        warnings,
+    })
+}
+
+#[tauri::command]
+fn provider_read_live() -> Option<serde_json::Value> {
+    provider::read_live_settings(&provider::claude_config_dir())
+}
+
+/// 拉取供应商可用模型列表（OpenAI 兼容 /v1/models，候选地址逐个探测）
+#[tauri::command]
+fn fetch_models_for_config(base_url: String, api_key: String) -> Result<Vec<String>, String> {
+    model_fetch::fetch_models(&base_url, &api_key)
+}
+
+/// 查询供应商的 Coding Plan 用量（凭据取自其 settingsConfig.env；
+/// 非已知厂商返回 supported=false，前端静默）
+#[tauri::command]
+fn provider_query_usage(id: String) -> usage_query::UsageResult {
+    provider_usage_from(&resolve_root_dir(), &id)
+}
+
+fn provider_usage_from(root: &Path, id: &str) -> usage_query::UsageResult {
+    let cfg = load_config_from(root);
+    let Some(p) = cfg.providers.iter().find(|p| p.id == id) else {
+        return usage_query::UsageResult::unsupported();
+    };
+    let env = p.settings_config.get("env").cloned().unwrap_or_default();
+    let base = env
+        .get("ANTHROPIC_BASE_URL")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let key = env
+        .get("ANTHROPIC_AUTH_TOKEN")
+        .and_then(|v| v.as_str())
+        .or_else(|| env.get("ANTHROPIC_API_KEY").and_then(|v| v.as_str()))
+        .unwrap_or("");
+    let Some(vendor) = usage_query::detect_vendor(base) else {
+        return usage_query::UsageResult::unsupported();
+    };
+    if base.is_empty() || key.is_empty() {
+        return usage_query::UsageResult {
+            success: false,
+            supported: true,
+            vendor: Some(vendor.to_string()),
+            data: vec![],
+            error: Some("未配置接入地址或 API Key".to_string()),
+        };
+    }
+    usage_query::query_usage(base, key)
+}
+
+/// 用系统默认浏览器打开外部链接（供应商官网 / 获取 API Key）。
+/// Windows 走 explorer 打开 URL（不经过 cmd，无引号/特殊字符转义问题）。
+#[tauri::command]
+fn open_url(url: String) -> Result<(), String> {
+    open_url_impl(&url)
+}
+
+fn open_url_impl(url: &str) -> Result<(), String> {
+    let trimmed = url.trim();
+    if !(trimmed.starts_with("http://") || trimmed.starts_with("https://")) {
+        return Err(format!("仅支持 http/https 链接：{trimmed}"));
+    }
+    #[cfg(windows)]
+    {
+        Command::new("explorer").arg(trimmed).spawn().map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open").arg(trimmed).spawn().map_err(|e| e.to_string())?;
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        Command::new("xdg-open").arg(trimmed).spawn().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 
 /// 启动项目（新会话）：新开终端，cd 到项目目录运行 claude。
 /// 不经过任何脚本文件；Windows ShellExecuteW 启动 `cmd /k cd /d "dir" && claude`
@@ -4365,7 +4665,16 @@ pub fn run() {
             chat::chat_interrupt,
             chat::chat_set_permission_mode,
             chat::chat_permission_response,
-            chat::chat_close
+            chat::chat_close,
+            provider_list,
+            provider_save,
+            provider_delete,
+            provider_switch,
+            provider_import_ccswitch,
+            provider_read_live,
+            fetch_models_for_config,
+            provider_query_usage,
+            open_url
         ])
         .manage(chat::ChatManager::default())
         .build(tauri::generate_context!())

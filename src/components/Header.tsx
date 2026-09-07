@@ -5,8 +5,11 @@ interface Props {
   dark: boolean;
   claudeOk: boolean | null;
   missingCount: number;
+  /** 当前供应商显示名（null = 未配置，显示「默认配置」） */
+  providerName: string | null;
   onToggleTheme: () => void;
   onHealth: () => void;
+  onProviders: () => void;
   onSettings: () => void;
 }
 
@@ -14,8 +17,10 @@ export default function Header({
   dark,
   claudeOk,
   missingCount,
+  providerName,
   onToggleTheme,
   onHealth,
+  onProviders,
   onSettings,
 }: Props) {
   return (
@@ -28,6 +33,10 @@ export default function Header({
         </div>
       </div>
       <div className="header-actions">
+        <button className="pill" title="供应商切换" onClick={onProviders}>
+          <span className={`dot ${providerName ? "dot-ok" : ""}`} />
+          {providerName ?? "默认配置"}
+        </button>
         <button
           className={`pill ${missingCount > 0 ? "pill-danger" : ""}`}
           title="健康检查"

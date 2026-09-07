@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api } from "./lib/api";
-import type { CloseAction, Project, SessionInfo } from "./types";
+import type { CloseAction, Project, ProviderListState, SessionInfo } from "./types";
 import Header from "./components/Header";
 import Toolbar from "./components/Toolbar";
 import ProjectList from "./components/ProjectList";
@@ -16,6 +16,7 @@ import CloseChoiceDialog from "./components/CloseChoiceDialog";
 import RenameDialog from "./components/RenameDialog";
 import TrashDialog from "./components/TrashDialog";
 import StatsDialog from "./components/StatsDialog";
+import ProviderDialog from "./components/ProviderDialog";
 import ChatView from "./components/ChatView";
 import ChatTabs from "./components/ChatTabs";
 import SessionContextMenu from "./components/SessionContextMenu";
@@ -53,6 +54,9 @@ export default function App() {
   const [closeChoiceOpen, setCloseChoiceOpen] = useState(false);
   const [trashOpen, setTrashOpen] = useState(false);
   const [statsOpen, setStatsOpen] = useState(false);
+  // ---------- 供应商切换（移植自 cc-switch） ----------
+  const [providerState, setProviderState] = useState<ProviderListState | null>(null);
+  const [providerOpen, setProviderOpen] = useState(false);
   // ---------- 会话管理（v2.0.0 阶段一） ----------
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
   const [sessionsByKey, setSessionsByKey] = useState<
@@ -172,6 +176,8 @@ export default function App() {
   useEffect(() => {
     load();
     api.checkClaude().then(setClaudeOk).catch(() => setClaudeOk(false));
+    // 供应商清单（首次调用会把 live 配置收编为 default 供应商）；失败不阻塞主流程
+    api.providerList().then(setProviderState).catch(() => {});
     // 安装模式首次启动：提示数据目录位置（scripts/config 实际存储处）
     api
       .getDataRoot()
@@ -568,7 +574,9 @@ export default function App() {
         onToggleTheme={toggleTheme}
         claudeOk={claudeOk}
         missingCount={missing.length}
+        providerName={providerState?.providers.find((p) => p.id === providerState?.currentId)?.name ?? null}
         onHealth={() => setDialog("health")}
+        onProviders={() => setProviderOpen(true)}
         onSettings={() => setSettingsOpen(true)}
       />
 
@@ -739,6 +747,15 @@ export default function App() {
             setSettingsOpen(false);
             showToast("设置已保存");
           }}
+        />
+      )}
+
+      {providerOpen && providerState && (
+        <ProviderDialog
+          state={providerState}
+          onClose={() => setProviderOpen(false)}
+          onChanged={setProviderState}
+          toast={showToast}
         />
       )}
 
