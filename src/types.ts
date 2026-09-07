@@ -55,7 +55,7 @@ export interface TrashedSession {
   sessionId: string;
   /** 标题（复用会话元数据解析） */
   title: string;
-  /** 删除时间（YYYYMMDD_HHMMSS） */
+  /** 删除时间（后端按 UTC 生成：YYYYMMDD_HHMMSS，前端转本地时区显示） */
   deletedAt: string;
   /** 原项目 mangled 目录名 */
   projectDir: string;

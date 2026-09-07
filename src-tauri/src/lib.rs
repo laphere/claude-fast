@@ -2326,7 +2326,9 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 }
 
 /// UTC 时间戳目录名：YYYYMMDD_HHMMSS（备份/回收站目录用，与全局
-/// 「破坏性操作先备份」铁律的 cache_backup_20260807_1300 风格一致）
+/// 「破坏性操作先备份」铁律的 cache_backup_20260807_1300 风格一致）。
+/// 注意这是 UTC 墙钟时间；前端回收站按 UTC 解析后转本地时区显示
+/// （TrashDialog.formatDeletedAt），别把它当本地时间直接展示
 fn utc_timestamp() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let secs = SystemTime::now()
