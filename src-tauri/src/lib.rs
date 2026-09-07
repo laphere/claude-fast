@@ -6,6 +6,15 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+/// Claude Code 供应商配置切换（移植自 cc-switch 最小核心）
+pub mod provider;
+
+/// 拉取供应商可用模型列表（移植自 cc-switch model_fetch）
+pub mod model_fetch;
+
+/// Coding Plan 套餐用量查询（移植自 cc-switch coding_plan 适配器）
+pub mod usage_query;
+
 /// 控制台子进程不创建新窗口（GUI 主进程 spawn where 等工具时防止闪黑窗口，仅 Windows）
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -63,6 +72,12 @@ pub struct Config {
     /// 关闭窗口行为：None=每次询问；Some("quit")=直接退出；Some("minimize")=最小化到托盘
     #[serde(default)]
     close_action: Option<String>,
+    /// Claude Code 供应商清单（供应商切换功能）
+    #[serde(default)]
+    providers: Vec<provider::ProviderInfo>,
+    /// 当前启用供应商 id（None=尚未启用过）
+    #[serde(default)]
+    current_provider: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -535,14 +550,20 @@ fn save_config_to(
     dark: bool,
     close_action: Option<String>,
 ) -> Result<(), String> {
-    let cfg = Config {
-        favorites,
-        projects,
-        excluded,
-        dark,
-        close_action,
-    };
-    let json = serde_json::to_string_pretty(&cfg).map_err(|e| e.to_string())?;
+    // 读改写而非重建：保留 save_config 参数之外的字段（providers / current_provider），
+    // 否则设置对话框一保存就会把供应商清单清空
+    let mut cfg = load_config_from(root);
+    cfg.favorites = favorites;
+    cfg.projects = projects;
+    cfg.excluded = excluded;
+    cfg.dark = dark;
+    cfg.close_action = close_action;
+    save_config_file(root, &cfg)
+}
+
+/// 配置落盘三步保护：写临时文件 → 旧文件备份为 .bak → 原子替换
+fn save_config_file(root: &Path, cfg: &Config) -> Result<(), String> {
+    let json = serde_json::to_string_pretty(cfg).map_err(|e| e.to_string())?;
     let cfg_path = root.join("config.json");
     let bak_path = root.join("config.json.bak");
     let tmp_path = root.join("config.json.tmp");
@@ -2709,6 +2730,338 @@ fn get_claude_projects_dir() -> String {
     claude_projects_dir().to_string_lossy().to_string()
 }
 
+/// 项目路径 → ~/.claude/projects 下的数据目录。mangle 会把 `: \ / _ .` 都
+/// 映射为 `-`，结果不含路径分隔符，必为 projects 目录的直接子目录
+/// （无路径穿越风险）；空路径 mangle 后为空，返回 None。
+fn claude_data_dir_for(projects_dir: &Path, project_path: &str) -> Option<PathBuf> {
+    let mangled = mangle_project_path(project_path.trim());
+    if mangled.is_empty() {
+        return None;
+    }
+    Some(projects_dir.join(mangled))
+}
+
+/// 单个失效项目的数据目录清除（独立成函数便于测试）。返回是否实际删除。
+/// 三道防线，确保只删「精确同名、真实路径已消失」的那一个数据目录：
+/// 1. mangle 结果必为 projects 目录的直接子目录（结构不变量，另有单测锁死），
+///    运行时再校验 parent，防未来重构破坏前提；
+/// 2. 真实路径当前仍存在（检查后项目又被还原/外接盘插回）→ 不是死数据，跳过；
+/// 3. 目录名是**精确相等**匹配（mangle 后逐字节相同），不是前缀/模糊/包含，
+///    相似名字（proj / proj2 / proj-x）各自对应不同目录，互不波及。
+fn purge_one_project_data(projects_dir: &Path, project_path: &str) -> Result<bool, String> {
+    let Some(target) = claude_data_dir_for(projects_dir, project_path) else {
+        return Ok(false);
+    };
+    if target.parent() != Some(projects_dir) {
+        return Ok(false);
+    }
+    if Path::new(project_path.trim()).is_dir() || !target.is_dir() {
+        return Ok(false);
+    }
+    fs::remove_dir_all(&target).map_err(|e| format!("删除 {} 失败：{e}", target.display()))?;
+    Ok(true)
+}
+
+/// 清除失效项目在 Claude Code 用户数据里的会话目录
+/// （~/.claude/projects/<mangled>，含全部 jsonl 会话记录，不可恢复）。
+/// 返回成功删除的目录数；不满足删除条件（目录不存在/项目还活着）的不计入也不报错。
+#[tauri::command]
+async fn purge_claude_project_data(paths: Vec<String>) -> Result<usize, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let dir = claude_projects_dir();
+        let mut removed = 0usize;
+        for p in &paths {
+            if purge_one_project_data(&dir, p)? {
+                removed += 1;
+            }
+        }
+        Ok(removed)
+    })
+    .await
+    .map_err(|e| format!("清除会话数据失败：{e}"))?
+}
+
+// ---------------- 供应商切换（移植自 cc-switch） ----------------
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderListState {
+    providers: Vec<provider::ProviderInfo>,
+    current_id: Option<String>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderSwitchOutcome {
+    list: ProviderListState,
+    warnings: Vec<String>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderImportOutcome {
+    list: ProviderListState,
+    imported: usize,
+    skipped: usize,
+    warnings: Vec<String>,
+}
+
+#[tauri::command]
+fn provider_list() -> ProviderListState {
+    provider_list_from(&provider::claude_config_dir(), &resolve_root_dir())
+}
+
+fn provider_list_from(config_dir: &Path, root: &Path) -> ProviderListState {
+    let mut cfg = load_config_from(root);
+    // 首次使用：自动把 live 配置整文件收编为 default 供应商（cc-switch 语义），
+    // 清单为空时 current 必然失效，导入后直接指向 default
+    if cfg.providers.is_empty() {
+        if let Some(p) = provider::import_default_from(config_dir) {
+            cfg.providers.push(p.clone());
+            cfg.current_provider = Some(p.id);
+            let _ = save_config_file(root, &cfg);
+        }
+    }
+    // current 指向失效（被删等）时归 None
+    if let Some(cur) = cfg.current_provider.clone() {
+        if !cfg.providers.iter().any(|p| p.id == cur) {
+            cfg.current_provider = None;
+        }
+    }
+    ProviderListState {
+        providers: cfg.providers,
+        current_id: cfg.current_provider,
+    }
+}
+
+#[tauri::command]
+fn provider_save(provider: provider::ProviderInfo) -> Result<ProviderListState, String> {
+    provider_save_from(&provider::claude_config_dir(), &resolve_root_dir(), provider)
+}
+
+fn provider_save_from(
+    _config_dir: &Path,
+    root: &Path,
+    input: provider::ProviderInfo,
+) -> Result<ProviderListState, String> {
+    let mut p = input;
+    if p.name.trim().is_empty() {
+        return Err("供应商名称不能为空".to_string());
+    }
+    if !p.settings_config.is_object() {
+        return Err("settingsConfig 必须是 JSON 对象".to_string());
+    }
+    let mut cfg = load_config_from(root);
+    if p.id.is_empty() {
+        p.id = uuid::Uuid::new_v4().to_string();
+        cfg.providers.push(p);
+    } else {
+        match cfg.providers.iter_mut().find(|e| e.id == p.id) {
+            Some(slot) => *slot = p,
+            None => cfg.providers.push(p),
+        }
+    }
+    save_config_file(root, &cfg)?;
+    Ok(ProviderListState {
+        providers: cfg.providers,
+        current_id: cfg.current_provider,
+    })
+}
+
+#[tauri::command]
+fn provider_delete(id: String) -> Result<ProviderListState, String> {
+    provider_delete_from(&provider::claude_config_dir(), &resolve_root_dir(), &id)
+}
+
+fn provider_delete_from(
+    _config_dir: &Path,
+    root: &Path,
+    id: &str,
+) -> Result<ProviderListState, String> {
+    let mut cfg = load_config_from(root);
+    if cfg.current_provider.as_deref() == Some(id) {
+        return Err("不能删除当前启用的供应商，请先切换到其他供应商".to_string());
+    }
+    let before = cfg.providers.len();
+    cfg.providers.retain(|p| p.id != id);
+    if cfg.providers.len() == before {
+        return Err(format!("供应商 {id} 不存在"));
+    }
+    save_config_file(root, &cfg)?;
+    Ok(ProviderListState {
+        providers: cfg.providers,
+        current_id: cfg.current_provider,
+    })
+}
+
+#[tauri::command]
+fn provider_switch(id: String) -> Result<ProviderSwitchOutcome, String> {
+    provider_switch_from(&provider::claude_config_dir(), &resolve_root_dir(), &id)
+}
+
+fn provider_switch_from(
+    config_dir: &Path,
+    root: &Path,
+    id: &str,
+) -> Result<ProviderSwitchOutcome, String> {
+    let mut cfg = load_config_from(root);
+    let warnings = provider::switch_provider_from(
+        config_dir,
+        &mut cfg.providers,
+        &mut cfg.current_provider,
+        id,
+    )?;
+    save_config_file(root, &cfg)?;
+    Ok(ProviderSwitchOutcome {
+        list: ProviderListState {
+            providers: cfg.providers,
+            current_id: cfg.current_provider,
+        },
+        warnings,
+    })
+}
+
+#[tauri::command]
+fn provider_import_ccswitch(file_path: String) -> Result<ProviderImportOutcome, String> {
+    provider_import_ccswitch_from(
+        &provider::claude_config_dir(),
+        &resolve_root_dir(),
+        &file_path,
+    )
+}
+
+fn provider_import_ccswitch_from(
+    _config_dir: &Path,
+    root: &Path,
+    file_path: &str,
+) -> Result<ProviderImportOutcome, String> {
+    let raw = fs::read(file_path).map_err(|e| format!("读取备份失败: {e}"))?;
+    let text = String::from_utf8_lossy(strip_bom(&raw)).into_owned();
+    let (mut imported, backup_current, mut warnings) = provider::parse_ccswitch_sql(&text);
+    if imported.is_empty() {
+        return Err(
+            "备份中未找到 Claude 供应商：请确认选择的是 CC Switch「导出配置」生成的 SQL 备份文件"
+                .to_string(),
+        );
+    }
+    let mut cfg = load_config_from(root);
+    let mut added = 0usize;
+    let mut skipped = 0usize;
+    for p in imported.drain(..) {
+        if cfg.providers.iter().any(|e| e.id == p.id) {
+            skipped += 1; // 与现有清单同 id：保留现状，幂等导入
+            continue;
+        }
+        cfg.providers.push(p);
+        added += 1;
+    }
+    // 备份中标记为当前的供应商：仅当本地尚无有效 current 时采纳。
+    // live 文件本就是该供应商的配置，这里只对齐标记、不写盘。
+    let current_valid = cfg
+        .current_provider
+        .as_ref()
+        .map(|c| cfg.providers.iter().any(|p| &p.id == c))
+        .unwrap_or(false);
+    if !current_valid {
+        if let Some(cid) = backup_current {
+            if cfg.providers.iter().any(|p| p.id == cid) {
+                cfg.current_provider = Some(cid);
+            }
+        }
+    }
+    save_config_file(root, &cfg)?;
+    if skipped > 0 {
+        warnings.push(format!("{skipped} 个供应商与现有清单重复，已跳过"));
+    }
+    Ok(ProviderImportOutcome {
+        list: ProviderListState {
+            providers: cfg.providers,
+            current_id: cfg.current_provider,
+        },
+        imported: added,
+        skipped,
+        warnings,
+    })
+}
+
+#[tauri::command]
+fn provider_read_live() -> Option<serde_json::Value> {
+    provider::read_live_settings(&provider::claude_config_dir())
+}
+
+/// 拉取供应商可用模型列表（OpenAI 兼容 /v1/models，候选地址逐个探测）
+#[tauri::command]
+fn fetch_models_for_config(
+    base_url: String,
+    api_key: String,
+) -> Result<Vec<model_fetch::FetchedModel>, String> {
+    model_fetch::fetch_models(&base_url, &api_key)
+}
+
+/// 查询供应商的 Coding Plan 用量（凭据取自其 settingsConfig.env；
+/// 非已知厂商返回 supported=false，前端静默）
+#[tauri::command]
+fn provider_query_usage(id: String) -> usage_query::UsageResult {
+    provider_usage_from(&resolve_root_dir(), &id)
+}
+
+fn provider_usage_from(root: &Path, id: &str) -> usage_query::UsageResult {
+    let cfg = load_config_from(root);
+    let Some(p) = cfg.providers.iter().find(|p| p.id == id) else {
+        return usage_query::UsageResult::unsupported();
+    };
+    let env = p.settings_config.get("env").cloned().unwrap_or_default();
+    let base = env
+        .get("ANTHROPIC_BASE_URL")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let key = env
+        .get("ANTHROPIC_AUTH_TOKEN")
+        .and_then(|v| v.as_str())
+        .or_else(|| env.get("ANTHROPIC_API_KEY").and_then(|v| v.as_str()))
+        .unwrap_or("");
+    let Some(vendor) = usage_query::detect_vendor(base) else {
+        return usage_query::UsageResult::unsupported();
+    };
+    if base.is_empty() || key.is_empty() {
+        return usage_query::UsageResult {
+            success: false,
+            supported: true,
+            vendor: Some(vendor.to_string()),
+            data: vec![],
+            error: Some("未配置接入地址或 API Key".to_string()),
+        };
+    }
+    usage_query::query_usage(base, key)
+}
+
+/// 用系统默认浏览器打开外部链接（供应商官网 / 获取 API Key）。
+/// Windows 走 explorer 打开 URL（不经过 cmd，无引号/特殊字符转义问题）。
+#[tauri::command]
+fn open_url(url: String) -> Result<(), String> {
+    open_url_impl(&url)
+}
+
+fn open_url_impl(url: &str) -> Result<(), String> {
+    let trimmed = url.trim();
+    if !(trimmed.starts_with("http://") || trimmed.starts_with("https://")) {
+        return Err(format!("仅支持 http/https 链接：{trimmed}"));
+    }
+    #[cfg(windows)]
+    {
+        Command::new("explorer").arg(trimmed).spawn().map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open").arg(trimmed).spawn().map_err(|e| e.to_string())?;
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        Command::new("xdg-open").arg(trimmed).spawn().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 /// 返回数据根信息：path = 数据根目录；installMode = true 表示处于安装模式
 /// （数据根在 %APPDATA% 而非 exe 所在目录）
 #[tauri::command]
@@ -2731,6 +3084,55 @@ fn get_data_root() -> DataRootInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+/// purge 端到端性质：真实路径还在的项目跳过不删；删除只命中精确同名目录，
+    /// 相似名字的兄弟目录分毫无损
+    #[test]
+    fn purge_project_data_skips_alive_and_exact_only() {
+        let root = temp_root("purge");
+        let projects = root.join("projects");
+        let alive = root.join("alive");
+        let dead = root.join("dead");
+        fs::create_dir_all(&alive).unwrap();
+        let data_alive = claude_data_dir_for(&projects, alive.to_str().unwrap()).unwrap();
+        let data_dead = claude_data_dir_for(&projects, dead.to_str().unwrap()).unwrap();
+        fs::create_dir_all(&data_alive).unwrap();
+        fs::create_dir_all(&data_dead).unwrap();
+
+        // 真实路径仍存在 → 不是死数据，跳过
+        assert!(!purge_one_project_data(&projects, alive.to_str().unwrap()).unwrap());
+        assert!(data_alive.is_dir());
+
+        // 真实路径已消失 → 只删精确同名的那一个，兄弟目录不动
+        assert!(purge_one_project_data(&projects, dead.to_str().unwrap()).unwrap());
+        assert!(!data_dead.exists());
+        assert!(data_alive.is_dir());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// purge 的安全性前提：mangle 后的目录名不含路径分隔符、不是 ./.，
+    /// 永远是 projects 目录的直接子目录（删除不会越出数据目录）
+    #[test]
+    fn claude_data_dir_is_direct_child() {
+        let base = Path::new("X:\\base\\.claude\\projects");
+        for p in [
+            r"C:\Users\laphe\AppData\Local\Temp\claude\fast\probe\1\proj",
+            r"D:\MyWorkspaces\jike_hongbao.v2",
+            "/Users/me/my proj",
+            r"..\..\..\Windows",
+            "....//\\\\",
+            "。",
+        ] {
+            let dir = claude_data_dir_for(base, p).expect("非空路径必有数据目录");
+            assert_eq!(dir.parent(), Some(base), "必须是 projects 的直接子目录");
+            let name = dir.file_name().unwrap().to_string_lossy();
+            assert!(!name.contains('/') && !name.contains('\\') && !name.contains(':'));
+            assert_ne!(name, ".");
+            assert_ne!(name, "..");
+        }
+        assert!(claude_data_dir_for(base, "").is_none());
+        assert!(claude_data_dir_for(base, "   ").is_none());
+    }
 
     fn temp_root(name: &str) -> PathBuf {
         let p = std::env::temp_dir().join(format!(
@@ -4338,6 +4740,16 @@ pub fn run() {
             check_claude,
             scan_claude_projects,
             get_claude_projects_dir,
+            purge_claude_project_data,
+            provider_list,
+            provider_save,
+            provider_delete,
+            provider_switch,
+            provider_import_ccswitch,
+            provider_read_live,
+            fetch_models_for_config,
+            provider_query_usage,
+            open_url,
             list_sessions,
             rename_session,
             delete_session,

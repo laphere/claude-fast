@@ -6,6 +6,12 @@ import {
 } from "@tauri-apps/plugin-autostart";
 import type {
   ClaudeProject,
+  FetchedModel,
+  ProviderImportOutcome,
+  ProviderInfo,
+  ProviderListState,
+  ProviderSwitchOutcome,
+  UsageResult,
   Config,
   Project,
   SessionInfo,
@@ -44,6 +50,36 @@ export const api = {
   // ---------- 批量添加 ----------
   scanClaudeProjects: () => invoke<ClaudeProject[]>("scan_claude_projects"),
   getClaudeProjectsDir: () => invoke<string>("get_claude_projects_dir"),
+
+  // ---------- 供应商切换 ----------
+  /** 供应商清单（首次调用自动把 live 配置收编为 default 供应商） */
+  providerList: () => invoke<ProviderListState>("provider_list"),
+  /** 新增/更新供应商（id 为空 = 新增） */
+  providerSave: (provider: ProviderInfo) =>
+    invoke<ProviderListState>("provider_save", { provider }),
+  /** 删除供应商（禁止删除当前启用的） */
+  providerDelete: (id: string) =>
+    invoke<ProviderListState>("provider_delete", { id }),
+  /** 切换供应商：回填离任 → 记 current → 整文件原子替换 settings.json */
+  providerSwitch: (id: string) =>
+    invoke<ProviderSwitchOutcome>("provider_switch", { id }),
+  /** 从 CC Switch「导出配置」的 SQL 备份导入 Claude 供应商 */
+  providerImportCcswitch: (filePath: string) =>
+    invoke<ProviderImportOutcome>("provider_import_ccswitch", { filePath }),
+  /** 读取当前 live 配置（~/.claude/settings.json），供表单导入 */
+  providerReadLive: () =>
+    invoke<Record<string, unknown> | null>("provider_read_live"),
+  /** 拉取供应商可用模型列表（OpenAI 兼容 /v1/models，候选地址逐个探测） */
+  fetchModels: (baseUrl: string, apiKey: string) =>
+    invoke<FetchedModel[]>("fetch_models_for_config", { baseUrl, apiKey }),
+  /** 查询供应商 Coding Plan 用量（非已知厂商返回 supported=false） */
+  providerQueryUsage: (id: string) =>
+    invoke<UsageResult>("provider_query_usage", { id }),
+  /** 用系统默认浏览器打开外部链接（官网 / 获取 API Key） */
+  openUrl: (url: string) => invoke("open_url", { url }),
+  /** 清除失效项目的 Claude Code 会话数据（~/.claude/projects 数据目录，不可恢复），返回删除数 */
+  purgeClaudeProjectData: (paths: string[]) =>
+    invoke<number>("purge_claude_project_data", { paths }),
   // ---------- 会话管理 ----------
   listSessions: (projectPath: string) =>
     invoke<SessionInfo[]>("list_sessions", { projectPath }),

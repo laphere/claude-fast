@@ -18,6 +18,10 @@ tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri-plugin-autostart = "2.5.1"
+# 供应商功能：拉取模型列表 / Coding Plan 用量查询（轻量阻塞 HTTP，rustls）；
+# uuid 生成供应商 id
+ureq = { version = "2", features = ["json"] }
+uuid = { version = "1", features = ["v4"] }
 
 # Windows 专用：ShellExecuteW 打开 cmd / explorer（macOS 用 open 命令，无需此依赖）
 [target.'cfg(windows)'.dependencies]

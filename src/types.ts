@@ -187,3 +187,59 @@ export interface UsageStats {
   /** 按 token 倒序 */
   perModel: ModelUsage[];
 }
+
+/** Claude Code 供应商条目（settingsConfig = 切换时整文件写入 ~/.claude/settings.json 的内容） */
+export interface ProviderInfo {
+  id: string;
+  name: string;
+  settingsConfig: Record<string, unknown>;
+  websiteUrl?: string | null;
+  /** official / cn_official / cloud_provider / aggregator / third_party / custom */
+  category?: string | null;
+}
+
+/** 供应商清单状态 */
+export interface ProviderListState {
+  providers: ProviderInfo[];
+  currentId: string | null;
+}
+
+/** 切换结果（warnings = 回填等非致命告警） */
+export interface ProviderSwitchOutcome {
+  list: ProviderListState;
+  warnings: string[];
+}
+
+/** CC Switch SQL 备份导入结果 */
+export interface ProviderImportOutcome {
+  list: ProviderListState;
+  imported: number;
+  skipped: number;
+  warnings: string[];
+}
+
+
+/** 单个用量窗口（如 5 小时 / 每周），utilization 为 0-100 已用百分比 */
+export interface UsageTier {
+  /** five_hour / weekly_limit / monthly */
+  name: string;
+  utilization: number;
+  resetsAt?: string | null;
+  usedValueUsd?: number | null;
+  maxValueUsd?: number | null;
+}
+
+/** Coding Plan 用量查询结果；supported=false 表示非已知厂商（前端静默） */
+export interface UsageResult {
+  success: boolean;
+  supported: boolean;
+  vendor?: string | null;
+  data: UsageTier[];
+  error?: string | null;
+}
+
+/** 拉取到的供应商可用模型（ownedBy 用于下拉按厂商分组，缺失归 Other） */
+export interface FetchedModel {
+  id: string;
+  ownedBy?: string | null;
+}
