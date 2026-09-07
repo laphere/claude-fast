@@ -792,7 +792,25 @@ code {
   border-top: 3px solid var(--dim);
   border-radius: 2px;
   opacity: 0.55;
-  transition: opacity 0.15s ease, border-color 0.15s ease;
+  transition: width 0.15s ease, opacity 0.15s ease, border-color 0.15s ease;
+}
+
+/* 波浪动效：悬停条最长，相邻条按距离递减——鼠标划过时宽度依次过渡，
+   形成小山包式波浪；颜色规则不变（悬停/选中 accent） */
+.msg-rail-tick.d0::before {
+  width: 24px;
+  opacity: 1;
+  border-top-color: var(--accent);
+}
+
+.msg-rail-tick.d1::before {
+  width: 18px;
+  opacity: 0.85;
+}
+
+.msg-rail-tick.d2::before {
+  width: 14px;
+  opacity: 0.68;
 }
 
 /* 悬停/选中只变颜色，粗细长短与常态一致 */
