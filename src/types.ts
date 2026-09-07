@@ -65,13 +65,17 @@ export interface TrashedSession {
 
 /** 会话内容块（阶段二：只读查看） */
 export interface ContentBlock {
-  /** text | thinking | tool_use | tool_result */
+  /** text | thinking | tool_use | tool_result | image */
   kind: string;
   text?: string | null;
   name?: string | null;
   input?: unknown;
   toolUseId?: string | null;
   isError?: boolean | null;
+  /** image 块的 media_type（image/png 等） */
+  mediaType?: string | null;
+  /** image 块的 base64 裸数据（无 data: 前缀） */
+  data?: string | null;
 }
 
 /** 单条 assistant 消息的 token 用量（jsonl usage 字段，新旧格式已归一） */
@@ -140,6 +144,12 @@ export interface SessionUserPrompt {
 
 // ---------------- app 内直接对话（chat.rs ChatEvent 对齐） ----------------
 
+/** 粘贴/拖拽的图片附件（data 为 base64 裸数据，无 data: 前缀） */
+export interface ChatImage {
+  mediaType: string;
+  data: string;
+}
+
 /** 权限模式（与官方 CLI --permission-mode 取值一致，v2.1.x 共 6 种，等价终端 Shift+Tab） */
 export type ChatPermissionMode =
   | "manual"
@@ -186,7 +196,7 @@ export type ChatEvent =
 
 /** 对话视图内的一条渲染条目（工具调用合并其执行结果，展开即看） */
 export type ChatItem =
-  | { id: number; kind: "user"; text: string }
+  | { id: number; kind: "user"; text: string; images?: ChatImage[] }
   | { id: number; kind: "text"; text: string; streaming: boolean }
   | { id: number; kind: "thinking"; text: string; streaming: boolean }
   | {
@@ -207,6 +217,18 @@ export interface ChatPermissionRequest {
   requestId: string;
   toolName: string;
   input: unknown;
+}
+
+/** 方案结构化（侧信道 plan_structure）：供应商整理出的决策点选项 */
+export interface PlanChoiceOption {
+  key: string;
+  text: string;
+  recommended: boolean;
+}
+
+export interface PlanDecisionPoint {
+  title: string;
+  options: PlanChoiceOption[];
 }
 
 /** 单个模型的用量汇总（统计口径：sidechain 子代理消息也计入） */
@@ -307,4 +329,10 @@ export interface UsageResult {
   vendor?: string | null;
   data: UsageTier[];
   error?: string | null;
+}
+
+/** 拉取到的供应商可用模型（ownedBy 用于下拉按厂商分组，缺失归 Other） */
+export interface FetchedModel {
+  id: string;
+  ownedBy?: string | null;
 }

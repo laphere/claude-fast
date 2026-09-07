@@ -10,10 +10,10 @@ interface Props {
   onDelete: (items: Project[]) => void;
 }
 
-/** 手动健康检查：打开时现场重新检查所有目录（后台执行，不卡界面） */
+/** 手动健康检查：打开时现场重新检查所有目录（后台执行，不卡界面）。
+ *  「清除」交给 App 弹确认框：从列表移除 + 删除 Claude Code 会话数据 */
 export default function HealthDialog({ items, claudeOk, onClose, onDelete }: Props) {
   const [checked, setChecked] = useState<Project[] | null>(null);
-  const [busy, setBusy] = useState(false);
 
   const run = async () => {
     setChecked(null);
@@ -71,15 +71,8 @@ export default function HealthDialog({ items, claudeOk, onClose, onDelete }: Pro
             关闭
           </button>
           {checked !== null && missing.length > 0 && (
-            <button
-              className="btn btn-danger"
-              disabled={busy}
-              onClick={() => {
-                setBusy(true);
-                onDelete([...missing]);
-              }}
-            >
-              {busy ? "移除中…" : `从列表移除失效项目（${missing.length}）`}
+            <button className="btn btn-danger" onClick={() => onDelete([...missing])}>
+              清除失效项目（{missing.length}）
             </button>
           )}
         </div>

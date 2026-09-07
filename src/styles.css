@@ -1915,6 +1915,25 @@ mark {
   overflow-y: auto;
 }
 
+/* 固定底部操作条（Modal footer 插槽）：不随内容滚动，按钮始终可见可按 */
+.modal-footer {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+  border-radius: 0 0 14px 14px;
+}
+
+.modal-footer .form-error {
+  flex: 1;
+  margin: 0;
+  min-width: 0;
+}
+
 /* ============ 表单 ============ */
 .form-label {
   font-size: 12px;
@@ -2188,6 +2207,9 @@ mark {
   display: flex;
   flex-direction: column;
   gap: 14px;
+  /* 覆盖 body 的 user-select: none，允许选择复制会话内容（v1.0.0 查看页
+     靠 .viewer-body 同款覆盖；摘要行/控件自身的 none 不受影响） */
+  user-select: text;
 }
 
 .chat-msg {
@@ -2205,6 +2227,80 @@ mark {
   font-size: 13px;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* 用户消息里的图片（历史 image 块 + 实时发送的附件） */
+.chat-user-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chat-user-images:has(+ .chat-user-text) {
+  margin-bottom: 6px;
+}
+
+.chat-user-images img {
+  max-width: 220px;
+  max-height: 160px;
+  object-fit: contain;
+  display: block;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+
+/* 待发送附件预览条（输入区上方；有附件时把分隔线让给它） */
+.chat-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 8px 16px 0;
+  border-top: 1px solid var(--border);
+}
+
+.chat-attachments + .chat-composer {
+  border-top: none;
+}
+
+.chat-attachment {
+  position: relative;
+  width: 72px;
+  height: 72px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+}
+
+.chat-attachment img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.chat-attachment-remove {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.chat-attachment-remove:hover {
+  background: rgba(0, 0, 0, 0.75);
 }
 
 .chat-msg-assistant {
@@ -2274,6 +2370,142 @@ mark {
 .chat-perm-actions {
   display: flex;
   gap: 8px;
+}
+
+/* 方案审批卡（计划模式：本轮产出结束，等待批准执行/继续修改） */
+.plan-approve {
+  border-top: 1px solid var(--border);
+  background: var(--panel-2);
+  padding: 10px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.plan-approve-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.plan-approve-preview {
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: var(--muted);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  max-height: 240px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.plan-approve-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.plan-approve-hint {
+  font-size: 11.5px;
+  color: var(--dim);
+}
+
+/* 未能解析出决策点结构时的提示（模型措辞所致，非功能故障） */
+.plan-approve-parsefail {
+  font-size: 11.5px;
+  color: var(--dim);
+  border-left: 3px solid var(--accent);
+  padding: 2px 8px;
+}
+
+/* 侧信道结构化进行中 */
+.plan-approve-loading {
+  color: var(--dim);
+}
+
+/* 方案决策点/选项（从方案文本启发式解析出的可点选结构） */
+.plan-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.plan-choice {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.plan-choice-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.plan-choice-options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.plan-choice-opt {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  cursor: pointer;
+  font: inherit;
+  color: var(--text);
+}
+
+.plan-choice-opt:hover {
+  border-color: var(--accent);
+}
+
+.plan-choice-opt.selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.plan-choice-key {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.plan-choice-opt.selected .plan-choice-key {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.plan-choice-text {
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text);
+}
+
+.plan-choice-rec {
+  font-style: normal;
+  color: var(--accent);
+  margin-left: 6px;
 }
 
 /* 输入区（模式选择/输入框/按钮统一 34px 高、垂直居中同一水平线） */
@@ -2613,14 +2845,18 @@ mark {
 }
 
 .provider-card {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
+  position: relative;
   padding: 10px 12px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--panel);
+}
+
+/* 信息区；操作按钮绝对定位垂直居中于「整张卡片」（含用量行），
+   信息区右侧预留按钮列宽度防止文字钻到按钮下面 */
+.provider-main {
+  padding-right: 210px;
+  min-width: 0;
 }
 
 .provider-card.current {
@@ -2679,9 +2915,12 @@ mark {
 }
 
 .provider-actions {
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
   display: flex;
   gap: 6px;
-  flex-shrink: 0;
 }
 
 .provider-footer {
@@ -2970,45 +3209,102 @@ mark {
   flex-wrap: wrap;
   gap: 5px;
   margin-top: 6px;
+  /* 与徽标行（11px 字号 + 16px line-height + 上下 1px padding）同高：
+     骨架占位 → 结果原地替换，卡片高度零变化 */
+  min-height: 18px;
 }
 
-.usage-tier {
-  font-size: 11px;
-  font-weight: 600;
+/* 首查加载中的骨架 pill（模拟用量徽标形状，脉冲呼吸） */
+.usage-skeleton {
+  height: 18px;
   border-radius: 999px;
-  padding: 1px 8px;
+  background: var(--border);
+  opacity: 0.55;
+  animation: usage-pulse 1.2s ease-in-out infinite;
+}
+
+.usage-skeleton:nth-of-type(2) {
+  animation-delay: 0.15s;
+}
+
+@keyframes usage-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 0.2;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .usage-skeleton {
+    animation: none;
+  }
+}
+
+/* 用量徽标：中性底描边，颜色只用于百分比数字（视觉锚点），
+   名称/倒计时弱化显示，避免满屏色块淹没关键信息 */
+.usage-tier {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
   line-height: 16px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0 8px;
+  color: var(--text);
   white-space: nowrap;
 }
 
+.usage-tier-name {
+  opacity: 0.6;
+}
+
+.usage-pct {
+  font-weight: 700;
+  font-family: Consolas, monospace;
+}
+
+.usage-extra,
+.usage-reset {
+  opacity: 0.6;
+}
+
+/* 分档阈值与色值对齐 cc-switch utilizationColor（Tailwind green-600/orange-500/red-500） */
 .usage-ok {
-  color: #1a7f37;
-  background: rgba(26, 127, 55, 0.12);
+  color: #16a34a;
 }
 
 .usage-warn {
-  color: #9a6700;
-  background: rgba(154, 103, 0, 0.14);
+  color: #f97316;
 }
 
 .usage-bad {
-  color: #cf222e;
-  background: rgba(207, 34, 46, 0.12);
+  color: #ef4444;
+}
+
+/* 错误徽标（查询失败）：整体红字警示 */
+.usage-err {
+  color: #ef4444;
+  font-weight: 600;
 }
 
 [data-theme="dark"] .usage-ok {
-  color: #3fb950;
-  background: rgba(63, 185, 80, 0.15);
+  color: #4ade80;
 }
 
 [data-theme="dark"] .usage-warn {
-  color: #d29922;
-  background: rgba(210, 153, 34, 0.15);
+  color: #fb923c;
 }
 
 [data-theme="dark"] .usage-bad {
-  color: #f85149;
-  background: rgba(248, 81, 73, 0.15);
+  color: #f87171;
+}
+
+[data-theme="dark"] .usage-err {
+  color: #f87171;
 }
 
 .usage-refresh {
@@ -3044,4 +3340,192 @@ mark {
   /* 中文字体墨迹居中补偿（同 .btn：line-height 1 时墨迹偏上，padding-top +1 / bottom -1） */
   padding: 6px 10px 4px;
   font-size: 11.5px;
+}
+
+/* ============ API Key 输入框（内嵌显示/隐藏眼睛图标） ============ */
+.key-input-wrap {
+  position: relative;
+}
+
+.key-input-wrap input {
+  padding-right: 36px;
+}
+
+.key-eye {
+  position: absolute;
+  right: 5px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px;
+  border: none;
+  background: none;
+  color: var(--text);
+  opacity: 0.45;
+  cursor: pointer;
+}
+
+.key-eye:hover {
+  opacity: 0.9;
+}
+
+/* ============ 模型映射行（cc-switch 式下拉） ============ */
+.provider-model-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.provider-model-label {
+  flex-shrink: 0;
+  width: 64px;
+  font-size: 12px;
+  opacity: 0.75;
+}
+
+.model-select {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  gap: 6px;
+  position: relative;
+}
+
+.model-select > input {
+  flex: 1;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 12.5px;
+  font-family: Consolas, monospace;
+  outline: none;
+}
+
+.model-select > input:focus {
+  border-color: var(--accent);
+}
+
+.model-chevron {
+  flex-shrink: 0;
+  width: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.model-chevron:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.model-chevron:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.model-1m {
+  flex-shrink: 0;
+  width: 44px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.model-1m input {
+  accent-color: var(--accent);
+  margin: 0;
+}
+
+.model-1m-placeholder {
+  visibility: hidden;
+}
+
+.model-pop {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 30;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  overflow: hidden;
+}
+
+.model-pop-search {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 12.5px;
+  outline: none;
+}
+
+.model-pop-list {
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.model-pop-group {
+  padding: 7px 12px 3px;
+  font-size: 11px;
+  font-weight: 600;
+  opacity: 0.55;
+  text-transform: capitalize;
+}
+
+.model-pop-item {
+  width: 100%;
+  box-sizing: border-box;
+  display: block;
+  padding: 6px 12px;
+  border: none;
+  background: none;
+  color: var(--text);
+  font-size: 12.5px;
+  font-family: Consolas, monospace;
+  cursor: pointer;
+  text-align: left;
+}
+
+.model-pop-item:hover {
+  background: var(--accent-soft);
+}
+
+.model-pop-item.active {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.model-pop-empty {
+  padding: 14px 12px;
+  font-size: 12px;
+  opacity: 0.6;
+  text-align: center;
+}
+
+/* 用量条「N分钟前查询」相对时间标注 */
+.usage-queried-at {
+  font-size: 11px;
+  opacity: 0.5;
+  white-space: nowrap;
 }

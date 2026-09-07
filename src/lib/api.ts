@@ -6,14 +6,17 @@ import {
 } from "@tauri-apps/plugin-autostart";
 import type {
   ChatEvent,
+  ChatImage,
   ChatPermissionMode,
   ClaudeProject,
   Config,
+  FetchedModel,
   Project,
   ProviderImportOutcome,
   ProviderInfo,
   ProviderListState,
   ProviderSwitchOutcome,
+  PlanDecisionPoint,
   SessionInfo,
   SessionMessages,
   SessionSearchHit,
@@ -51,6 +54,9 @@ export const api = {
   // ---------- 批量添加 ----------
   scanClaudeProjects: () => invoke<ClaudeProject[]>("scan_claude_projects"),
   getClaudeProjectsDir: () => invoke<string>("get_claude_projects_dir"),
+  /** 清除失效项目的 Claude Code 会话数据（~/.claude/projects 数据目录，不可恢复），返回删除数 */
+  purgeClaudeProjectData: (paths: string[]) =>
+    invoke<number>("purge_claude_project_data", { paths }),
   // ---------- 会话管理 ----------
   listSessions: (projectPath: string) =>
     invoke<SessionInfo[]>("list_sessions", { projectPath }),
@@ -101,8 +107,8 @@ export const api = {
     permissionMode: ChatPermissionMode | null,
     onEvent: Channel<ChatEvent>,
   ) => invoke<string>("chat_start", { projectPath, sessionFile, permissionMode, onEvent }),
-  chatSend: (sessionId: string, text: string) =>
-    invoke("chat_send", { sessionId, text }),
+  chatSend: (sessionId: string, text: string, images: ChatImage[] = []) =>
+    invoke("chat_send", { sessionId, text, images }),
   /** 中断当前轮（等价终端里的 Esc） */
   chatInterrupt: (sessionId: string) => invoke("chat_interrupt", { sessionId }),
   /** 运行中切换权限模式（等价终端 Shift+Tab；CLI 回执失败会以 error 事件浮出） */
@@ -112,6 +118,10 @@ export const api = {
     invoke("chat_permission_response", { sessionId, requestId, allow }),
   /** 关闭对话进程（关 stdin 优雅退出，超时强杀） */
   chatClose: (sessionId: string) => invoke("chat_close", { sessionId }),
+  /** 方案结构化（侧信道）：把方案文本交当前供应商整理成决策点/选项；
+   *  失败抛错——前端回退启发式解析或普通「批准/继续修改」 */
+  planStructure: (planText: string) =>
+    invoke<PlanDecisionPoint[]>("plan_structure", { planText }),
   // ---------- 供应商切换 ----------
   /** 供应商清单（首次调用自动把 live 配置收编为 default 供应商） */
   providerList: () => invoke<ProviderListState>("provider_list"),
@@ -132,7 +142,7 @@ export const api = {
     invoke<Record<string, unknown> | null>("provider_read_live"),
   /** 拉取供应商可用模型列表（OpenAI 兼容 /v1/models，候选地址逐个探测） */
   fetchModels: (baseUrl: string, apiKey: string) =>
-    invoke<string[]>("fetch_models_for_config", { baseUrl, apiKey }),
+    invoke<FetchedModel[]>("fetch_models_for_config", { baseUrl, apiKey }),
   /** 查询供应商 Coding Plan 用量（非已知厂商返回 supported=false） */
   providerQueryUsage: (id: string) =>
     invoke<UsageResult>("provider_query_usage", { id }),

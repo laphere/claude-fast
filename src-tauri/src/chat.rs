@@ -19,7 +19,7 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State};
@@ -108,13 +108,43 @@ pub enum ChatEvent {
 
 // ---------------- stdin 载荷构造（纯函数，可测） ----------------
 
-/// 用户消息（官方 stream-json 输入协议）
-fn build_user_message(session_id: &str, text: &str) -> Value {
+/// 粘贴/拖拽的图片附件（data 为 base64 裸数据，无 data: 前缀；
+/// 与 src/types.ts 的 ChatImage 对齐）
+#[derive(Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatImage {
+    pub media_type: String,
+    pub data: String,
+}
+
+/// Anthropic API 支持的图片格式（超出白名单的附件在构造载荷时被丢弃）
+fn is_supported_image(media_type: &str) -> bool {
+    matches!(
+        media_type,
+        "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+    )
+}
+
+/// 用户消息（官方 stream-json 输入协议）：文本块在前（非空时），图片块随后
+fn build_user_message(session_id: &str, text: &str, images: &[ChatImage]) -> Value {
+    let mut content = Vec::new();
+    if !text.trim().is_empty() {
+        content.push(json!({ "type": "text", "text": text }));
+    }
+    for img in images {
+        if !is_supported_image(&img.media_type) || img.data.trim().is_empty() {
+            continue;
+        }
+        content.push(json!({
+            "type": "image",
+            "source": { "type": "base64", "media_type": img.media_type, "data": img.data },
+        }));
+    }
     json!({
         "type": "user",
         "message": {
             "role": "user",
-            "content": [{ "type": "text", "text": text }],
+            "content": content,
         },
         "parent_tool_use_id": null,
         "session_id": session_id,
@@ -1025,17 +1055,22 @@ pub async fn chat_start(
     Ok(session_id)
 }
 
-/// 发送用户消息
+/// 发送用户消息（images 为粘贴/拖拽的图片附件，支持纯图发送）
 #[tauri::command]
 pub async fn chat_send(
     session_id: String,
     text: String,
+    images: Option<Vec<ChatImage>>,
     state: State<'_, ChatManager>,
 ) -> Result<(), String> {
-    if text.trim().is_empty() {
+    let images = images.unwrap_or_default();
+    let has_valid_image = images
+        .iter()
+        .any(|img| is_supported_image(&img.media_type) && !img.data.trim().is_empty());
+    if text.trim().is_empty() && !has_valid_image {
         return Err("消息不能为空".to_string());
     }
-    let payload = build_user_message(&session_id, &text).to_string();
+    let payload = build_user_message(&session_id, &text, &images).to_string();
     write_stdin(&state, &session_id, payload).await
 }
 
@@ -1259,7 +1294,7 @@ mod tests {
 
     #[test]
     fn user_message_payload_shape() {
-        let v = build_user_message("sess-1", "你好\n第二行");
+        let v = build_user_message("sess-1", "你好\n第二行", &[]);
         assert_eq!(v["type"], "user");
         assert_eq!(v["session_id"], "sess-1");
         assert_eq!(v["parent_tool_use_id"], Value::Null);
@@ -1269,6 +1304,53 @@ mod tests {
         // 可反解
         let round: Value = serde_json::from_str(&v.to_string()).unwrap();
         assert_eq!(round, v);
+    }
+
+    fn img(media_type: &str, data: &str) -> ChatImage {
+        ChatImage {
+            media_type: media_type.into(),
+            data: data.into(),
+        }
+    }
+
+    #[test]
+    fn user_message_with_image_payload_shape() {
+        let v = build_user_message(
+            "sess-1",
+            "看这张图",
+            &[img("image/png", "aGk=")],
+        );
+        let content = v["message"]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[1]["type"], "image");
+        assert_eq!(content[1]["source"]["type"], "base64");
+        assert_eq!(content[1]["source"]["media_type"], "image/png");
+        assert_eq!(content[1]["source"]["data"], "aGk=");
+    }
+
+    #[test]
+    fn pure_image_message_omits_text_block() {
+        let v = build_user_message("sess-1", "", &[img("image/jpeg", "aGk=")]);
+        let content = v["message"]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 1);
+        assert_eq!(content[0]["type"], "image");
+    }
+
+    #[test]
+    fn unsupported_or_empty_images_are_skipped() {
+        let v = build_user_message(
+            "sess-1",
+            "",
+            &[
+                img("image/bmp", "aGk="),
+                img("image/png", "  "),
+                img("image/webp", "d2Vi"),
+            ],
+        );
+        let content = v["message"]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 1);
+        assert_eq!(content[0]["source"]["media_type"], "image/webp");
     }
 
     #[test]

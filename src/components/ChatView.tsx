@@ -24,13 +24,20 @@ import {
   formatTime,
 } from "./MessageParts";
 import { FileIcon, SearchIcon, StopIcon } from "./Icons";
+import {
+  PlanChoices,
+  PlanOptionList,
+  parsePlanChoices,
+} from "./PlanChoices";
 import type {
   ChatEvent,
+  ChatImage,
   ChatItem,
   ChatPermissionMode,
   ChatPermissionRequest,
   ChatUsage,
   ContentBlock,
+  PlanDecisionPoint,
   SessionInfo,
   SessionMessage,
   SessionSearchHit,
@@ -96,9 +103,23 @@ interface ChangedFile {
   count: number;
 }
 
+/** 导航轨的一条：历史条目按全局消息序号定位（jumpTo 分页加载），
+ *  实时条目按 data-live-user 锚点定位（本次 sitting 的消息还没进历史分页） */
+type RailItem =
+  | { key: string; kind: "history"; index: number; text: string; timestamp: string | null }
+  | { key: string; kind: "live"; liveId: number; text: string };
+
 /** 统一渲染流的一条条目（历史 + 实时合成，见 stream useMemo） */
 type StreamEntry =
-  | { t: "userText"; key: string; text: string; msgIndex?: number }
+  | {
+      t: "userText";
+      key: string;
+      text: string;
+      images?: ChatImage[];
+      msgIndex?: number;
+      /** 实时区用户气泡的 item id（导航轨 data-live-user 锚点定位用） */
+      liveId?: number;
+    }
   | { t: "asstText"; key: string; text: string; msgIndex?: number; streaming?: boolean }
   | { t: "thinking"; key: string; text: string; streaming?: boolean }
   | {
@@ -113,6 +134,38 @@ type StreamEntry =
     }
   | { t: "orphanResult"; key: string; block: ContentBlock };
 
+/** 支持粘贴/拖拽的图片类型（与后端 chat.rs 白名单一致） */
+const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+/** 单图大小上限：API 限 5MB，预留 base64 编码余量取 4.5MB */
+const IMAGE_MAX_BYTES = 4.5 * 1024 * 1024;
+
+/** File → ChatImage（读为 base64 裸数据）；类型/大小不符时 toast 并返回 null */
+function fileToChatImage(file: File, onToast: (msg: string) => void): Promise<ChatImage | null> {
+  return new Promise((resolve) => {
+    if (!IMAGE_TYPES.has(file.type)) {
+      onToast(`不支持的图片格式：${file.type || "未知"}（仅支持 PNG/JPEG/GIF/WebP）`);
+      resolve(null);
+      return;
+    }
+    if (file.size > IMAGE_MAX_BYTES) {
+      onToast(`图片过大（${(file.size / 1024 / 1024).toFixed(1)}MB），上限 4.5MB`);
+      resolve(null);
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result ?? "");
+      const comma = result.indexOf(",");
+      resolve(comma >= 0 ? { mediaType: file.type, data: result.slice(comma + 1) } : null);
+    };
+    reader.onerror = () => {
+      onToast("图片读取失败");
+      resolve(null);
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
 export default function ChatView({
   projectPath,
   title,
@@ -123,6 +176,8 @@ export default function ChatView({
   // ---------- 实时流（本次 sitting 的消息） ----------
   const [items, setItems] = useState<ChatItem[]>([]);
   const [input, setInput] = useState("");
+  /** 待发送的图片附件（粘贴/拖拽进入，随消息发送后清空） */
+  const [pendingImages, setPendingImages] = useState<ChatImage[]>([]);
   /** 当前选中权限模式（原始字符串，"default" 归一为 manual；null = 配置读取中）。
    *  初始值 = settings.json 解析结果；session_ready 后以 CLI init 上报的实际
    *  模式为准。用户改选后显式传 flag（spawn 时）/热切换（运行中） */
@@ -133,6 +188,18 @@ export default function ChatView({
   const [permissions, setPermissions] = useState<ChatPermissionRequest[]>([]);
   const [usage, setUsage] = useState<ChatUsage | null>(null);
   const [realSessionId, setRealSessionId] = useState<string | null>(null);
+  /** 方案审批卡：进入计划模式前的权限模式（批准后切回；无记录回落 manual） */
+  const [planPrevMode, setPlanPrevMode] = useState<string | null>(null);
+  /** 方案审批卡：计划模式本轮产出结束后是否显示 */
+  const [planCardVisible, setPlanCardVisible] = useState(false);
+  /** 方案审批卡：批准动作进行中（按钮禁用/文案切换） */
+  const [planBusy, setPlanBusy] = useState(false);
+  /** 方案卡里用户对各决策点的选择（决策点标题 → "字母. 选项文字"） */
+  const [planAnswers, setPlanAnswers] = useState<Record<string, string>>({});
+  /** 侧信道结构化结果（null=未拿到，回退启发式/纯文本） */
+  const [planStructured, setPlanStructured] = useState<PlanDecisionPoint[] | null>(null);
+  /** 侧信道结构化请求进行中 */
+  const [planStructuring, setPlanStructuring] = useState(false);
 
   // ---------- 历史 jsonl（原查看页数据源） ----------
   const [history, setHistory] = useState<SessionMessage[]>([]);
@@ -154,11 +221,11 @@ export default function ChatView({
   // ---------- 对话进度条（左侧用户发言导航轨，自 v1.0.0 查看页移植） ----------
   /** 全量用户发言（后端 get_session_user_prompts 提取，index = 历史消息全局序号） */
   const [prompts, setPrompts] = useState<SessionUserPrompt[]>([]);
-  /** 视口当前所在的用户发言序号（高亮跟随滚动） */
-  const [activePrompt, setActivePrompt] = useState<number | null>(null);
+  /** 视口当前所在的导航轨条目 key（高亮跟随滚动） */
+  const [activePromptKey, setActivePromptKey] = useState<string | null>(null);
   /** 悬停气泡：发言 + 相对 chat-main 的纵向位置 */
   const [railTip, setRailTip] = useState<{
-    prompt: SessionUserPrompt;
+    item: RailItem;
     top: number;
   } | null>(null);
   /** 悬停中的横条序号（波浪动效：相邻条按距离递减变宽） */
@@ -168,6 +235,14 @@ export default function ChatView({
 
   /** 后端跟踪的会话 id（chat_start 返回，chat_send 等凭它寻址） */
   const sessionKeyRef = useRef<string | null>(null);
+  /** 会话是否已启动（session_ready 上报过；未启动不弹方案审批卡） */
+  const realSessionIdRef = useRef<string | null>(null);
+  /** 当前权限模式镜像（handleEvent 等无依赖回调里读取最新值） */
+  const modeRef = useRef<string | null>(null);
+  /** 当前阶段镜像（区分「确曾进入思考态后结束」的那次 idle） */
+  const statusRef = useRef<"starting" | "thinking" | "idle" | "exited">("idle");
+  /** 上一轮是否出错（出错收尾不弹方案审批卡） */
+  const lastTurnErrorRef = useRef(false);
   /** 首次发送前的启动 promise（懒启动：第一条消息才 spawn 进程） */
   const startPromiseRef = useRef<Promise<string> | null>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -180,6 +255,7 @@ export default function ChatView({
     switch (ev.type) {
       case "session_ready":
         setRealSessionId(ev.sessionId);
+        realSessionIdRef.current = ev.sessionId;
         // 以 CLI init 上报的实际生效模式为准（校正显示；并复位改选标记，
         // 此后的偏差归配置/CLI，用户再次改选才会显式传 flag）
         {
@@ -194,6 +270,7 @@ export default function ChatView({
         if (ev.state === "thinking") {
           setStatus({ phase: "thinking" });
         } else {
+          const wasThinking = statusRef.current === "thinking";
           setStatus((s) => (s.phase === "thinking" ? { phase: "idle" } : s));
           setItems((prev) =>
             prev.map((it) =>
@@ -202,6 +279,19 @@ export default function ChatView({
                 : it,
             ),
           );
+          // 计划模式：本轮确曾产出（进入过思考态、无错误）→ 弹出方案审批卡
+          if (
+            wasThinking &&
+            modeRef.current === "plan" &&
+            !lastTurnErrorRef.current &&
+            realSessionIdRef.current
+          ) {
+            setPlanCardVisible(true);
+            setPlanBusy(false);
+            // 新一轮产出 → 清掉上一轮的选择与结构化缓存
+            setPlanAnswers({});
+            setPlanStructured(null);
+          }
         }
         break;
       case "content_start":
@@ -319,6 +409,7 @@ export default function ChatView({
         setPermissions((prev) => prev.filter((p) => p.requestId !== ev.requestId));
         break;
       case "turn_end":
+        lastTurnErrorRef.current = !!ev.isError;
         if (ev.isError) onToast("本轮执行出错");
         break;
       case "exited": {
@@ -353,13 +444,21 @@ export default function ChatView({
     };
   }, [projectPath]);
 
+  // 镜像 ref：handleEvent / changeMode 等稳定回调在闭包里读最新值
+  useEffect(() => {
+    modeRef.current = mode;
+  }, [mode]);
+  useEffect(() => {
+    statusRef.current = status.phase;
+  }, [status.phase]);
+
   useEffect(() => {
     if (!session) {
       setHistory([]);
       setStats(null);
       setSearchResults(null);
       setPrompts([]);
-      setActivePrompt(null);
+      setActivePromptKey(null);
       setRailTip(null);
       return;
     }
@@ -472,16 +571,53 @@ export default function ChatView({
 
   const send = useCallback(async () => {
     const text = input.trim();
-    if (!text || isBusy(status) || status.phase === "exited") return;
+    const images = pendingImages;
+    if ((!text && images.length === 0) || isBusy(status) || status.phase === "exited") return;
     setInput("");
-    setItems((prev) => [...prev, { id: nextItemId++, kind: "user", text }]);
+    setPendingImages([]);
+    // 用户新开一轮 → 本轮审批卡不再适用（下一轮结束按需重新弹出）
+    setPlanCardVisible(false);
+    setItems((prev) => [
+      ...prev,
+      { id: nextItemId++, kind: "user", text, images: images.length > 0 ? images : undefined },
+    ]);
     try {
       const key = await ensureStarted();
-      await api.chatSend(key, text);
+      await api.chatSend(key, text, images);
     } catch (e) {
       onToast("发送失败：" + String(e));
     }
-  }, [input, status, ensureStarted, onToast]);
+  }, [input, pendingImages, status, ensureStarted, onToast]);
+
+  /** 追加图片附件（粘贴/拖拽共用；非图片文件静默忽略） */
+  const addImages = useCallback(
+    async (files: Array<File | null>) => {
+      const imgs = files.filter((f): f is File => f !== null && f.type.startsWith("image/"));
+      if (imgs.length === 0) return;
+      const converted = await Promise.all(imgs.map((f) => fileToChatImage(f, onToast)));
+      const valid = converted.filter((i): i is ChatImage => i !== null);
+      if (valid.length > 0) setPendingImages((prev) => [...prev, ...valid]);
+    },
+    [onToast],
+  );
+
+  /** 粘贴图片（截图 Ctrl+V / 复制的图片文件）；纯文本粘贴不受影响 */
+  const onPasteImages = useCallback(
+    (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+      const files: File[] = [];
+      for (const item of Array.from(e.clipboardData.items)) {
+        if (item.kind === "file") {
+          const f = item.getAsFile();
+          if (f && f.type.startsWith("image/")) files.push(f);
+        }
+      }
+      if (files.length > 0) {
+        e.preventDefault();
+        void addImages(files);
+      }
+    },
+    [addImages],
+  );
 
   const interrupt = useCallback(async () => {
     const key = sessionKeyRef.current;
@@ -497,6 +633,13 @@ export default function ChatView({
    *  spawn 时显式传 flag（覆盖配置默认） */
   const changeMode = useCallback(
     async (m: string) => {
+      // 记录进入计划模式前的模式（批准执行后切回）；离开计划模式时清空并收卡
+      if (m === "plan" && modeRef.current !== "plan") {
+        setPlanPrevMode(modeRef.current ?? null);
+      } else if (m !== "plan") {
+        setPlanPrevMode(null);
+        setPlanCardVisible(false);
+      }
       setMode(m);
       modeTouchedRef.current = true;
       const key = sessionKeyRef.current;
@@ -509,6 +652,41 @@ export default function ChatView({
     },
     [onToast],
   );
+
+  /** 「批准并执行」：切回计划前的权限模式，并给模型发执行指令。
+   *  失败 toast 提示、卡保留可重试（planBusy 期间按钮禁用防重复） */
+  const approvePlan = useCallback(async () => {
+    const key = sessionKeyRef.current;
+    if (!key) return;
+    // bypassPermissions / dontAsk 只能启动时启用（--dangerously-skip-permissions），
+    // 运行中热切换会被 CLI 拒绝（"Cannot set permission mode to bypassPermissions..."）。
+    // 批准时若目标是这两种，回退到 acceptEdits（自动允许文件编辑）并提示用户。
+    let nextMode =
+      planPrevMode && planPrevMode !== "plan" ? planPrevMode : "manual";
+    if (nextMode === "bypassPermissions" || nextMode === "dontAsk") {
+      nextMode = "acceptEdits";
+      onToast("bypass/无提示模式需启动时启用，批准后已切到 acceptEdits 执行");
+    }
+    setPlanBusy(true);
+    try {
+      await api.chatSetPermissionMode(key, nextMode as ChatPermissionMode);
+      setMode(nextMode);
+      modeTouchedRef.current = true;
+      setPlanCardVisible(false);
+      const answers = Object.entries(planAnswers);
+      const approveMsg = answers.length
+        ? `（已批准方案）我的选择：${answers
+            .map(([q, a]) => `${q} = ${a}`)
+            .join("；")}。请按上述选择开始执行。`
+        : "（已批准方案）请按上面的方案开始执行。";
+      await api.chatSend(key, approveMsg);
+    } catch (e) {
+      onToast("批准失败：" + String(e));
+      setPlanCardVisible(true);
+    } finally {
+      setPlanBusy(false);
+    }
+  }, [planPrevMode, planAnswers, onToast]);
 
   const respondPermission = useCallback(
     async (requestId: string, allow: boolean) => {
@@ -601,26 +779,62 @@ export default function ChatView({
 
   // ---------- 对话进度条（导航轨高亮/悬停，自 v1.0.0 查看页移植） ----------
 
-  /** 轨道高亮跟随滚动：视口顶部附近最近的那条用户发言
-   *  （含实时区的用户气泡——全局序号 = histOffset + history.length + 实时序号） */
+  /** 本次 sitting 的用户发言（实时导航轨）：过滤口径与后端 user_prompts_impl
+   *  一致（无文本的不算，纯图片消息后端清洗后同样为空）；liveId = 实时气泡
+   *  的 item id。新对话没有 jsonl 可读，靠它轨道才会随对话生长 */
+  const livePrompts = useMemo(
+    () =>
+      items
+        .filter(
+          (it): it is Extract<ChatItem, { kind: "user" }> =>
+            it.kind === "user" && it.text.trim().length > 0,
+        )
+        .map((it) => ({ key: `l${it.id}`, liveId: it.id, text: it.text })),
+    [items],
+  );
+
+  /** 导航轨统一条目：历史（jsonl 提取）在前，实时（本次 sitting）在后 */
+  const railItems = useMemo<RailItem[]>(
+    () => [
+      ...prompts.map((p) => ({
+        key: `h${p.index}`,
+        kind: "history" as const,
+        index: p.index,
+        text: p.text,
+        timestamp: p.timestamp ?? null,
+      })),
+      ...livePrompts.map((p) => ({ ...p, kind: "live" as const })),
+    ],
+    [prompts, livePrompts],
+  );
+
+  /** 轨道高亮跟随滚动：视口顶部附近最近的那条用户发言（历史查 data-msg-index，
+   *  实时查 data-live-user——实时消息的全局序号要等刷新并入 jsonl 才确定） */
   const updateActivePrompt = useCallback(() => {
     const body = bodyRef.current;
-    if (!body || prompts.length === 0) {
-      setActivePrompt(null);
+    if (!body || railItems.length === 0) {
+      setActivePromptKey(null);
       return;
     }
     const bodyTop = body.getBoundingClientRect().top;
-    let active: number | null = null;
-    for (const p of prompts) {
-      if (p.index < histOffset) continue; // 更早的分页未加载
-      if (p.index >= histOffset + history.length) break;
-      const el = body.querySelector(`[data-msg-index="${p.index}"]`);
+    let active: string | null = null;
+    for (const item of railItems) {
+      if (item.kind === "history") {
+        // 未加载的分页查不到元素，直接跳过（条目按序号升序，扫全量也便宜）
+        if (item.index < histOffset) continue;
+        if (item.index >= histOffset + history.length) continue;
+      }
+      const el = body.querySelector(
+        item.kind === "live"
+          ? `[data-live-user="${item.liveId}"]`
+          : `[data-msg-index="${item.index}"]`,
+      );
       if (!el) continue;
-      if (el.getBoundingClientRect().top - bodyTop <= 140) active = p.index;
+      if (el.getBoundingClientRect().top - bodyTop <= 140) active = item.key;
       else break;
     }
-    setActivePrompt(active);
-  }, [prompts, histOffset, history.length]);
+    setActivePromptKey(active);
+  }, [railItems, histOffset, history.length]);
 
   // 消息/分页/进度数据变化后重算高亮（等 DOM 提交）
   useEffect(() => {
@@ -637,15 +851,25 @@ export default function ChatView({
     scrollRafRef.current = requestAnimationFrame(updateActivePrompt);
   }, [loadMore, updateActivePrompt]);
 
+  /** 定位到实时区的用户气泡（本次 sitting 的消息不在历史分页，走 DOM 锚点） */
+  const jumpToLive = useCallback((liveId: number) => {
+    const el = bodyRef.current?.querySelector(`[data-live-user="${liveId}"]`);
+    if (!el) return;
+    el.scrollIntoView({ block: "start" });
+    el.classList.remove("msg-flash");
+    void (el as HTMLElement).offsetWidth;
+    el.classList.add("msg-flash");
+  }, []);
+
   /** 悬停格子：气泡浮在轨道右侧，纵向对齐格子并夹在可视区内 */
-  const openRailTip = useCallback((p: SessionUserPrompt, btn: HTMLElement) => {
+  const openRailTip = useCallback((item: RailItem, btn: HTMLElement) => {
     const main = mainRef.current;
     if (!main) return;
     const mr = main.getBoundingClientRect();
     const br = btn.getBoundingClientRect();
     const TIP_MAX = 300; // 与 CSS max-height 一致
     const top = Math.max(8, Math.min(br.top - mr.top - 10, mr.height - TIP_MAX - 8));
-    setRailTip({ prompt: p, top });
+    setRailTip({ item, top });
   }, []);
 
   // ---------- 变更文件聚合（历史 + 实时，原查看页逻辑扩展） ----------
@@ -788,11 +1012,15 @@ export default function ChatView({
       const msgIndex = histOffset + i;
       if (m.kind === "user") {
         const texts = m.blocks.filter((b) => b.kind === "text" && b.text);
-        if (texts.length > 0) {
+        const imgs = m.blocks
+          .filter((b) => b.kind === "image" && b.mediaType && b.data)
+          .map((b) => ({ mediaType: b.mediaType as string, data: b.data as string }));
+        if (texts.length > 0 || imgs.length > 0) {
           entries.push({
             t: "userText",
             key: `h${msgIndex}`,
             text: texts.map((b) => b.text ?? "").join("\n"),
+            images: imgs.length > 0 ? imgs : undefined,
             msgIndex,
           });
         }
@@ -828,7 +1056,13 @@ export default function ChatView({
     for (const it of items) {
       switch (it.kind) {
         case "user":
-          entries.push({ t: "userText", key: `l${it.id}`, text: it.text });
+          entries.push({
+            t: "userText",
+            key: `l${it.id}`,
+            text: it.text,
+            images: it.images,
+            liveId: it.id,
+          });
           break;
         case "text":
           entries.push({
@@ -910,6 +1144,67 @@ export default function ChatView({
    * 可展开组，遇到用户气泡或助手文本即收口（与终端 Ctrl+O 行为一致）。
    * data-msg-index（文本/用户气泡）与 data-block-idx（工具行）供搜索/文件跳转。
    */
+  /** 方案审批卡文本：本轮最后一条已完成的助手文本（完整显示，卡内可滚动） */
+  const planPreview = useMemo(() => {
+    if (!planCardVisible) return null;
+    for (let i = items.length - 1; i >= 0; i--) {
+      const it = items[i];
+      if (it.kind === "text" && !it.streaming && it.text.trim()) {
+        const t = it.text.trim();
+        // 显示完整方案，仅对超长内容做安全截断
+        return t.length > 4000 ? `${t.slice(0, 4000)}…` : t;
+      }
+    }
+    return null;
+  }, [planCardVisible, items]);
+
+  /** 解析用文本：末块文本能解析就直接用；否则把本轮所有文本块拼起来再试
+   *  （选项表格常出现在更早的文本块，末块只是收尾总结） */
+  const planParseText = useMemo(() => {
+    if (!planCardVisible) return null;
+    if (parsePlanChoices(planPreview ?? "").length > 0) return planPreview;
+    const parts: string[] = [];
+    for (let i = items.length - 1; i >= 0; i--) {
+      const it = items[i];
+      if (it.kind === "user") break;
+      if (it.kind === "text" && !it.streaming && it.text.trim()) {
+        parts.unshift(it.text.trim());
+      }
+    }
+    const joined = parts.join("\n\n");
+    return parsePlanChoices(joined).length > 0 ? joined : planPreview;
+  }, [planCardVisible, items, planPreview]);
+
+  /** 是否解析出「决策点/选项」结构（可点选则隐藏纯文本预览） */
+  const hasPlanChoices = useMemo(
+    () => !!planParseText && parsePlanChoices(planParseText).length > 0,
+    [planParseText],
+  );
+
+  // 侧信道结构化：卡片出现时把方案文本交供应商 API 整理成 决策点/选项 结构
+  // （不再依赖猜测模型措辞）；失败静默回退到启发式解析/纯文本审批
+  useEffect(() => {
+    if (!planCardVisible || !planPreview) return;
+    let cancelled = false;
+    setPlanStructuring(true);
+    setPlanStructured(null);
+    api
+      .planStructure(planPreview)
+      .then((points) => {
+        if (cancelled) return;
+        setPlanStructured(Array.isArray(points) && points.length > 0 ? points : null);
+      })
+      .catch(() => {
+        if (!cancelled) setPlanStructured(null);
+      })
+      .finally(() => {
+        if (!cancelled) setPlanStructuring(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [planCardVisible, planPreview]);
+
   const renderStream = () => {
     const nodes: ReactNode[] = [];
     if (hasMore) {
@@ -991,10 +1286,28 @@ export default function ChatView({
       if (e.t === "userText") {
         flush();
         nodes.push(
-          <div key={e.key} className="chat-msg chat-msg-user" data-msg-index={e.msgIndex}>
-            <div className="chat-user-text" style={{ whiteSpace: "pre-wrap" }}>
-              {e.text}
-            </div>
+          <div
+            key={e.key}
+            className="chat-msg chat-msg-user"
+            data-msg-index={e.msgIndex}
+            data-live-user={e.liveId}
+          >
+            {e.images && e.images.length > 0 && (
+              <div className="chat-user-images">
+                {e.images.map((img, i) => (
+                  <img
+                    key={i}
+                    src={`data:${img.mediaType};base64,${img.data}`}
+                    alt="发送的图片"
+                  />
+                ))}
+              </div>
+            )}
+            {e.text && (
+              <div className="chat-user-text" style={{ whiteSpace: "pre-wrap" }}>
+                {e.text}
+              </div>
+            )}
           </div>,
         );
       } else if (e.t === "asstText") {
@@ -1145,7 +1458,7 @@ export default function ChatView({
       )}
 
       <div className="chat-main" ref={mainRef}>
-        {session && prompts.length > 0 && (
+        {railItems.length > 0 && (
           <div
             className="msg-rail"
             onMouseLeave={() => {
@@ -1153,20 +1466,24 @@ export default function ChatView({
               setRailHover(null);
             }}
           >
-            {prompts.map((p, i) => {
+            {railItems.map((item, i) => {
               // 波浪动效：悬停条最长，相邻条按距离递减（d0/d1/d2 三档）
               const d = railHover === null ? -1 : Math.abs(i - railHover);
               const wave = d === 0 ? "d0" : d === 1 ? "d1" : d === 2 ? "d2" : "";
               return (
                 <button
-                  key={p.index}
-                  className={`msg-rail-tick ${wave} ${activePrompt === p.index ? "active" : ""}`}
-                  onClick={() => void jumpTo(p.index)}
+                  key={item.key}
+                  className={`msg-rail-tick ${wave} ${activePromptKey === item.key ? "active" : ""}`}
+                  onClick={() =>
+                    item.kind === "live"
+                      ? jumpToLive(item.liveId)
+                      : void jumpTo(item.index)
+                  }
                   onMouseEnter={(e) => {
                     setRailHover(i);
-                    openRailTip(p, e.currentTarget);
+                    openRailTip(item, e.currentTarget);
                   }}
-                  aria-label={`定位到用户发言：${p.text}`}
+                  aria-label={`定位到用户发言：${item.text}`}
                 />
               );
             })}
@@ -1189,9 +1506,12 @@ export default function ChatView({
         {railTip && (
           <div className="msg-rail-tip" style={{ top: railTip.top }}>
             <div className="msg-rail-tip-time">
-              用户 · {railTip.prompt.timestamp ? formatTime(railTip.prompt.timestamp) : ""}
+              用户
+              {railTip.item.kind === "history" && railTip.item.timestamp
+                ? ` · ${formatTime(railTip.item.timestamp)}`
+                : " · 本次对话"}
             </div>
-            <div className="msg-rail-tip-text">{railTip.prompt.text}</div>
+            <div className="msg-rail-tip-text">{railTip.item.text}</div>
           </div>
         )}
 
@@ -1259,7 +1579,79 @@ export default function ChatView({
         </div>
       )}
 
-      <div className="chat-composer">
+      {mode === "plan" && status.phase === "idle" && planCardVisible && realSessionId && (
+          <div className="plan-approve">
+            <div className="plan-approve-title">📋 方案已就绪 · 计划模式</div>
+            {planStructuring ? (
+              <div className="plan-approve-preview plan-approve-loading">
+                正在整理方案选项…
+              </div>
+            ) : planStructured && planStructured.length > 0 ? (
+              <PlanOptionList points={planStructured} onChange={setPlanAnswers} />
+            ) : hasPlanChoices ? (
+              <PlanChoices text={planParseText ?? ""} onChange={setPlanAnswers} />
+            ) : (
+              <>
+                {planPreview && (
+                  <div className="plan-approve-parsefail">
+                    未能识别出可点选的决策点结构，可直接「批准并执行」或在输入框里调整方案
+                  </div>
+                )}
+                {planPreview && <div className="plan-approve-preview">{planPreview}</div>}
+              </>
+            )}
+            <div className="plan-approve-actions">
+              <button
+                className="btn btn-primary"
+                disabled={planBusy}
+                onClick={() => void approvePlan()}
+                title="退出计划模式并让模型按方案开始执行"
+              >
+                {planBusy ? "切换中…" : "批准并执行"}
+              </button>
+              <button
+                className="btn"
+                onClick={() => setPlanCardVisible(false)}
+                title="留在计划模式，直接在输入框提出修改意见"
+              >
+                继续修改
+              </button>
+            </div>
+            <div className="plan-approve-hint">
+              批准后将退出计划模式开始执行；点「继续修改」可留在计划模式继续调整方案
+            </div>
+          </div>
+        )}
+
+      {pendingImages.length > 0 && (
+        <div className="chat-attachments">
+          {pendingImages.map((img, i) => (
+            <div key={`${i}-${img.data.length}`} className="chat-attachment">
+              <img src={`data:${img.mediaType};base64,${img.data}`} alt="待发送图片" />
+              <button
+                className="chat-attachment-remove"
+                title="移除图片"
+                onClick={() => setPendingImages((prev) => prev.filter((_, idx) => idx !== i))}
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div
+        className="chat-composer"
+        onDragOver={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+        }}
+        onDrop={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          void addImages(Array.from(e.dataTransfer.files));
+        }}
+      >
         <select
           className="chat-mode"
           value={mode ?? ""}
@@ -1286,12 +1678,15 @@ export default function ChatView({
         <textarea
           className="chat-input"
           placeholder={
-            status.phase === "exited" ? "进程已退出，返回后重新打开对话" : "输入消息，Enter 发送，Shift+Enter 换行"
+            status.phase === "exited"
+              ? "进程已退出，返回后重新打开对话"
+              : "输入消息，可粘贴/拖入图片；Enter 发送，Shift+Enter 换行"
           }
           value={input}
           rows={1}
           disabled={status.phase === "exited"}
           onChange={(e) => setInput(e.target.value)}
+          onPaste={onPasteImages}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault();
@@ -1307,7 +1702,7 @@ export default function ChatView({
         ) : (
           <button
             className="btn btn-primary"
-            disabled={!input.trim() || status.phase === "exited"}
+            disabled={(!input.trim() && pendingImages.length === 0) || status.phase === "exited"}
             onClick={() => void send()}
             title="发送消息"
           >

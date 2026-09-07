@@ -10,6 +10,7 @@ pub mod provider;
 
 /// 拉取供应商可用模型列表（移植自 cc-switch model_fetch）
 pub mod model_fetch;
+pub mod plan_structure;
 
 /// Coding Plan 套餐用量查询（移植自 cc-switch coding_plan 适配器）
 pub mod usage_query;
@@ -123,7 +124,7 @@ pub struct SessionInfo {
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ContentBlock {
-    /// text | thinking | tool_use | tool_result
+    /// text | thinking | tool_use | tool_result | image
     kind: String,
     /// text/thinking/tool_result 的文本内容
     text: Option<String>,
@@ -135,6 +136,10 @@ pub struct ContentBlock {
     tool_use_id: Option<String>,
     /// tool_result 是否报错
     is_error: Option<bool>,
+    /// image 块的 media_type（image/png 等）
+    media_type: Option<String>,
+    /// image 块的 base64 裸数据（无 data: 前缀）
+    data: Option<String>,
 }
 
 /// 单条 assistant 消息的 token 用量（防御式解析：旧版数字字段与新版
@@ -790,8 +795,20 @@ fn provider_read_live() -> Option<serde_json::Value> {
 
 /// 拉取供应商可用模型列表（OpenAI 兼容 /v1/models，候选地址逐个探测）
 #[tauri::command]
-fn fetch_models_for_config(base_url: String, api_key: String) -> Result<Vec<String>, String> {
+fn fetch_models_for_config(
+    base_url: String,
+    api_key: String,
+) -> Result<Vec<model_fetch::FetchedModel>, String> {
     model_fetch::fetch_models(&base_url, &api_key)
+}
+
+/// 方案结构化（侧信道 AskUserQuestion）：把方案文本交当前供应商 API 整理成
+/// 决策点/选项，供前端渲染可点选卡片；失败返回 Err（前端回退启发式解析/普通审批）
+#[tauri::command]
+fn plan_structure(
+    plan_text: String,
+) -> Result<Vec<plan_structure::PlanDecisionPoint>, String> {
+    plan_structure::structure_plan(&plan_text)
 }
 
 /// 查询供应商的 Coding Plan 用量（凭据取自其 settingsConfig.env；
@@ -1511,6 +1528,8 @@ fn parse_content_blocks(content: Option<&serde_json::Value>, role: &str) -> Vec<
                         input: None,
                         tool_use_id: extract_xml_tag(s, "tool-use-id"),
                         is_error: None,
+                        media_type: None,
+                        data: None,
                     });
                 }
                 return out;
@@ -1524,6 +1543,8 @@ fn parse_content_blocks(content: Option<&serde_json::Value>, role: &str) -> Vec<
                     input: None,
                     tool_use_id: None,
                     is_error: None,
+                    media_type: None,
+                    data: None,
                 });
             }
         }
@@ -1547,7 +1568,34 @@ fn parse_content_blocks(content: Option<&serde_json::Value>, role: &str) -> Vec<
                                 input: None,
                                 tool_use_id: None,
                                 is_error: None,
+                                media_type: None,
+                                data: None,
                             });
+                        }
+                    }
+                    "image" => {
+                        let source = b.get("source");
+                        let media_type = source
+                            .and_then(|s| s.get("media_type"))
+                            .and_then(|m| m.as_str())
+                            .map(String::from);
+                        let data = source
+                            .and_then(|s| s.get("data"))
+                            .and_then(|d| d.as_str())
+                            .map(String::from);
+                        if let (Some(mt), Some(d)) = (media_type, data) {
+                            if !mt.is_empty() && !d.is_empty() {
+                                out.push(ContentBlock {
+                                    kind: "image".to_string(),
+                                    text: None,
+                                    name: None,
+                                    input: None,
+                                    tool_use_id: None,
+                                    is_error: None,
+                                    media_type: Some(mt),
+                                    data: Some(d),
+                                });
+                            }
                         }
                     }
                     "tool_use" => {
@@ -1564,6 +1612,8 @@ fn parse_content_blocks(content: Option<&serde_json::Value>, role: &str) -> Vec<
                                     .and_then(|i| i.as_str())
                                     .map(String::from),
                                 is_error: None,
+                                media_type: None,
+                                data: None,
                             });
                         }
                     }
@@ -1577,6 +1627,8 @@ fn parse_content_blocks(content: Option<&serde_json::Value>, role: &str) -> Vec<
                                 input: None,
                                 tool_use_id: b.get("tool_use_id").and_then(|i| i.as_str()).map(String::from),
                                 is_error: b.get("is_error").and_then(|e| e.as_bool()),
+                                media_type: None,
+                                data: None,
                             });
                         }
                     }
@@ -1979,6 +2031,7 @@ fn render_message_markdown(
                 };
                 out.push_str(&format!("📄 {name} 结果：{}\n", body.replace('\n', " ")));
             }
+            "image" => out.push_str("🖼️ [图片]\n"),
             _ => {}
         }
     }
@@ -3014,6 +3067,57 @@ fn get_claude_projects_dir() -> String {
     claude_projects_dir().to_string_lossy().to_string()
 }
 
+/// 项目路径 → ~/.claude/projects 下的数据目录。mangle 会把 `: \ / _ .` 都
+/// 映射为 `-`，结果不含路径分隔符，必为 projects 目录的直接子目录
+/// （无路径穿越风险）；空路径 mangle 后为空，返回 None。
+fn claude_data_dir_for(projects_dir: &Path, project_path: &str) -> Option<PathBuf> {
+    let mangled = mangle_project_path(project_path.trim());
+    if mangled.is_empty() {
+        return None;
+    }
+    Some(projects_dir.join(mangled))
+}
+
+/// 单个失效项目的数据目录清除（独立成函数便于测试）。返回是否实际删除。
+/// 三道防线，确保只删「精确同名、真实路径已消失」的那一个数据目录：
+/// 1. mangle 结果必为 projects 目录的直接子目录（结构不变量，另有单测锁死），
+///    运行时再校验 parent，防未来重构破坏前提；
+/// 2. 真实路径当前仍存在（检查后项目又被还原/外接盘插回）→ 不是死数据，跳过；
+/// 3. 目录名是**精确相等**匹配（mangle 后逐字节相同），不是前缀/模糊/包含，
+///    相似名字（proj / proj2 / proj-x）各自对应不同目录，互不波及。
+fn purge_one_project_data(projects_dir: &Path, project_path: &str) -> Result<bool, String> {
+    let Some(target) = claude_data_dir_for(projects_dir, project_path) else {
+        return Ok(false);
+    };
+    if target.parent() != Some(projects_dir) {
+        return Ok(false);
+    }
+    if Path::new(project_path.trim()).is_dir() || !target.is_dir() {
+        return Ok(false);
+    }
+    fs::remove_dir_all(&target).map_err(|e| format!("删除 {} 失败：{e}", target.display()))?;
+    Ok(true)
+}
+
+/// 清除失效项目在 Claude Code 用户数据里的会话目录
+/// （~/.claude/projects/<mangled>，含全部 jsonl 会话记录，不可恢复）。
+/// 返回成功删除的目录数；不满足删除条件（目录不存在/项目还活着）的不计入也不报错。
+#[tauri::command]
+async fn purge_claude_project_data(paths: Vec<String>) -> Result<usize, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let dir = claude_projects_dir();
+        let mut removed = 0usize;
+        for p in &paths {
+            if purge_one_project_data(&dir, p)? {
+                removed += 1;
+            }
+        }
+        Ok(removed)
+    })
+    .await
+    .map_err(|e| format!("清除会话数据失败：{e}"))?
+}
+
 /// 返回数据根信息：path = 数据根目录；installMode = true 表示处于安装模式
 /// （数据根在 %APPDATA% 而非 exe 所在目录）
 #[tauri::command]
@@ -3036,6 +3140,55 @@ fn get_data_root() -> DataRootInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// purge 端到端性质：真实路径还在的项目跳过不删；删除只命中精确同名目录，
+    /// 相似名字的兄弟目录分毫无损
+    #[test]
+    fn purge_project_data_skips_alive_and_exact_only() {
+        let root = temp_root("purge");
+        let projects = root.join("projects");
+        let alive = root.join("alive");
+        let dead = root.join("dead");
+        fs::create_dir_all(&alive).unwrap();
+        let data_alive = claude_data_dir_for(&projects, alive.to_str().unwrap()).unwrap();
+        let data_dead = claude_data_dir_for(&projects, dead.to_str().unwrap()).unwrap();
+        fs::create_dir_all(&data_alive).unwrap();
+        fs::create_dir_all(&data_dead).unwrap();
+
+        // 真实路径仍存在 → 不是死数据，跳过
+        assert!(!purge_one_project_data(&projects, alive.to_str().unwrap()).unwrap());
+        assert!(data_alive.is_dir());
+
+        // 真实路径已消失 → 只删精确同名的那一个，兄弟目录不动
+        assert!(purge_one_project_data(&projects, dead.to_str().unwrap()).unwrap());
+        assert!(!data_dead.exists());
+        assert!(data_alive.is_dir());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// purge 的安全性前提：mangle 后的目录名不含路径分隔符、不是 ./.，
+    /// 永远是 projects 目录的直接子目录（删除不会越出数据目录）
+    #[test]
+    fn claude_data_dir_is_direct_child() {
+        let base = Path::new("X:\\base\\.claude\\projects");
+        for p in [
+            r"C:\Users\laphe\AppData\Local\Temp\claude\fast\probe\1\proj",
+            r"D:\MyWorkspaces\jike_hongbao.v2",
+            "/Users/me/my proj",
+            r"..\..\..\Windows",
+            "....//\\\\",
+            "。",
+        ] {
+            let dir = claude_data_dir_for(base, p).expect("非空路径必有数据目录");
+            assert_eq!(dir.parent(), Some(base), "必须是 projects 的直接子目录");
+            let name = dir.file_name().unwrap().to_string_lossy();
+            assert!(!name.contains('/') && !name.contains('\\') && !name.contains(':'));
+            assert_ne!(name, ".");
+            assert_ne!(name, "..");
+        }
+        assert!(claude_data_dir_for(base, "").is_none());
+        assert!(claude_data_dir_for(base, "   ").is_none());
+    }
 
     fn temp_root(name: &str) -> PathBuf {
         let p = std::env::temp_dir().join(format!(
@@ -3720,6 +3873,30 @@ mod tests {
         assert_eq!(m3.blocks[0].kind, "tool_result");
         assert_eq!(m3.blocks[0].text.as_deref(), Some("file1.txt"));
         assert_eq!(m3.blocks[0].tool_use_id.as_deref(), Some("toolu_1"));
+    }
+
+    #[test]
+    fn parse_session_messages_extracts_image_blocks() {
+        let jsonl = format!(
+            "{}\n{}\n",
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"aGk="}},{"type":"text","text":"看这张图"}]},"timestamp":"2026-08-12T06:47:46.519Z"}"#,
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":"dGhlcmU="}}]},"timestamp":"2026-08-12T06:47:47.000Z"}"#,
+        );
+        let r = parse_session_messages(&jsonl);
+        assert_eq!(r.len(), 2);
+        // 带文带图：text 与 image 块都保留
+        assert_eq!(r[0].blocks.len(), 2);
+        assert_eq!(r[0].blocks[0].kind, "image");
+        assert_eq!(r[0].blocks[0].media_type.as_deref(), Some("image/png"));
+        assert_eq!(r[0].blocks[0].data.as_deref(), Some("aGk="));
+        assert_eq!(r[0].blocks[1].kind, "text");
+        assert_eq!(r[0].blocks[1].text.as_deref(), Some("看这张图"));
+        // 纯图消息不再整条消失
+        assert_eq!(r[1].blocks.len(), 1);
+        assert_eq!(r[1].blocks[0].kind, "image");
+        // source 缺 data 的坏块被丢弃（消息无实质块 → 整条不出现）
+        let bad = r#"{"type":"user","message":{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png"}}]}}"#;
+        assert!(parse_session_messages(&format!("{bad}\n")).is_empty());
     }
 
     #[test]
@@ -4643,6 +4820,7 @@ pub fn run() {
             check_claude,
             scan_claude_projects,
             get_claude_projects_dir,
+            purge_claude_project_data,
             list_sessions,
             rename_session,
             delete_session,
@@ -4673,6 +4851,7 @@ pub fn run() {
             provider_import_ccswitch,
             provider_read_live,
             fetch_models_for_config,
+            plan_structure,
             provider_query_usage,
             open_url
         ])

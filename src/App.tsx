@@ -716,9 +716,26 @@ export default function App() {
           items={items}
           claudeOk={claudeOk}
           onClose={() => setDialog(null)}
-          onDelete={async (items) => {
-            for (const l of items) await removeProject(l);
-            setDialog(null);
+          onDelete={(targets) => {
+            setConfirm({
+              title: "清除失效项目",
+              message:
+                `将清除以下 ${targets.length} 个失效项目：\n\n` +
+                targets.map((l) => `${l.name}\n${l.path}`).join("\n\n") +
+                "\n\n同时删除 Claude Code 用户数据里对应的会话记录\n（projects 数据目录下的残留数据，不可恢复）。继续？",
+              okText: "清除",
+              danger: true,
+              onOk: async () => {
+                for (const l of targets) await removeProject(l);
+                try {
+                  const n = await api.purgeClaudeProjectData(targets.map((l) => l.path));
+                  showToast(`已清除 ${targets.length} 个项目，删除 ${n} 份会话数据`);
+                } catch (e) {
+                  showToast("清除会话数据失败：" + String(e));
+                }
+                setDialog(null);
+              },
+            });
           }}
         />
       )}

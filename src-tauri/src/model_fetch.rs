@@ -1,6 +1,7 @@
 //! 拉取供应商可用模型列表——移植自 cc-switch services/model_fetch.rs 的
 //! URL 候选探测逻辑（OpenAI 兼容 GET /v1/models，按候选顺序尝试）。
 
+use serde::Serialize;
 use serde_json::Value;
 use std::io::Read;
 use std::time::Duration;
@@ -22,9 +23,17 @@ const KNOWN_COMPAT_SUFFIXES: &[&str] = &[
     "/claude",
 ];
 
+/// 拉取到的单个模型（owned_by 用于前端下拉按厂商分组，缺失归 "Other"）
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct FetchedModel {
+    pub id: String,
+    pub owned_by: Option<String>,
+}
+
 /// 获取供应商可用模型列表：候选 URL 逐个尝试，404/405 换下一个，
-/// 其余错误立即失败；2xx 解析 `{data:[{id}]}` 按 id 排序去重。
-pub fn fetch_models(base_url: &str, api_key: &str) -> Result<Vec<String>, String> {
+/// 其余错误立即失败；2xx 解析 `{data:[{id,owned_by}]}` 按 id 排序去重。
+pub fn fetch_models(base_url: &str, api_key: &str) -> Result<Vec<FetchedModel>, String> {
     let candidates = build_models_url_candidates(base_url)?;
     let mut last_error = String::new();
     for url in &candidates {
@@ -42,7 +51,7 @@ pub fn fetch_models(base_url: &str, api_key: &str) -> Result<Vec<String>, String
 }
 
 /// (是否可换下一候选重试, 错误消息)
-fn fetch_models_from_url(url: &str, api_key: &str) -> Result<Vec<String>, (bool, String)> {
+fn fetch_models_from_url(url: &str, api_key: &str) -> Result<Vec<FetchedModel>, (bool, String)> {
     let agent = ureq::AgentBuilder::new()
         .timeout(Duration::from_secs(FETCH_TIMEOUT_SECS))
         .build();
@@ -72,20 +81,27 @@ fn fetch_models_from_url(url: &str, api_key: &str) -> Result<Vec<String>, (bool,
     parse_models_response(&body).map_err(|e| (false, e))
 }
 
-/// 解析 OpenAI 兼容的模型列表响应 `{data: [{id: "..."}]}`
-fn parse_models_response(body: &str) -> Result<Vec<String>, String> {
+/// 解析 OpenAI 兼容的模型列表响应 `{data: [{id, owned_by}]}`
+fn parse_models_response(body: &str) -> Result<Vec<FetchedModel>, String> {
     let parsed: Value =
         serde_json::from_str(body).map_err(|e| format!("响应不是合法 JSON: {e}"))?;
     let data = parsed
         .get("data")
         .and_then(|v| v.as_array())
         .ok_or_else(|| "响应缺少 data 数组".to_string())?;
-    let mut models: Vec<String> = data
+    let mut models: Vec<FetchedModel> = data
         .iter()
-        .filter_map(|m| m.get("id").and_then(|v| v.as_str()).map(String::from))
+        .filter_map(|m| {
+            let id = m.get("id").and_then(|v| v.as_str()).map(String::from)?;
+            let owned_by = m
+                .get("owned_by")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            Some(FetchedModel { id, owned_by })
+        })
         .collect();
-    models.sort();
-    models.dedup();
+    models.sort_by(|a, b| a.id.cmp(&b.id));
+    models.dedup_by(|a, b| a.id == b.id);
     Ok(models)
 }
 
@@ -213,11 +229,14 @@ mod tests {
 
     #[test]
     fn parse_models_extracts_sorted_unique_ids() {
-        let body = r#"{"data":[{"id":"claude-b"},{"id":"claude-a"},{"id":"claude-a"},{"object":"model"}]}"#;
-        assert_eq!(
-            parse_models_response(body).unwrap(),
-            vec!["claude-a".to_string(), "claude-b".to_string()]
-        );
+        let body = r#"{"data":[{"id":"claude-b","owned_by":"zhipu"},{"id":"claude-a"},{"id":"claude-a","owned_by":"other"},{"object":"model"}]}"#;
+        let models = parse_models_response(body).unwrap();
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].id, "claude-a");
+        // 去重保留排序后的首个（重复项的 owned_by 丢弃）
+        assert_eq!(models[0].owned_by, None);
+        assert_eq!(models[1].id, "claude-b");
+        assert_eq!(models[1].owned_by, Some("zhipu".to_string()));
     }
 
     #[test]
