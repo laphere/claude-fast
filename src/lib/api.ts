@@ -131,6 +131,9 @@ export const api = {
   /** 删除供应商（禁止删除当前启用的） */
   providerDelete: (id: string) =>
     invoke<ProviderListState>("provider_delete", { id }),
+  /** 拖拽排序持久化：按 ids 顺序重排清单 */
+  providerReorder: (ids: string[]) =>
+    invoke<ProviderListState>("provider_reorder", { ids }),
   /** 切换供应商：回填离任 → 记 current → 整文件原子替换 settings.json */
   providerSwitch: (id: string) =>
     invoke<ProviderSwitchOutcome>("provider_switch", { id }),

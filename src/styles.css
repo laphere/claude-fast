@@ -2852,11 +2852,39 @@ mark {
   background: var(--panel);
 }
 
-/* 信息区；操作按钮绝对定位垂直居中于「整张卡片」（含用量行），
-   信息区右侧预留按钮列宽度防止文字钻到按钮下面 */
+/* 单行三段式（cc-switch 布局）：信息（弹性）+ 用量列 + 操作按钮 */
 .provider-main {
-  padding-right: 210px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
   min-width: 0;
+}
+
+/* 拖拽排序把手：默认低调显示，悬停/按下增强 */
+.provider-drag-handle {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  color: var(--dim);
+  opacity: 0.45;
+  cursor: grab;
+  touch-action: none; /* 指针拖拽期间不让浏览器接管手势 */
+}
+
+.provider-drag-handle:hover {
+  opacity: 0.85;
+}
+
+.provider-drag-handle:active {
+  cursor: grabbing;
+}
+
+/* 拖拽中的卡片：实体抬起跟手，阴影强化「实物」感（不做半透明虚化） */
+.provider-card.dragging {
+  position: relative;
+  z-index: 10;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.16);
+  cursor: grabbing;
 }
 
 .provider-card.current {
@@ -2865,6 +2893,7 @@ mark {
 }
 
 .provider-info {
+  flex: 1;
   min-width: 0;
 }
 
@@ -2915,12 +2944,27 @@ mark {
 }
 
 .provider-actions {
-  position: absolute;
-  right: 12px;
-  top: 50%;
-  transform: translateY(-50%);
   display: flex;
+  align-items: center;
   gap: 6px;
+  flex-shrink: 0;
+}
+
+/* 卡片内小号图标按钮（复制/编辑/删除） */
+.icon-btn-sm {
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+}
+
+.icon-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.provider-del-btn:not(:disabled):hover {
+  color: var(--danger);
+  border-color: var(--danger);
 }
 
 .provider-footer {
@@ -3202,22 +3246,28 @@ mark {
   line-height: 1.5;
 }
 
-/* ============ 卡片用量条 ============ */
+/* ============ 卡片用量列 ============ */
+/* 右侧用量列：查询行在上、分档行在下，整体贴右对齐 */
 .provider-usage {
   display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 5px;
-  margin-top: 6px;
-  /* 与徽标行（11px 字号 + 16px line-height + 上下 1px padding）同高：
-     骨架占位 → 结果原地替换，卡片高度零变化 */
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+  flex-shrink: 0;
   min-height: 18px;
 }
 
-/* 首查加载中的骨架 pill（模拟用量徽标形状，脉冲呼吸） */
+.usage-meta {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  line-height: 16px;
+}
+
+/* 首查加载中的骨架细条（模拟分档行形状，脉冲呼吸） */
 .usage-skeleton {
-  height: 18px;
-  border-radius: 999px;
+  height: 12px;
+  border-radius: 4px;
   background: var(--border);
   opacity: 0.55;
   animation: usage-pulse 1.2s ease-in-out infinite;
@@ -3243,33 +3293,35 @@ mark {
   }
 }
 
-/* 用量徽标：中性底描边，颜色只用于百分比数字（视觉锚点），
-   名称/倒计时弱化显示，避免满屏色块淹没关键信息 */
+/* 用量分档行：纯文本（去 pill 描边），颜色只用于百分比数字（视觉锚点），
+   名称/倒计时弱化显示；名称与倒计时定宽保证多行纵向对齐 */
 .usage-tier {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 11px;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 11.5px;
   line-height: 16px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 0 8px;
   color: var(--text);
   white-space: nowrap;
 }
 
 .usage-tier-name {
+  min-width: 32px; /* 「5小时」三字宽，多行标签左对齐成列 */
   opacity: 0.6;
 }
 
 .usage-pct {
+  min-width: 4ch;
+  text-align: right;
   font-weight: 700;
   font-family: Consolas, monospace;
 }
 
-.usage-extra,
 .usage-reset {
+  min-width: 52px; /* 倒计时缺失时撑住列位，避免多行错位 */
   opacity: 0.6;
+  font-size: 11px;
+  font-family: Consolas, monospace;
 }
 
 /* 分档阈值与色值对齐 cc-switch utilizationColor（Tailwind green-600/orange-500/red-500） */

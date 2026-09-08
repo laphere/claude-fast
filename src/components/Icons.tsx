@@ -50,6 +50,49 @@ export function TrashIcon({ size = 13, className }: IconProps) {
   );
 }
 
+/** 复制配置（双叠矩形） */
+export function CopyIcon({ size = 13, className }: IconProps) {
+  return (
+    <svg
+      className={className}
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect width="14" height="14" x="8" y="8" rx="2" ry="2" />
+      <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
+    </svg>
+  );
+}
+
+/** 拖拽排序把手（两列圆点） */
+export function GripIcon({ size = 13, className }: IconProps) {
+  return (
+    <svg
+      className={className}
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      stroke="none"
+      aria-hidden="true"
+    >
+      <circle cx="9" cy="5" r="1.6" />
+      <circle cx="15" cy="5" r="1.6" />
+      <circle cx="9" cy="12" r="1.6" />
+      <circle cx="15" cy="12" r="1.6" />
+      <circle cx="9" cy="19" r="1.6" />
+      <circle cx="15" cy="19" r="1.6" />
+    </svg>
+  );
+}
+
 /** 搜索放大镜 */
 export function SearchIcon({ size = 13, className }: IconProps) {
   return (
