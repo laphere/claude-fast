@@ -1,9 +1,17 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import Modal from "./Modal";
 import ConfirmDialog from "./ConfirmDialog";
 import PresetPicker, { CATEGORY_LABEL } from "./PresetPicker";
-import { EyeIcon, EyeOffIcon } from "./Icons";
+import {
+  CopyIcon,
+  EyeIcon,
+  EyeOffIcon,
+  GripIcon,
+  PencilIcon,
+  PlayIcon,
+  TrashIcon,
+} from "./Icons";
 import { api } from "../lib/api";
 import type {
   FetchedModel,
@@ -179,9 +187,9 @@ function setEnvKey(cfg: Record<string, unknown>, key: string, value: string) {
 // ---------------- 用量展示工具 ----------------
 
 const TIER_LABEL: Record<string, string> = {
-  five_hour: "5h",
-  weekly_limit: "周",
-  monthly: "月",
+  five_hour: "5小时",
+  weekly_limit: "7天",
+  monthly: "每月",
 };
 
 /**
@@ -333,6 +341,219 @@ export default function ProviderDialog({ state, onClose, onChanged, toast }: Pro
       setBusy(false);
     }
   };
+
+  // ---------- 拖拽排序（CC Switch 式实体拖动：原卡跟手，其余卡片 FLIP 滑位） ----------
+  // 拖拽中的乐观顺序（null = 跟随 props）：松手后调用 providerReorder 持久化，
+  // 新清单经 onChanged 回流（providers 变化）后由 effect 清掉覆盖；失败回弹原序
+  const [dragList, setDragList] = useState<ProviderInfo[] | null>(null);
+  const dragListRef = useRef<ProviderInfo[] | null>(null);
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const cardRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  // providers 实时镜像：window 级拖拽监听的闭包里读它，避免读过期的 props
+  const providersRef = useRef(providers);
+  providersRef.current = providers;
+  // 拖拽会话：跟手位移与命中测试所需的最小几何信息
+  const dragCtxRef = useRef<{
+    id: string;
+    /** 按下点相对卡片顶边的偏移（保持抓在哪就跟到哪） */
+    grabOffsetY: number;
+    lastPointerY: number;
+  } | null>(null);
+  // 槽位几何（按下瞬间测量、按 id 键控）：命中测试与 FLIP 的解析基准。
+  // 不读实时 rect——FLIP 动画中的 transform 会让 getBoundingClientRect 失真
+  const dragMetaRef = useRef<{
+    top0: number;
+    gap: number;
+    heights: Record<string, number>;
+  } | null>(null);
+  /** 本轮换位前各卡槽位 top（FLIP 起点） */
+  const flipFromRef = useRef<Map<string, number> | null>(null);
+
+  const shownProviders = dragList ?? providers;
+
+  useEffect(() => {
+    dragListRef.current = null;
+    setDragList(null);
+  }, [providers]);
+
+  const applyDragList = (list: ProviderInfo[] | null) => {
+    dragListRef.current = list;
+    setDragList(list);
+  };
+
+  // 当前顺序下各卡片的自然槽位 top（不含拖拽 transform）
+  const slotTops = (list: ProviderInfo[]): number[] => {
+    const meta = dragMetaRef.current;
+    if (!meta) return [];
+    let acc = meta.top0;
+    return list.map((p) => {
+      const top = acc;
+      acc += (meta.heights[p.id] ?? 0) + meta.gap;
+      return top;
+    });
+  };
+
+  const moveProvider = (from: number, to: number) => {
+    const base = dragListRef.current ?? providers;
+    if (
+      from === to ||
+      from < 0 ||
+      to < 0 ||
+      from >= base.length ||
+      to >= base.length
+    )
+      return;
+    const oldTops = new Map(
+      slotTops(base).map((top, i) => [base[i].id as string, top]),
+    );
+    const next = [...base];
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
+    flipFromRef.current = oldTops;
+    applyDragList(next);
+  };
+
+  // 按下把手即进入拖拽会话；后续 move/up 改在 window 上监听（见下方 effect）。
+  // 不用 pointer capture：React 换位会移动卡片 DOM 节点，capture 可能随之丢失
+  // （拖拽冻结）或残留（吞掉后续所有点击，界面假死），window 监听对节点移动免疫
+  const onHandlePointerDown = (
+    e: React.PointerEvent<HTMLSpanElement>,
+    id: string,
+  ) => {
+    if (e.button !== 0 || busy) return;
+    const card = cardRefs.current.get(id);
+    if (!card) return;
+    e.preventDefault(); // 防止拖动时选中卡片文字
+    const list = dragListRef.current ?? providersRef.current;
+    const draggedRect = card.getBoundingClientRect();
+    const heights: Record<string, number> = {};
+    let top0 = draggedRect.top;
+    let gap = 8;
+    list.forEach((p, i) => {
+      const c = cardRefs.current.get(p.id);
+      if (!c) return;
+      const r = c.getBoundingClientRect();
+      heights[p.id] = r.height;
+      if (i === 0) top0 = r.top;
+      if (i === 1) gap = r.top - top0 - heights[list[0].id];
+    });
+    dragMetaRef.current = { top0, gap, heights };
+    dragCtxRef.current = {
+      id,
+      grabOffsetY: e.clientY - draggedRect.top,
+      lastPointerY: e.clientY,
+    };
+    setDraggingId(id);
+  };
+
+  const persistOrder = async (list: ProviderInfo[]) => {
+    try {
+      const st = await api.providerReorder(list.map((p) => p.id));
+      onChanged(st); // 新顺序回流 → providers 变化 → effect 清掉 dragList
+    } catch (err) {
+      toast("排序保存失败：" + String(err));
+      applyDragList(null); // 回弹到原顺序
+    }
+  };
+
+  // window 级拖拽监听：进入拖拽态才挂载；pointerup/pointercancel/blur 三路兜底，
+  // 即使指针飞出窗口或事件流异常，拖拽也必然收尾（不再卡死）
+  useEffect(() => {
+    if (!draggingId) return;
+
+    const onMove = (e: PointerEvent) => {
+      const ctx = dragCtxRef.current;
+      if (!ctx) return;
+      e.preventDefault(); // 需配合 passive: false
+      ctx.lastPointerY = e.clientY;
+      const list = dragListRef.current ?? providersRef.current;
+      const card = cardRefs.current.get(ctx.id);
+      if (!card) return;
+      const tops = slotTops(list);
+      const myIdx = list.findIndex((p) => p.id === ctx.id);
+      if (myIdx < 0) return;
+      // 跟手：视觉顶边 = 指针 - 抓取偏移，位移相对自然槽位
+      card.style.transform = `translateY(${e.clientY - ctx.grabOffsetY - tops[myIdx]}px)`;
+      // 命中：指针越过几张非拖拽卡片的中点，即为目标插入位
+      const meta = dragMetaRef.current;
+      let target = 0;
+      list.forEach((p, i) => {
+        if (
+          p.id !== ctx.id &&
+          e.clientY > tops[i] + (meta?.heights[p.id] ?? 0) / 2
+        )
+          target++;
+      });
+      if (target !== myIdx) moveProvider(myIdx, target);
+    };
+
+    const onEnd = () => {
+      if (!dragCtxRef.current) return;
+      dragCtxRef.current = null;
+      setDraggingId(null);
+      const card = cardRefs.current.get(draggingId);
+      if (card) {
+        // 从跟随位置平滑落回槽位
+        card.style.transition = "transform 160ms ease";
+        card.style.transform = "";
+        window.setTimeout(() => {
+          card.style.transition = "";
+        }, 200);
+      }
+      const list = dragListRef.current;
+      if (!list) return;
+      if (list.every((p, i) => p.id === providersRef.current[i]?.id)) {
+        applyDragList(null); // 顺序未变，直接复位
+        return;
+      }
+      persistOrder(list);
+    };
+
+    window.addEventListener("pointermove", onMove, { passive: false });
+    window.addEventListener("pointerup", onEnd);
+    window.addEventListener("pointercancel", onEnd);
+    window.addEventListener("blur", onEnd);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onEnd);
+      window.removeEventListener("pointercancel", onEnd);
+      window.removeEventListener("blur", onEnd);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draggingId]);
+
+  // 顺序变化后的动画：其余卡片 FLIP 滑到新槽位；拖拽卡把位移基准换到新槽位（视觉不跳）
+  useLayoutEffect(() => {
+    const ctx = dragCtxRef.current;
+    if (!dragList || !ctx) return;
+    const newTops = slotTops(dragList);
+    const oldTops = flipFromRef.current;
+    if (oldTops) {
+      flipFromRef.current = null;
+      dragList.forEach((p, i) => {
+        if (p.id === ctx.id) return;
+        const el = cardRefs.current.get(p.id);
+        const oldTop = oldTops.get(p.id);
+        if (!el || oldTop === undefined) return;
+        const dy = oldTop - newTops[i];
+        if (Math.abs(dy) < 1) return;
+        el.style.transition = "none";
+        el.style.transform = `translateY(${dy}px)`;
+        el.getBoundingClientRect(); // 强制回流，让过渡从旧位起效
+        el.style.transition = "transform 180ms cubic-bezier(0.2, 0, 0, 1)";
+        el.style.transform = "";
+        window.setTimeout(() => {
+          el.style.transition = "";
+        }, 220);
+      });
+    }
+    const card = cardRefs.current.get(ctx.id);
+    const myIdx = dragList.findIndex((p) => p.id === ctx.id);
+    if (card && myIdx >= 0) {
+      card.style.transform = `translateY(${ctx.lastPointerY - ctx.grabOffsetY - newTops[myIdx]}px)`;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dragList]);
 
   // ---------- 表单 ----------
   const openCreate = () => {
@@ -645,7 +866,7 @@ export default function ProviderDialog({ state, onClose, onChanged, toast }: Pro
   return (
     <Modal
       title="供应商切换"
-      width={640}
+      width={700}
       onClose={onClose}
       footer={
         form ? (
@@ -812,16 +1033,29 @@ export default function ProviderDialog({ state, onClose, onChanged, toast }: Pro
             </div>
           )}
           <div className="provider-list">
-            {providers.map((p) => {
+            {shownProviders.map((p) => {
               const isCurrent = p.id === currentId;
               const baseUrl = extractBaseUrl(p.settingsConfig);
               const u = usage[p.id];
               return (
                 <div
                   key={p.id}
-                  className={`provider-card ${isCurrent ? "current" : ""}`}
+                  ref={(el) => {
+                    if (el) cardRefs.current.set(p.id, el);
+                    else cardRefs.current.delete(p.id);
+                  }}
+                  className={`provider-card ${isCurrent ? "current" : ""} ${
+                    draggingId === p.id ? "dragging" : ""
+                  }`}
                 >
                   <div className="provider-main">
+                    <span
+                      className="provider-drag-handle"
+                      title="拖拽调整顺序"
+                      onPointerDown={(e) => onHandlePointerDown(e, p.id)}
+                    >
+                      <GripIcon />
+                    </span>
                     <div className="provider-info">
                       <div className="provider-name">
                         <span title={p.name}>{p.name}</span>
@@ -836,48 +1070,50 @@ export default function ProviderDialog({ state, onClose, onChanged, toast }: Pro
                         {baseUrl || "官方默认端点"}
                       </div>
                     </div>
+                    {/* 用量列（cc-switch 式右侧信息区：查询行 + 分档行），夹在信息与操作按钮之间 */}
+                    {detectUsageVendor(baseUrl) && (
+                      <UsageStrip
+                        state={u}
+                        onRefresh={() => refreshUsage([p], true)}
+                      />
+                    )}
                     <div className="provider-actions">
-                      {!isCurrent && (
-                        <button
-                          className="btn btn-sm"
-                          disabled={busy}
-                          onClick={() => switchTo(p)}
-                        >
-                          启用
-                        </button>
-                      )}
+                      {/* 当前供应商也渲染（禁用），保证各卡片按钮列等宽、用量列位置一致 */}
                       <button
-                        className="btn btn-sm"
+                        className="btn btn-sm btn-primary"
+                        title={isCurrent ? "当前供应商已启用" : "启用"}
+                        disabled={busy || isCurrent}
+                        onClick={() => switchTo(p)}
+                      >
+                        <PlayIcon size={11} />
+                        启用
+                      </button>
+                      <button
+                        className="icon-btn icon-btn-sm"
                         title="复制此配置为新供应商"
                         disabled={busy}
                         onClick={() => duplicateProvider(p)}
                       >
-                        复制
+                        <CopyIcon />
                       </button>
                       <button
-                        className="btn btn-sm"
+                        className="icon-btn icon-btn-sm"
+                        title="编辑"
                         disabled={busy}
                         onClick={() => openEdit(p)}
                       >
-                        编辑
+                        <PencilIcon />
                       </button>
                       <button
-                        className="btn btn-sm btn-danger"
+                        className="icon-btn icon-btn-sm provider-del-btn"
                         title={isCurrent ? "当前供应商不可删除" : "删除"}
                         disabled={busy || isCurrent}
                         onClick={() => setConfirmDelete(p)}
                       >
-                        删除
+                        <TrashIcon />
                       </button>
                     </div>
                   </div>
-                  {/* 用量条横跨卡片整行（同 cc-switch footer 布局），不与操作按钮抢宽度 */}
-                  {detectUsageVendor(baseUrl) && (
-                    <UsageStrip
-                      state={u}
-                      onRefresh={() => refreshUsage([p], true)}
-                    />
-                  )}
                 </div>
               );
             })}
@@ -1053,10 +1289,11 @@ function ModelSelect({
 }
 
 /**
- * 卡片内联用量条：`5h 37% · 2h 13m` 徽标 + 刷新按钮。
- * 渲染条件由调用方保证：仅当 base_url 探测命中厂商时挂载（占位防跳动）——
- * 首查加载中显示骨架 pill（与徽标行同高，结果到达原地替换，布局零位移）；
- * 刷新时保留旧结果，不闪骨架。
+ * 卡片右侧用量列（cc-switch 式）：首行「N分钟前查询 + 刷新」，下方每档一行
+ * `5小时 37% · 2h 13m`——名称/倒计时弱化，百分比着色作为视觉锚点，
+ * USD 金额与原始重置时刻收进悬停提示以降低密度。
+ * 渲染条件由调用方保证：仅当 base_url 探测命中厂商时挂载——
+ * 首查加载中显示骨架行（结果到达原地替换）；刷新时保留旧结果，不闪骨架。
  */
 function UsageStrip({
   state,
@@ -1069,66 +1306,65 @@ function UsageStrip({
   const result = state?.result;
   const fetchedAt = state?.fetchedAt;
 
+  const refreshBtn = (
+    <button
+      className={`usage-refresh ${loading ? "loading" : ""}`}
+      title="刷新用量"
+      onClick={onRefresh}
+      disabled={loading}
+    >
+      ⟳
+    </button>
+  );
+
   // 探测命中但后端返回不支持（两侧清单同步后理论上不会发生）：占位行留空
   if (result && !result.supported) {
     return <div className="provider-usage" aria-hidden="true" />;
   }
 
-  // 首查中：骨架占位
+  // 首查中：骨架占位（查询行 + 两根细条，近似最终列高）
   if (!result) {
     return (
       <div className="provider-usage">
+        <div className="usage-meta">{refreshBtn}</div>
+        <span className="usage-skeleton" style={{ width: 92 }} />
         <span className="usage-skeleton" style={{ width: 72 }} />
-        <span className="usage-skeleton" style={{ width: 52 }} />
-        <button
-          className={`usage-refresh ${loading ? "loading" : ""}`}
-          title="刷新用量"
-          onClick={onRefresh}
-          disabled={loading}
-        >
-          ⟳
-        </button>
       </div>
     );
   }
 
   return (
     <div className="provider-usage">
+      <div className="usage-meta">
+        {fetchedAt && (
+          <span className="usage-queried-at" title="上次查询时间">
+            {fmtAgo(fetchedAt)}查询
+          </span>
+        )}
+        {refreshBtn}
+      </div>
       {result.data.map((t: UsageTier) => {
         const cd = fmtCountdown(t.resetsAt);
         const usd =
           t.usedValueUsd != null && t.maxValueUsd != null
-            ? `$${t.usedValueUsd.toFixed(2)}/$${t.maxValueUsd.toFixed(2)}`
+            ? `已用 $${t.usedValueUsd.toFixed(2)} / $${t.maxValueUsd.toFixed(2)}`
             : "";
+        const tip = [usd, t.resetsAt ?? ""].filter(Boolean).join(" · ");
         return (
-          <span key={t.name} className="usage-tier" title={t.resetsAt ?? undefined}>
+          <div key={t.name} className="usage-tier" title={tip || undefined}>
             <span className="usage-tier-name">{TIER_LABEL[t.name] ?? t.name}</span>
             <b className={`usage-pct usage-${usageLevel(t.utilization)}`}>
               {Math.round(t.utilization)}%
             </b>
-            {usd && <span className="usage-extra">{usd}</span>}
-            {cd && <span className="usage-reset">· {cd}</span>}
-          </span>
+            <span className="usage-reset">{cd ? `· ${cd}` : ""}</span>
+          </div>
         );
       })}
       {result.error && (
-        <span className="usage-tier usage-err" title={result.error}>
+        <div className="usage-tier usage-err" title={result.error}>
           {result.error}
-        </span>
+        </div>
       )}
-      {fetchedAt && (
-        <span className="usage-queried-at" title="上次查询时间">
-          {fmtAgo(fetchedAt)}查询
-        </span>
-      )}
-      <button
-        className={`usage-refresh ${loading ? "loading" : ""}`}
-        title="刷新用量"
-        onClick={onRefresh}
-        disabled={loading}
-      >
-        ⟳
-      </button>
     </div>
   );
 }

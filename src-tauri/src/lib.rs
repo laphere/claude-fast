@@ -2897,6 +2897,28 @@ fn provider_delete_from(
 }
 
 #[tauri::command]
+fn provider_reorder(ids: Vec<String>) -> Result<ProviderListState, String> {
+    provider_reorder_from(&provider::claude_config_dir(), &resolve_root_dir(), &ids)
+}
+
+/// 拖拽排序持久化：按 ids 给定顺序稳定重排清单。未提及的 id（理论不存在，
+/// 防御外部并发改动）按原相对顺序沉底、多余的 id 忽略，保证不丢数据
+fn provider_reorder_from(
+    _config_dir: &Path,
+    root: &Path,
+    ids: &[String],
+) -> Result<ProviderListState, String> {
+    let mut cfg = load_config_from(root);
+    cfg.providers
+        .sort_by_key(|p| ids.iter().position(|id| p.id == *id).unwrap_or(usize::MAX));
+    save_config_file(root, &cfg)?;
+    Ok(ProviderListState {
+        providers: cfg.providers,
+        current_id: cfg.current_provider,
+    })
+}
+
+#[tauri::command]
 fn provider_switch(id: String) -> Result<ProviderSwitchOutcome, String> {
     provider_switch_from(&provider::claude_config_dir(), &resolve_root_dir(), &id)
 }
@@ -4653,6 +4675,38 @@ mod tests {
         assert_eq!(cst.per_day["2026-08-18"].0, 101); // 16:00 那条
         assert_eq!(cst.per_day["2026-08-17"].0, 202);
     }
+
+    /// 拖拽排序持久化：按 ids 稳定重排、未提及 id 沉底、落盘对 load 可见
+    #[test]
+    fn provider_reorder_persists_order() {
+        let root = temp_root("provider-reorder");
+        fs::write(
+            root.join("config.json"),
+            r#"{"favorites":[],"dark":false,"providers":[
+                {"id":"a","name":"A","settingsConfig":{}},
+                {"id":"b","name":"B","settingsConfig":{}},
+                {"id":"c","name":"C","settingsConfig":{}}],
+                "currentProvider":"a"}"#,
+        )
+        .unwrap();
+
+        // 整表重排 c→a→b，current 不受影响
+        let ids = vec!["c".to_string(), "a".to_string(), "b".to_string()];
+        let out = provider_reorder_from(&root, &root, &ids).unwrap();
+        let order: Vec<String> = out.providers.iter().map(|p| p.id.clone()).collect();
+        assert_eq!(order, vec!["c", "a", "b"]);
+        assert_eq!(out.current_id.as_deref(), Some("a"));
+
+        // 只提及 b：c/a 未提及 → 按当前相对顺序沉底；再读盘验证已持久化
+        let ids2 = vec!["b".to_string()];
+        let out2 = provider_reorder_from(&root, &root, &ids2).unwrap();
+        let order2: Vec<String> = out2.providers.iter().map(|p| p.id.clone()).collect();
+        assert_eq!(order2, vec!["b", "c", "a"]);
+        let reread = provider_list_from(&root, &root);
+        let order3: Vec<String> = reread.providers.iter().map(|p| p.id.clone()).collect();
+        assert_eq!(order3, vec!["b", "c", "a"]);
+        fs::remove_dir_all(&root).unwrap();
+    }
 }
 
 /// 退出程序（托盘菜单/前端调用；绕过关闭拦截直接退出）
@@ -4746,6 +4800,7 @@ pub fn run() {
             provider_list,
             provider_save,
             provider_delete,
+            provider_reorder,
             provider_switch,
             provider_import_ccswitch,
             provider_read_live,
