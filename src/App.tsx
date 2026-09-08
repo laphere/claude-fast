@@ -453,7 +453,12 @@ export default function App() {
         providerName={
           providerState?.providers.find((p) => p.id === providerState?.currentId)?.name ?? null
         }
-        onProviders={() => setProviderOpen(true)}
+        onProviders={() => {
+          setProviderOpen(true);
+          // 打开时重新拉取：live 可能已被外部工具（CC Switch 等）改写，
+          // 后端 provider_list 顺带做标记重锚定，保证「当前」徽标是磁盘实况
+          api.providerList().then(setProviderState).catch(() => {});
+        }}
       />
 
       <Toolbar

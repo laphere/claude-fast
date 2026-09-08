@@ -2830,6 +2830,11 @@ fn provider_list_from(config_dir: &Path, root: &Path) -> ProviderListState {
             cfg.current_provider = None;
         }
     }
+    // 标记重锚定：live 被外部工具（CC Switch、官方一键配置等）改写时以磁盘为准，
+    // 修正脱节的 current 并落盘（失败不阻塞清单展示）
+    if provider::reanchor_current_from(config_dir, &cfg.providers, &mut cfg.current_provider) {
+        let _ = save_config_file(root, &cfg);
+    }
     ProviderListState {
         providers: cfg.providers,
         current_id: cfg.current_provider,
