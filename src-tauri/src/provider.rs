@@ -131,9 +131,26 @@ pub fn read_live_settings(config_dir: &Path) -> Option<Value> {
 
 // ---------------- 切换 ----------------
 
+/// 供应商身份指纹：env 里的 baseURL + 凭证（AUTH_TOKEN 优先，回退 API_KEY）。
+/// 回填守卫的判定依据——live 只有仍属于离任供应商（指纹一致）才允许吸收，
+/// None = 无 env/baseURL 等无法判定的情况（维持原语义）
+fn env_fingerprint(value: &Value) -> Option<(String, Option<String>)> {
+    let env = value.get("env")?;
+    let base = env.get("ANTHROPIC_BASE_URL")?.as_str()?;
+    let cred = env
+        .get("ANTHROPIC_AUTH_TOKEN")
+        .or_else(|| env.get("ANTHROPIC_API_KEY"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    Some((base.to_string(), cred))
+}
+
 /// 切换核心（cc-switch ProviderService::switch_normal 的 Claude 最小语义，顺序一致）：
 /// 1) 回填：live 整文件写回离任供应商（用户在 Claude Code 里的手工修改不丢失；
-///    live 缺失/损坏仅告警不阻塞）；切给自己时不回填（与上游一致）
+///    live 缺失/损坏仅告警不阻塞）；切给自己时不回填（与上游一致）；
+///    live 指纹与离任条目不符时跳过回填仅告警——current 标记可能与磁盘脱节
+///    （外部工具改写 settings.json、导入采纳 is_current 不写盘等），照常吸收会
+///    把别家配置静默灌进离任条目
 /// 2) current 指向目标（先记后写，写失败时 current 已指向新供应商，与上游一致）
 /// 3) sanitize 后整文件原子替换 live
 pub fn switch_provider_from(
@@ -154,7 +171,20 @@ pub fn switch_provider_from(
         if let Some(cur) = current_id.clone() {
             if let Some(slot) = providers.iter_mut().find(|p| p.id == cur) {
                 match read_json_file(&path) {
-                    Some(live) => slot.settings_config = live,
+                    Some(live) => {
+                        match (
+                            env_fingerprint(&live),
+                            env_fingerprint(&slot.settings_config),
+                        ) {
+                            // 两侧指纹可判定且不一致 = live 已不属于离任供应商
+                            (Some(live_fp), Some(slot_fp)) if live_fp != slot_fp => {
+                                warnings.push(format!("backfill_skipped:{cur}"));
+                            }
+                            // 指纹一致（吸收手工修改）或无法判定（无 env 等退化情况），
+                            // 维持上游原语义
+                            _ => slot.settings_config = live,
+                        }
+                    }
                     None => warnings.push(format!("backfill_failed:{cur}")),
                 }
             }
@@ -164,6 +194,35 @@ pub fn switch_provider_from(
     *current_id = Some(target_id.to_string());
     write_json_atomic(&path, &sanitize_claude_settings(&target.settings_config))?;
     Ok(warnings)
+}
+
+/// 标记重锚定：live 与唯一条目 sanitize 后完全一致而 current 指向别人时，
+/// 以磁盘为准修正 current——外部工具改写 settings.json 的自愈，保证「当前」
+/// 徽标不失真、下次切换的回填对象正确。0 个匹配（live 有手工改动）或多个匹配
+/// （重复条目）时保持原状。返回是否修正（由调用方决定落盘）。
+pub fn reanchor_current_from(
+    config_dir: &Path,
+    providers: &[ProviderInfo],
+    current_id: &mut Option<String>,
+) -> bool {
+    let live = match read_json_file(&claude_settings_path_from(config_dir)) {
+        Some(v) => v,
+        None => return false,
+    };
+    // 与 live 写盘路径对称：条目侧也过 sanitize，避免内部键差异造成漏配
+    let mut matched = providers
+        .iter()
+        .filter(|p| sanitize_claude_settings(&p.settings_config) == live);
+    match (matched.next(), matched.next()) {
+        (Some(only), None) => {
+            if current_id.as_deref() == Some(only.id.as_str()) {
+                return false;
+            }
+            *current_id = Some(only.id.clone());
+            true
+        }
+        _ => false,
+    }
 }
 
 // ---------------- CC Switch SQL 备份导入 ----------------
@@ -567,10 +626,10 @@ mod tests {
     fn switch_writes_target_and_backfills_outgoing() {
         let dir = temp_dir("switch");
         let path = dir.join("settings.json");
-        // live 当前是 old 的配置，且用户在 Claude Code 里手工加过 permissions
+        // live 当前是 old 的配置（指纹一致），且用户在 Claude Code 里手工加过 permissions
         fs::write(
             &path,
-            r#"{"env":{"ANTHROPIC_BASE_URL":"https://old.example","ANTHROPIC_AUTH_TOKEN":"sk-old"},"permissions":{"defaultMode":"acceptEdits"}}"#,
+            r#"{"env":{"ANTHROPIC_BASE_URL":"https://old.example","ANTHROPIC_AUTH_TOKEN":"sk-1"},"permissions":{"defaultMode":"acceptEdits"}}"#,
         )
         .unwrap();
         let old = provider("old", "https://old.example");
@@ -663,6 +722,122 @@ mod tests {
         let bak: Value =
             serde_json::from_slice(&fs::read(dir.join("settings.json.bak")).unwrap()).unwrap();
         assert_eq!(bak["env"], json!({}));
+    }
+
+    #[test]
+    fn switch_skips_backfill_when_live_belongs_elsewhere() {
+        // 标记脱节：current 指向 old，但 live 已被外部工具（CC Switch 等）写成别家配置
+        let dir = temp_dir("switch-stale");
+        let path = dir.join("settings.json");
+        fs::write(
+            &path,
+            r#"{"env":{"ANTHROPIC_BASE_URL":"https://other.example","ANTHROPIC_AUTH_TOKEN":"sk-other"},"permissions":{"defaultMode":"acceptEdits"}}"#,
+        )
+        .unwrap();
+        let old = provider("old", "https://old.example");
+        let old_stored = old.settings_config.clone();
+        let mut providers = vec![old, provider("new", "https://new.example")];
+        let mut current = Some("old".to_string());
+
+        let warnings =
+            switch_provider_from(&dir, &mut providers, &mut current, "new").unwrap();
+        assert_eq!(warnings, vec!["backfill_skipped:old".to_string()]);
+
+        // 离任条目保持原配置不被别家内容覆盖
+        let old_slot = providers.iter().find(|p| p.id == "old").unwrap();
+        assert_eq!(old_slot.settings_config, old_stored);
+        // 切换本身照常完成
+        assert_eq!(current.as_deref(), Some("new"));
+        let live: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(
+            live["env"]["ANTHROPIC_BASE_URL"],
+            json!("https://new.example")
+        );
+    }
+
+    #[test]
+    fn switch_backfill_accepts_api_key_fingerprint() {
+        // OpenCode Go 类条目用 ANTHROPIC_API_KEY：指纹回退到 API_KEY，一致时照常吸收
+        let dir = temp_dir("switch-apikey");
+        let path = dir.join("settings.json");
+        fs::write(
+            &path,
+            r#"{"env":{"ANTHROPIC_BASE_URL":"https://old.example","ANTHROPIC_API_KEY":"sk-1"},"permissions":{"allow":["Bash"]}}"#,
+        )
+        .unwrap();
+        let mut old = provider("old", "https://old.example");
+        let env = old.settings_config["env"].as_object_mut().unwrap();
+        env.remove("ANTHROPIC_AUTH_TOKEN");
+        env.insert("ANTHROPIC_API_KEY".to_string(), json!("sk-1"));
+        let mut providers = vec![old, provider("new", "https://new.example")];
+        let mut current = Some("old".to_string());
+
+        let warnings =
+            switch_provider_from(&dir, &mut providers, &mut current, "new").unwrap();
+        assert!(warnings.is_empty());
+        let old_slot = providers.iter().find(|p| p.id == "old").unwrap();
+        assert_eq!(
+            old_slot.settings_config["permissions"]["allow"][0],
+            json!("Bash")
+        );
+    }
+
+    // ---------------- 标记重锚定 ----------------
+
+    #[test]
+    fn reanchor_updates_current_when_live_matches_other_entry() {
+        let dir = temp_dir("reanchor");
+        let mut b = provider("b", "https://b.example");
+        // 条目带内部键：live 落盘时被 sanitize 剥掉，重锚定按 sanitize 后比对仍应命中
+        b.settings_config["apiFormat"] = json!("openai_chat");
+        b.settings_config["permissions"] = json!({ "defaultMode": "bypassPermissions" });
+        let providers = vec![provider("a", "https://a.example"), b];
+        // 外部工具把 live 写成了 b 的内容（sanitize 后）
+        write_json_atomic(
+            &dir.join("settings.json"),
+            &sanitize_claude_settings(&providers[1].settings_config),
+        )
+        .unwrap();
+        let mut current = Some("a".to_string());
+
+        assert!(reanchor_current_from(&dir, &providers, &mut current));
+        assert_eq!(current.as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn reanchor_keeps_current_when_live_unmatched_or_ambiguous() {
+        let dir = temp_dir("reanchor-skip");
+        let providers = vec![
+            provider("a", "https://a.example"),
+            provider("b", "https://b.example"),
+        ];
+        // live 有手工改动，不与任何条目一致 → 保持原状
+        fs::write(
+            dir.join("settings.json"),
+            r#"{"env":{"ANTHROPIC_BASE_URL":"https://a.example","ANTHROPIC_AUTH_TOKEN":"sk-1"},"tweaked":true}"#,
+        )
+        .unwrap();
+        let mut current = Some("a".to_string());
+        assert!(!reanchor_current_from(&dir, &providers, &mut current));
+        assert_eq!(current.as_deref(), Some("a"));
+
+        // live 已是当前条目内容 → 无需修正
+        write_json_atomic(
+            &dir.join("settings.json"),
+            &sanitize_claude_settings(&providers[0].settings_config),
+        )
+        .unwrap();
+        assert!(!reanchor_current_from(&dir, &providers, &mut current));
+        assert_eq!(current.as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn reanchor_ignores_missing_live() {
+        let dir = temp_dir("reanchor-nolive");
+        let providers = vec![provider("a", "https://a.example")];
+        let mut current = Some("a".to_string());
+        assert!(!reanchor_current_from(&dir, &providers, &mut current));
+        assert_eq!(current.as_deref(), Some("a"));
     }
 
     // ---------------- SQL 备份解析 ----------------
