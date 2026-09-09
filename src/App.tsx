@@ -590,7 +590,6 @@ export default function App() {
         onSearch={setSearch}
         onNew={() => setDialog("new")}
         onBatch={() => setDialog("batch")}
-        onHealth={() => setDialog("health")}
         onTrash={() => setTrashOpen(true)}
         onStats={() => setStatsOpen(true)}
       />
