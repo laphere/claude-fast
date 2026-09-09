@@ -9,6 +9,7 @@ import type {
   ChatImage,
   ChatPermissionMode,
   ClaudeProject,
+  ClaudeUpdateStatus,
   Config,
   FetchedModel,
   Project,
@@ -50,6 +51,10 @@ export const api = {
   launchProject: (path: string) => invoke("launch_project", { path }),
   openFolder: (path: string) => invoke("open_folder", { path }),
   checkClaude: () => invoke<boolean>("check_claude"),
+  /** Claude Code 更新检查：本地版本 vs npm registry 最新稳定版 */
+  claudeUpdateStatus: () => invoke<ClaudeUpdateStatus>("claude_update_status"),
+  /** Claude Code 一键升级：claude update 失败兜底 npm 全局安装，返回输出尾部 */
+  claudeRunUpgrade: () => invoke<string>("claude_run_upgrade"),
   checkProjects: (paths: string[]) => invoke<boolean[]>("check_projects", { paths }),
   // ---------- 批量添加 ----------
   scanClaudeProjects: () => invoke<ClaudeProject[]>("scan_claude_projects"),

@@ -15,6 +15,9 @@ pub mod plan_structure;
 /// Coding Plan 套餐用量查询（移植自 cc-switch coding_plan 适配器）
 pub mod usage_query;
 
+/// Claude Code 检查更新与一键升级（移植自 cc-switch 本地环境检查）
+pub mod claude_update;
+
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -23,7 +26,7 @@ use std::time::{Duration, Instant};
 
 /// 控制台子进程不创建新窗口（GUI 主进程 spawn where 等工具时防止闪黑窗口，仅 Windows）
 #[cfg(windows)]
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+pub(crate) const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// 启动脚本专用目录（相对数据根目录）
 const SCRIPTS_DIR: &str = "scripts";
@@ -1163,6 +1166,23 @@ async fn check_projects(paths: Vec<String>) -> Vec<bool> {
         out.push(t.await.unwrap_or(false));
     }
     out
+}
+
+/// Claude Code 更新检查（本地版本 vs npm 最新）：阻塞线程池执行，不卡 UI
+#[tauri::command]
+async fn claude_update_status() -> claude_update::ClaudeUpdateStatus {
+    tauri::async_runtime::spawn_blocking(claude_update::update_status)
+        .await
+        .unwrap_or_else(|_| claude_update::ClaudeUpdateStatus::errored("检查任务异常退出"))
+}
+
+/// Claude Code 一键升级（claude update 失败兜底 npm 全局安装）：
+/// 可能跑数分钟，阻塞线程池执行，不卡 UI
+#[tauri::command]
+async fn claude_run_upgrade() -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(claude_update::run_upgrade)
+        .await
+        .unwrap_or_else(|e| Err(format!("升级任务异常退出：{e}")))
 }
 
 /// Claude Code 项目目录（会话 jsonl 所在）：`<数据根>/projects`。
@@ -4879,6 +4899,8 @@ pub fn run() {
             launch_project,
             open_folder,
             check_claude,
+            claude_update_status,
+            claude_run_upgrade,
             scan_claude_projects,
             get_claude_projects_dir,
             purge_claude_project_data,

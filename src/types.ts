@@ -336,3 +336,19 @@ export interface FetchedModel {
   id: string;
   ownedBy?: string | null;
 }
+
+/** Claude Code 更新检查结果（本机版本 vs npm registry 最新稳定版） */
+export interface ClaudeUpdateStatus {
+  /** 本地 claude 版本（未安装/探测失败为 null） */
+  currentVersion: string | null;
+  /** npm 最新稳定版（网络失败为 null） */
+  latestVersion: string | null;
+  /** latest 严格大于 current 才为 true */
+  updateAvailable: boolean;
+  /** 本地探测失败原因 */
+  currentError: string | null;
+  /** 网络查询失败原因 */
+  latestError: string | null;
+  /** 命中的 claude 可执行路径（诊断用） */
+  installPath: string | null;
+}
