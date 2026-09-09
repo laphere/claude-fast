@@ -5,13 +5,12 @@ interface Props {
   onSearch: (v: string) => void;
   onNew: () => void;
   onBatch: () => void;
-  onHealth: () => void;
   onTrash: () => void;
   onStats: () => void;
 }
 
 export default function Toolbar(props: Props) {
-  const { search, onSearch, onNew, onBatch, onHealth, onTrash, onStats } = props;
+  const { search, onSearch, onNew, onBatch, onTrash, onStats } = props;
   return (
     <div className="toolbar">
       <div className="search-box">
@@ -37,9 +36,6 @@ export default function Toolbar(props: Props) {
         </button>
         <button className="btn" onClick={onBatch}>
           批量添加
-        </button>
-        <button className="btn" onClick={onHealth}>
-          健康检查
         </button>
         <button className="btn" onClick={onTrash} title="删除的会话在这里，可恢复">
           <TrashIcon />
