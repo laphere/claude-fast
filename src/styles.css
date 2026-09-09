@@ -13,6 +13,9 @@
   --danger: #dc2626;
   --danger-soft: rgba(220, 38, 38, 0.1);
   --star: #d97706;
+  --star-soft: rgba(217, 119, 6, 0.12);
+  --ok: #16a34a;
+  --ok-soft: rgba(22, 163, 74, 0.12);
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.05), 0 8px 24px rgba(0, 0, 0, 0.08);
   --radius: 10px;
 }
@@ -31,6 +34,9 @@
   --danger: #f87171;
   --danger-soft: rgba(248, 113, 113, 0.13);
   --star: #f5b544;
+  --star-soft: rgba(245, 181, 68, 0.15);
+  --ok: #4ade80;
+  --ok-soft: rgba(74, 222, 128, 0.14);
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.45), 0 8px 24px rgba(0, 0, 0, 0.55);
 }
 
@@ -407,6 +413,18 @@ code {
   background: var(--danger-soft);
   color: var(--danger);
   border: 1px solid var(--danger);
+}
+
+.tag-warn {
+  background: var(--star-soft);
+  color: var(--star);
+  border: 1px solid var(--star);
+}
+
+.tag-ok {
+  background: var(--ok-soft);
+  color: var(--ok);
+  border: 1px solid var(--ok);
 }
 
 .row-actions {
@@ -2084,6 +2102,115 @@ mark {
 
 .text-danger {
   color: var(--danger);
+}
+
+/* ============ 本地环境检查（Claude Code 更新，移植自 cc-switch） ============ */
+.env-section {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+  margin: 4px 0 8px;
+}
+
+.env-check {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+  padding: 12px 14px;
+  margin-bottom: 12px;
+}
+
+.env-check-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.env-check-title {
+  font-size: 13.5px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 平台徽标（Win / macOS），对齐 cc-switch 的环境徽标 */
+.env-badge {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+
+.env-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.env-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  font-size: 12.5px;
+}
+
+.env-label {
+  color: var(--muted);
+}
+
+.env-value {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.env-error {
+  font-size: 11.5px;
+  color: var(--danger);
+  margin-top: 6px;
+  word-break: break-all;
+}
+
+/* 升级结果提示（成功/告警/失败三态） */
+.env-tip {
+  font-size: 12px;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  word-break: break-all;
+}
+
+.env-tip-ok {
+  color: var(--ok);
+  background: var(--ok-soft);
+}
+
+.env-tip-warn {
+  color: var(--star);
+  background: var(--star-soft);
+}
+
+.env-tip-error {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+/* 升级命令输出尾部（可滚动），继承提示色弱化显示 */
+.env-tip .env-log {
+  margin-top: 6px;
+  max-height: 140px;
+  overflow-y: auto;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: inherit;
+  opacity: 0.85;
 }
 
 /* ============ 骨架屏 ============ */
