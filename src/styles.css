@@ -1251,24 +1251,57 @@ mark {
 }
 
 .stat-chart {
+  position: relative; /* 锚定 stat-tip 浮层 */
   display: flex;
-  align-items: flex-end;
-  gap: 2px;
+  align-items: stretch; /* 列占满全高，热区为整列而非柱子 */
   height: 90px;
   padding: 4px 0 0;
 }
 
+/* 整列热区：列间连续无缝（缝由柱子内边距呈现），任意高度可悬停；
+   左右 1px 内边距保留柱间 2px 视觉缝 */
+.stat-col {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  align-items: flex-end;
+  padding: 0 1px;
+  border-radius: 3px 3px 0 0;
+  transition: background 0.12s;
+}
+
+.stat-col:hover {
+  background: var(--panel-2);
+}
+
 .stat-bar {
-  flex: 1;
-  min-width: 3px;
+  width: 100%;
   background: var(--accent);
   opacity: 0.72;
   border-radius: 2px 2px 0 0;
   transition: opacity 0.12s;
+  pointer-events: none; /* 悬停统一由列接管 */
 }
 
-.stat-bar:hover {
+.stat-col:hover .stat-bar {
   opacity: 1;
+}
+
+/* 每日趋势 tooltip：贴图表上方，left 由内联 clamp 收敛，首末列不超出弹窗 */
+.stat-tip {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  transform: translateX(-50%);
+  padding: 5px 9px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  font-size: 11px;
+  color: var(--text);
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 5;
 }
 
 .stat-chart-labels {

@@ -72,6 +72,7 @@ export default function StatsDialog({ onClose }: Props) {
   const [reloadKey, setReloadKey] = useState(0);
   const [range, setRange] = useState<Range>("30d");
   const [projSort, setProjSort] = useState<SortKey>("tokens");
+  const [hoverDay, setHoverDay] = useState<number | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -203,15 +204,34 @@ export default function StatsDialog({ onClose }: Props) {
             <div className="stats-empty">范围内无数据</div>
           ) : (
             <>
-              <div className="stat-chart">
-                {days.map((d) => (
+              {/* 整列热区：悬停目标是占满全高的列而非柱子本身，低用量（细线）也能命中 */}
+              <div
+                className="stat-chart"
+                onMouseLeave={() => setHoverDay(null)}
+              >
+                {days.map((d, i) => (
                   <div
                     key={d.date}
-                    className="stat-bar"
-                    style={{ height: `${Math.max((d.tokens / maxDayTokens) * 100, 2)}%` }}
-                    title={`${d.date} · ${fmtTokens(d.tokens)} token · ${d.sessions} 个会话（最后活跃）`}
-                  />
+                    className="stat-col"
+                    onMouseEnter={() => setHoverDay(i)}
+                  >
+                    <div
+                      className="stat-bar"
+                      style={{ height: `${Math.max((d.tokens / maxDayTokens) * 100, 2)}%` }}
+                    />
+                  </div>
                 ))}
+                {hoverDay !== null && days[hoverDay] && (
+                  <div
+                    className="stat-tip"
+                    style={{
+                      left: `clamp(130px, ${((hoverDay + 0.5) / days.length) * 100}%, calc(100% - 130px))`,
+                    }}
+                  >
+                    {days[hoverDay].date} · {fmtTokens(days[hoverDay].tokens)} token ·{" "}
+                    {days[hoverDay].sessions} 个会话（最后活跃）
+                  </div>
+                )}
               </div>
               <div className="stat-chart-labels">
                 <span>{days[0]?.date}</span>
