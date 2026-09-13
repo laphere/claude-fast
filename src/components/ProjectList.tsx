@@ -1,11 +1,12 @@
 import { useCallback, useState } from "react";
 import type { DragEvent } from "react";
 import type { Project, SessionInfo } from "../types";
-import { ChatIcon, TrashIcon } from "./Icons";
+import { ChatIcon, PinIcon, TrashIcon } from "./Icons";
 
 interface Props {
   items: Project[];
-  favorites: string[];
+  /** 已置顶会话的文件集合：置顶会话不在项目列表里重复显示 */
+  pinnedFiles: Set<string>;
   selectedKey: string | null;
   /** 当前展开会话列表的项目 key */
   expandedKey: string | null;
@@ -14,9 +15,9 @@ interface Props {
   /** 各项目的会话缓存：undefined = 未加载；null = 加载中；数组 = 已加载 */
   sessionsByKey: Record<string, SessionInfo[] | null | undefined>;
   onSelect: (key: string) => void;
-  onToggleFav: (key: string) => void;
-  /** 收藏项拖拽排序：把 draggedKey 移动到 targetKey 之前/之后 */
-  onReorderFavorite: (draggedKey: string, targetKey: string, before: boolean) => void;
+  /** 全局拖拽排序：把 draggedKey 移动到 targetKey 之前/之后 */
+  onReorder: (draggedKey: string, targetKey: string, before: boolean) => void;
+  onTogglePin: (key: string, session: SessionInfo) => void;
   /** 是否启用拖拽排序（搜索过滤期间禁用） */
   dragEnabled: boolean;
   onToggleExpand: (key: string) => void;
@@ -45,14 +46,14 @@ function formatTime(ms: number): string {
 
 export default function ProjectList({
   items,
-  favorites,
+  pinnedFiles,
   selectedKey,
   expandedKey,
   activeSessionFile,
   sessionsByKey,
   onSelect,
-  onToggleFav,
-  onReorderFavorite,
+  onReorder,
+  onTogglePin,
   dragEnabled,
   onToggleExpand,
   onDeleteSession,
@@ -61,9 +62,9 @@ export default function ProjectList({
   onChatSession,
   onContextMenu,
 }: Props) {
-  // ---------- 收藏拖拽排序（仅临时视觉状态，顺序真源在 App 的 favorites 数组）----------
+  // ---------- 全局拖拽排序（仅临时视觉状态，顺序真源在 App 的 order 数组）----------
 
-  /** 正在拖拽的收藏项 key */
+  /** 正在拖拽的项目 key */
   const [dragKey, setDragKey] = useState<string | null>(null);
   /** 悬停目标行 key */
   const [overKey, setOverKey] = useState<string | null>(null);
@@ -82,13 +83,9 @@ export default function ProjectList({
     setDragKey(key);
   };
 
-  const handleDragOver = (
-    e: DragEvent<HTMLDivElement>,
-    key: string,
-    isFav: boolean,
-  ) => {
-    if (!dragKey || !isFav) return; // 不 preventDefault → 此处不可放置（浏览器显示禁用光标）
-    e.preventDefault();
+  const handleDragOver = (e: DragEvent<HTMLDivElement>, key: string) => {
+    if (!dragKey) return;
+    e.preventDefault(); // 任意行都是合法目标
     e.dataTransfer.dropEffect = "move";
     const r = e.currentTarget.getBoundingClientRect();
     const pos = e.clientY < r.top + r.height / 2 ? "above" : "below";
@@ -103,19 +100,15 @@ export default function ProjectList({
     setOverKey(null);
   };
 
-  const handleDrop = (
-    e: DragEvent<HTMLDivElement>,
-    key: string,
-    isFav: boolean,
-  ) => {
-    if (!dragKey || !isFav) return;
+  const handleDrop = (e: DragEvent<HTMLDivElement>, key: string) => {
+    if (!dragKey) return;
     e.preventDefault();
     e.stopPropagation();
     const r = e.currentTarget.getBoundingClientRect();
     const before = e.clientY < r.top + r.height / 2; // 从事件重算，不依赖 state
     const dragged = dragKey;
     clearDragState();
-    onReorderFavorite(dragged, key, before);
+    onReorder(dragged, key, before);
   };
 
   if (items.length === 0) {
@@ -131,26 +124,27 @@ export default function ProjectList({
   return (
     <div className="list">
       {items.map((l) => {
-        const isFav = favorites.includes(l.key);
-        const canDrag = dragEnabled && isFav;
         const showDrop = overKey === l.key && l.key !== dragKey;
         const isSelected = l.key === selectedKey;
         const isExpanded = l.key === expandedKey;
         const sessions = sessionsByKey[l.key];
+        // 置顶会话不在项目里重复显示（置顶区单独列出）
+        const visibleSessions =
+          sessions?.filter((s) => !pinnedFiles.has(s.file)) ?? null;
         return (
           <div key={l.key} className={`row-wrap ${isExpanded ? "expanded" : ""}`}>
             <div
               className={`row ${isSelected ? "selected" : ""} ${
                 l.healthy === false ? "broken" : ""
-              } ${isFav ? "row-fav" : ""} ${l.key === dragKey ? "dragging" : ""} ${
+              } ${dragEnabled ? "row-draggable" : ""} ${l.key === dragKey ? "dragging" : ""} ${
                 showDrop ? (overPos === "above" ? "drop-above" : "drop-below") : ""
               }`}
-              draggable={canDrag}
+              draggable={dragEnabled}
               onDragStart={(e) => handleDragStart(e, l.key)}
               onDragEnd={clearDragState}
-              onDragOver={(e) => handleDragOver(e, l.key, isFav)}
+              onDragOver={(e) => handleDragOver(e, l.key)}
               onDragLeave={(e) => handleDragLeave(e, l.key)}
-              onDrop={(e) => handleDrop(e, l.key, isFav)}
+              onDrop={(e) => handleDrop(e, l.key)}
               onClick={() => {
                 onSelect(l.key);
                 onToggleExpand(l.key);
@@ -161,16 +155,6 @@ export default function ProjectList({
                 onContextMenu(e.clientX, e.clientY, l.key);
               }}
             >
-              <button
-                className={`star ${isFav ? "star-on" : ""}`}
-                title={isFav ? "取消收藏" : "收藏（置顶）"}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onToggleFav(l.key);
-                }}
-              >
-                ★
-              </button>
               <div className="row-body" title="展开/收起会话列表">
                 <div className="row-label">
                   {l.name}
@@ -212,8 +196,10 @@ export default function ProjectList({
                   <div className="session-empty">
                     暂无会话（Claude Code 未在本项目启动过）
                   </div>
+                ) : visibleSessions && visibleSessions.length === 0 ? (
+                  <div className="session-empty">会话已全部置顶（见顶部置顶会话）</div>
                 ) : (
-                  sessions.map((s) => (
+                  visibleSessions!.map((s) => (
                     <div
                       key={s.sessionId}
                       className={`session-row ${
@@ -227,6 +213,16 @@ export default function ProjectList({
                       }}
                       title="点击在 app 内继续对话，右键更多操作"
                     >
+                      <button
+                        className="session-pin"
+                        title="置顶（在顶部聚合区常驻显示）"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onTogglePin(l.key, s);
+                        }}
+                      >
+                        <PinIcon />
+                      </button>
                       <div className="session-body">
                         <div className="session-title">{s.title}</div>
                         <div className="session-meta">

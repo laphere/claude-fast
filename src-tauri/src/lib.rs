@@ -65,11 +65,25 @@ pub struct ProjectItem {
     // 由前端调用 check_projects 异步获取后回填。
 }
 
+/// 置顶会话条目
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PinnedSession {
+    /// 会话 jsonl 文件绝对路径。稳定锚点：重命名只向文件追加 customTitle（文件名不变），
+    /// 删除进回收站后恢复也回到原路径，因此条目能跨「删除 → 恢复」存活
+    file: String,
+    /// 所属项目绝对路径（置顶时刻记录）。mangled 目录名反解项目路径是启发式枚举
+    /// （每个 `-` 可能是分隔符或原字符），不能作为展示依据，所以不反查
+    project_path: String,
+}
+
 #[derive(Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Config {
-    /// 收藏的项目绝对路径（置顶）
-    favorites: Vec<String>,
+    /// 用户手动排序的项目绝对路径（全局拖拽排序真源；未收录项按名称追加在后）。
+    /// 旧版 favorites 键经 serde alias 承接为初始排序，写回后键名变为 order
+    #[serde(default, alias = "favorites")]
+    order: Vec<String>,
     /// 手动添加的项目路径清单（Claude 会话扫描之外的补充）
     #[serde(default)]
     projects: Vec<String>,
@@ -87,6 +101,9 @@ pub struct Config {
     /// 当前启用供应商 id（None=尚未启用过）
     #[serde(default)]
     current_provider: Option<String>,
+    /// 置顶会话清单（全局聚合区）。顺序即展示顺序：新置顶插最前，不支持拖拽改序
+    #[serde(default)]
+    pinned_sessions: Vec<PinnedSession>,
 }
 
 #[derive(Serialize, Clone)]
@@ -424,8 +441,9 @@ fn legacy_script_paths(scripts: &Path) -> std::collections::HashMap<String, Stri
 }
 
 /// 旧脚本清单一次性迁移（去脚本化）：解析旧脚本的 cd 路径完成 key → 项目路径映射：
-///   projects  = 全部脚本指向的项目路径
-///   favorites = 旧收藏 key 映射后的项目路径（找不到的丢弃）
+///   projects = 全部脚本指向的项目路径
+///   order    = 旧收藏 key 映射后的项目路径（找不到的丢弃）——旧「收藏」语义就是置顶，
+///              故承接为排序最前的几项，用户的置顶意图不丢
 /// 判定：config.json 原始内容含 "projects" 字段（或无 config 文件）即视为已迁移。
 fn ensure_projects_migrated() {
     ensure_projects_migrated_in(&resolve_root_dir());
@@ -459,15 +477,23 @@ fn ensure_projects_migrated_in(root: &Path) {
             projects.push(p.clone());
         }
     }
-    let mut favorites: Vec<String> = Vec::new();
+    let mut order: Vec<String> = Vec::new();
     for k in legacy_favs {
         if let Some(p) = key_to_path.get(&k) {
-            if !favorites.iter().any(|x| x.eq_ignore_ascii_case(p)) {
-                favorites.push(p.clone());
+            if !order.iter().any(|x| x.eq_ignore_ascii_case(p)) {
+                order.push(p.clone());
             }
         }
     }
-    let _ = save_config_to(root, favorites, projects, Vec::new(), cfg.dark, cfg.close_action);
+    let _ = save_config_to(
+        root,
+        order,
+        Vec::new(),
+        projects,
+        Vec::new(),
+        cfg.dark,
+        cfg.close_action,
+    );
 }
 
 #[tauri::command]
@@ -486,7 +512,8 @@ fn add_project(path: String) -> Result<(), String> {
     // 重新加入 = 解除排除
     cfg.excluded.retain(|x| !x.eq_ignore_ascii_case(&path));
     save_config(
-        cfg.favorites.clone(),
+        cfg.order.clone(),
+        cfg.pinned_sessions.clone(),
         cfg.projects.clone(),
         cfg.excluded.clone(),
         cfg.dark,
@@ -498,8 +525,10 @@ fn add_project(path: String) -> Result<(), String> {
 fn remove_project(path: String) -> Result<(), String> {
     let mut cfg = load_config();
     remove_project_from(&mut cfg.projects, &path);
-    // 收藏里同步移除（列表键已变为项目路径）
-    remove_project_from(&mut cfg.favorites, &path);
+    // 手动排序里同步移除（排序键与列表键同为项目路径）
+    remove_project_from(&mut cfg.order, &path);
+    // 该项目的置顶会话一并撤掉：否则置顶区会留下所属项目已不在列表里的孤儿条目
+    drop_pins_for_projects(&mut cfg, std::slice::from_ref(&path));
     // 加入排除清单：会话扫描会重新发现该项目，必须过滤才能让「移除」生效
     if !cfg
         .excluded
@@ -509,7 +538,8 @@ fn remove_project(path: String) -> Result<(), String> {
         cfg.excluded.push(path.clone());
     }
     save_config(
-        cfg.favorites.clone(),
+        cfg.order.clone(),
+        cfg.pinned_sessions.clone(),
         cfg.projects.clone(),
         cfg.excluded.clone(),
         cfg.dark,
@@ -517,7 +547,7 @@ fn remove_project(path: String) -> Result<(), String> {
     )
 }
 
-/// 读取配置：主文件损坏时自动回退到 .bak 并恢复主文件（收藏不丢失）
+/// 读取配置：主文件损坏时自动回退到 .bak 并恢复主文件（用户数据不丢失）
 #[tauri::command]
 fn load_config() -> Config {
     load_config_from(&resolve_root_dir())
@@ -539,7 +569,8 @@ fn load_config_from(root: &Path) -> Config {
 /// 保存配置：写临时文件 → 旧文件备份为 .bak → 原子替换
 #[tauri::command]
 fn save_config(
-    favorites: Vec<String>,
+    order: Vec<String>,
+    pinned_sessions: Vec<PinnedSession>,
     projects: Vec<String>,
     excluded: Vec<String>,
     dark: bool,
@@ -547,7 +578,8 @@ fn save_config(
 ) -> Result<(), String> {
     save_config_to(
         &resolve_root_dir(),
-        favorites,
+        order,
+        pinned_sessions,
         projects,
         excluded,
         dark,
@@ -557,7 +589,8 @@ fn save_config(
 
 fn save_config_to(
     root: &Path,
-    favorites: Vec<String>,
+    order: Vec<String>,
+    pinned_sessions: Vec<PinnedSession>,
     projects: Vec<String>,
     excluded: Vec<String>,
     dark: bool,
@@ -566,12 +599,26 @@ fn save_config_to(
     // 读改写而非重建：保留 save_config 参数之外的字段（providers / current_provider），
     // 否则设置对话框一保存就会把供应商清单清空
     let mut cfg = load_config_from(root);
-    cfg.favorites = favorites;
+    cfg.order = order;
+    cfg.pinned_sessions = pinned_sessions;
     cfg.projects = projects;
     cfg.excluded = excluded;
     cfg.dark = dark;
     cfg.close_action = close_action;
     save_config_file(root, &cfg)
+}
+
+/// 撤掉指定项目的置顶会话：项目从列表移除、或项目会话数据被清除时调用，
+/// 否则置顶区会留下所属项目已不在列表里的孤儿条目
+fn drop_pins_for_projects(cfg: &mut Config, paths: &[String]) {
+    cfg.pinned_sessions
+        .retain(|p| !paths.iter().any(|x| x.eq_ignore_ascii_case(&p.project_path)));
+}
+
+/// 清掉会话文件已不存在的置顶条目。只在「彻底删除」类操作后调用：会话删除进回收站后
+/// 文件同样不在原路径，但条目必须留着等恢复，因此 delete_session 不调用本函数。
+fn prune_dead_pins(cfg: &mut Config) {
+    cfg.pinned_sessions.retain(|p| Path::new(&p.file).is_file());
 }
 
 /// 配置落盘三步保护：写临时文件 → 旧文件备份为 .bak → 原子替换
@@ -1499,6 +1546,65 @@ async fn list_sessions(project_path: String) -> Vec<SessionInfo> {
     }
     out.sort_by(|a, b| b.last_modified.cmp(&a.last_modified));
     out
+}
+
+/// 置顶会话的展示项：会话元数据 + 所属项目路径
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PinnedSessionInfo {
+    session_id: String,
+    /// 最终显示标题：customTitle > aiTitle > 首条用户消息
+    title: String,
+    /// 副行摘要：customTitle > lastPrompt > summary > 首条用户消息
+    summary: String,
+    /// 最后修改时间（文件 mtime，epoch ms）
+    last_modified: i64,
+    /// jsonl 文件绝对路径（取消置顶时回传）
+    file: String,
+    /// 所属项目绝对路径：前端据此显示项目名徽标、判断项目失效，并支持 resume
+    project_path: String,
+}
+
+/// 按置顶清单实时解析元数据（不存快照，重命名/新消息立刻反映）。
+/// 文件已不存在的条目直接跳过、不报错：删除进回收站的会话条目是**故意保留**的，
+/// 从回收站恢复后路径复原即自动复活；彻底删除由 prune_dead_pins 清条目。
+fn pinned_meta_in(pins: &[PinnedSession], projects_dir: &Path) -> Vec<PinnedSessionInfo> {
+    let mut out = Vec::new();
+    for pin in pins {
+        let path = PathBuf::from(&pin.file);
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if !name.ends_with(".jsonl") || !path.starts_with(projects_dir) {
+            continue;
+        }
+        let session_id = name[..name.len() - 6].to_string();
+        if !is_valid_uuid(&session_id) {
+            continue;
+        }
+        let Some((head, tail, mtime)) = read_head_tail(&path) else {
+            continue;
+        };
+        let Some(info) = session_meta_from_lite(&head, &tail, &session_id, mtime) else {
+            continue;
+        };
+        out.push(PinnedSessionInfo {
+            session_id: info.session_id,
+            title: info.title,
+            summary: info.summary,
+            last_modified: info.last_modified,
+            file: path.to_string_lossy().to_string(),
+            project_path: pin.project_path.clone(),
+        });
+    }
+    out
+}
+
+/// 置顶区数据源：按 config 里的置顶顺序逐个解析，返回顺序即展示顺序
+#[tauri::command]
+async fn list_pinned_sessions() -> Vec<PinnedSessionInfo> {
+    let cfg = load_config();
+    pinned_meta_in(&cfg.pinned_sessions, &claude_projects_dir())
 }
 
 // ---------------- 会话内容读取（v2.0.0 阶段二：方向 A 只读查看） ----------------
@@ -3036,7 +3142,17 @@ fn restore_session(file: String) -> Result<String, String> {
 #[tauri::command]
 fn purge_session(file: String) -> Result<(), String> {
     let (path, _, _) = validate_trash_file(&file)?;
-    fs::remove_file(&path).map_err(|e| format!("删除备份失败：{e}"))
+    fs::remove_file(&path).map_err(|e| format!("删除备份失败：{e}"))?;
+    prune_pins_after_purge();
+    Ok(())
+}
+
+/// 彻底删除会话后清掉置顶清单里已失效的条目。保存失败只是条目多留一会儿，
+/// 不影响删除结果，所以吞掉错误（与旧脚本迁移的落盘处理一致）。
+fn prune_pins_after_purge() {
+    let mut cfg = load_config();
+    prune_dead_pins(&mut cfg);
+    let _ = save_config_file(&resolve_root_dir(), &cfg);
 }
 
 /// 清空回收站的核心逻辑：彻底删除 trash/sessions 下的全部会话备份（释放磁盘空间，不可恢复）。
@@ -3061,7 +3177,9 @@ fn purge_trash_in(trash_root: &Path) -> Result<usize, String> {
 /// 清空回收站（彻底删除全部会话备份，释放磁盘空间，不可恢复）。调用方必须已二次确认。
 #[tauri::command]
 fn purge_trash() -> Result<usize, String> {
-    purge_trash_in(&trash_root())
+    let count = purge_trash_in(&trash_root())?;
+    prune_pins_after_purge();
+    Ok(count)
 }
 
 /// 通用反向解析：把 segments 按分隔符候选集枚举出全部路径。
@@ -3287,6 +3405,11 @@ async fn purge_claude_project_data(paths: Vec<String>) -> Result<usize, String> 
                 removed += 1;
             }
         }
+        // 项目的会话数据连同置顶条目一起消失，同步撤掉（保存失败不影响已完成的清除）
+        let root = resolve_root_dir();
+        let mut cfg = load_config_from(&root);
+        drop_pins_for_projects(&mut cfg, &paths);
+        let _ = save_config_file(&root, &cfg);
         Ok(removed)
     })
     .await
@@ -4329,13 +4452,119 @@ mod tests {
         // projects = 全部脚本路径（顺序按解析序，包含已失效的）
         assert!(migrated.projects.iter().any(|p| p.eq_ignore_ascii_case(proj)));
         assert!(migrated.projects.iter().any(|p| p.eq_ignore_ascii_case(dead)));
-        // favorites = 旧收藏 key 映射后的路径；unknown 找不到被丢弃
-        assert_eq!(migrated.favorites, vec![proj.to_string()]);
+        // order = 旧收藏 key 映射后的路径（旧「收藏」即置顶语义，承接为排序最前几项）；
+        // unknown 找不到被丢弃
+        assert_eq!(migrated.order, vec![proj.to_string()]);
         // 幂等：二次调用不再变化
         ensure_projects_migrated_in(&root);
         let again = load_config_from(&root);
         assert_eq!(again.projects, migrated.projects);
         fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// 旧版 favorites 键（路径语义）经 serde alias 无缝承接为 order 初始排序，
+    /// 写回后键名变为 order、favorites 不再出现
+    #[test]
+    fn config_order_aliases_legacy_favorites() {
+        let root = temp_root("cfg-order-alias");
+        fs::write(
+            root.join("config.json"),
+            r#"{"favorites":["D:\\a","D:\\b"],"projects":[],"dark":false}"#,
+        )
+        .unwrap();
+        let mut cfg = load_config_from(&root);
+        assert_eq!(cfg.order, vec!["D:\\a".to_string(), "D:\\b".to_string()]);
+        cfg.order.push("D:\\c".to_string());
+        save_config_file(&root, &cfg).unwrap();
+        let json = fs::read_to_string(root.join("config.json")).unwrap();
+        assert!(json.contains("\"order\""));
+        assert!(!json.contains("\"favorites\""));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// 置顶区元数据：按清单顺序返回，文件不存在 / 不在 Claude 目录下的条目跳过且不报错
+    #[test]
+    fn pinned_meta_lists_existing_skips_missing() {
+        let root = temp_root("pinned-meta");
+        let projects = root.join("projects");
+        let proj_dir = projects.join("D--baitai");
+        fs::create_dir_all(&proj_dir).unwrap();
+        let uuid = "5426d6d0-c08f-43bd-94df-4d6d99e5c699";
+        let live = proj_dir.join(format!("{uuid}.jsonl"));
+        fs::write(&live, sample_head()).unwrap();
+
+        let pins = vec![
+            PinnedSession {
+                file: live.to_string_lossy().to_string(),
+                project_path: "D:\\baitai".to_string(),
+            },
+            // 文件不存在（已彻底删除 / 换机器后的悬空路径）→ 跳过
+            PinnedSession {
+                file: proj_dir
+                    .join("aaaaaaaa-0000-0000-0000-000000000000.jsonl")
+                    .to_string_lossy()
+                    .to_string(),
+                project_path: "D:\\baitai".to_string(),
+            },
+            // 不在 Claude projects 目录下 → 跳过
+            PinnedSession {
+                file: root.join("evil.jsonl").to_string_lossy().to_string(),
+                project_path: "D:\\baitai".to_string(),
+            },
+        ];
+        let out = pinned_meta_in(&pins, &projects);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].session_id, uuid);
+        assert_eq!(out[0].title, "修复登录页面");
+        assert_eq!(out[0].project_path, "D:\\baitai");
+        assert!(out[0].last_modified > 0);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// 彻底删除后清掉失效置顶条目，存活的条目保留
+    #[test]
+    fn prune_dead_pins_drops_missing_files() {
+        let root = temp_root("pinned-prune");
+        let live = root.join("a.jsonl");
+        fs::write(&live, "x").unwrap();
+        let mut cfg = Config {
+            pinned_sessions: vec![
+                PinnedSession {
+                    file: live.to_string_lossy().to_string(),
+                    project_path: "D:\\a".to_string(),
+                },
+                PinnedSession {
+                    file: root.join("gone.jsonl").to_string_lossy().to_string(),
+                    project_path: "D:\\a".to_string(),
+                },
+            ],
+            ..Config::default()
+        };
+        prune_dead_pins(&mut cfg);
+        assert_eq!(cfg.pinned_sessions.len(), 1);
+        assert_eq!(cfg.pinned_sessions[0].file, live.to_string_lossy());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// 项目移除 / 会话数据清除：该项目下的置顶条目一并撤掉（路径大小写不敏感）
+    #[test]
+    fn drop_pins_for_projects_is_case_insensitive() {
+        let mut cfg = Config {
+            pinned_sessions: vec![
+                PinnedSession {
+                    file: "f1".to_string(),
+                    project_path: "D:\\baitai".to_string(),
+                },
+                PinnedSession {
+                    file: "f2".to_string(),
+                    project_path: "D:\\other".to_string(),
+                },
+            ],
+            ..Config::default()
+        };
+        drop_pins_for_projects(&mut cfg, &["d:\\BAITAI".to_string()]);
+        assert_eq!(cfg.pinned_sessions.len(), 1);
+        assert_eq!(cfg.pinned_sessions[0].project_path, "D:\\other");
     }
 
     #[test]
@@ -4983,7 +5212,7 @@ mod tests {
         let root = temp_root("provider-reorder");
         fs::write(
             root.join("config.json"),
-            r#"{"favorites":[],"dark":false,"providers":[
+            r#"{"order":[],"dark":false,"providers":[
                 {"id":"a","name":"A","settingsConfig":{}},
                 {"id":"b","name":"B","settingsConfig":{}},
                 {"id":"c","name":"C","settingsConfig":{}}],
@@ -5055,7 +5284,7 @@ pub fn run() {
             use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
             // 旧脚本清单一次性迁移（去脚本化）：解析 scripts/ 旧脚本生成
-            // config.projects / 新版 favorites（路径），幂等
+            // config.projects / config.order（路径），幂等
             ensure_projects_migrated();
 
             let show_i = MenuItem::with_id(app, "show", "显示窗口", true, None::<&str>)?;
@@ -5101,6 +5330,7 @@ pub fn run() {
             get_claude_projects_dir,
             purge_claude_project_data,
             list_sessions,
+            list_pinned_sessions,
             rename_session,
             delete_session,
             list_trashed_sessions,

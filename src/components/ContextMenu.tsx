@@ -5,9 +5,9 @@ interface Props {
   x: number;
   y: number;
   project: Project | null;
-  favorites: string[];
   onClose: () => void;
-  onToggleFav: (key: string) => void;
+  /** 把项目移到列表最前（替代已下线的收藏置顶） */
+  onMoveTop: (l: Project) => void;
   /** 在终端中启动 Claude Code（原项目行「+」按钮收进菜单） */
   onLaunch: (l: Project) => void;
   onOpenFolder: (l: Project) => void;
@@ -20,9 +20,8 @@ export default function ContextMenu({
   x,
   y,
   project,
-  favorites,
   onClose,
-  onToggleFav,
+  onMoveTop,
   onLaunch,
   onOpenFolder,
   onCopyPath,
@@ -52,8 +51,6 @@ export default function ContextMenu({
     top: Math.min(y, window.innerHeight - 260),
   };
 
-  const isFav = project ? favorites.includes(project.key) : false;
-
   return (
     <div className="context-menu" ref={ref} style={style}>
       {project && (
@@ -63,8 +60,8 @@ export default function ContextMenu({
             {project.healthy === false && <span className="tag tag-danger">失效</span>}
           </div>
           <div className="context-sep" />
-          <button className="context-item" onClick={() => { onToggleFav(project.key); onClose(); }}>
-            {isFav ? "☆ 取消收藏" : "★ 收藏（置顶）"}
+          <button className="context-item" onClick={() => { onMoveTop(project); onClose(); }}>
+            移到最前
           </button>
           {project.healthy !== false && (
             <button

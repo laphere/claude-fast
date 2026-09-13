@@ -4,7 +4,7 @@
 
 > **版本线**：`v2.0.0` 分支 = app 内直接对话（版本号 **2.0.0**，`package.json` / `Cargo.toml` / `tauri.conf.json` 三处一致）；`v1.0.0` 分支 = 纯查看器/启动器（版本号 1.0.0）。历史上的 PowerShell/WinForms 版与旧 v2.x/v3.x 版号均已作废，代码中不要再按旧版本号理解。另有 **Node.js（Electron）后端重构分支** `claude-fast-electron`（见下「分支结构」）。
 >
-> **去脚本化（重要）**：项目清单为**路径模型**——`config.json` 的 `favorites`/`projects` 存的都是**项目绝对路径**（不再是脚本名），右键菜单「在终端中启动」直接 `cmd /k cd /d "项目" && claude`，**不再生成/执行 scripts/ 启动脚本**。旧版脚本在首次启动时被自动解析迁移（`ensure_projects_migrated`，幂等）。项目列表 = Claude 会话目录扫描（unmangle 反解）∪ config.projects 手动清单。
+> **去脚本化（重要）**：项目清单为**路径模型**——`config.json` 的 `order`/`projects` 存的都是**项目绝对路径**（不再是脚本名；`order` 是项目显示顺序，旧版 `favorites` 键经 serde alias 无缝承接为初始顺序），右键菜单「在终端中启动」直接 `cmd /k cd /d "项目" && claude`，**不再生成/执行 scripts/ 启动脚本**。旧版脚本在首次启动时被自动解析迁移（`ensure_projects_migrated`，幂等）。项目列表 = Claude 会话目录扫描（unmangle 反解）∪ config.projects 手动清单。
 
 ## 分支结构（双后端）
 
@@ -30,7 +30,7 @@
 ## 启动与项目清单（去脚本化）
 
 - **不再生成/执行启动脚本**：右键项目「▶ 在终端中启动 Claude Code」新开终端执行 `cmd /k cd /d "项目路径" && claude`（Windows ShellExecuteW；macOS 临时 sh + Terminal.app），claude 退出后窗口保留。项目行只留 💬（app 内对话）与 ⋯（右键菜单等效），终端启动收进右键菜单。
-- 项目列表 = **Claude 会话目录扫描**（`~/.claude/projects` unmangle 反解）∪ `config.projects`（手动添加的项目路径），按路径去重；收藏（favorites）存项目绝对路径。
+- 项目列表 = **Claude 会话目录扫描**（`~/.claude/projects` unmangle 反解）∪ `config.projects`（手动添加的项目路径），按路径去重；显示顺序存 `config.order`（项目绝对路径数组，旧 `favorites` 键经 serde alias 承接）。
 - 「移除」= 从清单移除项目（不删磁盘文件）；「批量添加」= 把扫描到的项目加入清单。
 - 旧版启动脚本（`scripts/claude-*.bat|sh`）在首次启动时被 `ensure_projects_migrated` 自动解析迁移（key → 路径），脚本文件保留在磁盘不自动删除。
 - 健康检查（`check_projects`）直接检查项目路径是否存在。
@@ -50,7 +50,8 @@
 
 ## 功能
 
-- **收藏置顶**（`favorites`）：点星标或右键收藏，金色置顶。已收藏项可**整行拖拽排序**（顺序即 `favorites` 数组顺序，松手后复用 `save_config` 落盘；按 key 重排非索引，失效 key 原位保留；搜索过滤期间禁用拖拽；未收藏行不可拖拽）。前端用原生 HTML5 DnD——**`tauri.conf.json` 的 `dragDropEnabled: false` 是前提**（默认 true 时 Windows 上 WebView2 的 OLE 拖放处理会拦截页面内 dragover/drop，勿当冗余配置删掉）。
+- **全局拖拽排序**（`order`）：项目行整行可拖拽调序（重排时以「order 收录项 + 其余按名称」拼出当前全序列，首次拖拽后全部项目都有显式顺序；搜索过滤期间禁用拖拽）。右键菜单「移到最前」是同一套全序列语义的快捷入口。
+- **置顶会话聚合区**（`pinned_sessions`）：会话行左侧图钉按钮置顶/取消置顶，置顶项聚到左栏顶部**跨项目**区域（无置顶项时整块不渲染；带项目名徽标消歧）。条目形如 `{file, projectPath}`：`file` 是会话 jsonl **绝对路径**作稳定锚点（重命名只追加 customTitle 不改文件名、回收站恢复回原路径），`projectPath` 在置顶时刻记录（mangled 目录名反解是启发式枚举，不可反查）。`list_pinned_sessions` 按清单顺序**实时**解析元数据（不存快照），文件缺失的条目静默跳过；**已置顶会话不再在项目列表中重复显示**。语义要点：新置顶插最前、不支持拖拽排序；**删除会话保留条目**（恢复后自动复活），`purge_session`/`purge_trash` 后 `prune_dead_pins` 清失效条目，`remove_project`/`purge_claude_project_data` 按 projectPath 撤条目（`drop_pins_for_projects`）。前端用原生 HTML5 DnD——**`tauri.conf.json` 的 `dragDropEnabled: false` 是前提**（默认 true 时 Windows 上 WebView2 的 OLE 拖放处理会拦截页面内 dragover/drop，勿当冗余配置删掉）。
 - **健康检查不阻塞启动**：`list_launchers` 只解析脚本内容不做目录 stat（秒返回）；前端渲染后异步调 `check_launchers` 并行检查，失效目录自动标红；「健康检查」对话框打开时现场重新检查。
 - **本地环境检查（健康检查弹窗内卡片，移植自 cc-switch）**：`claude_update_status` 探测本机 claude 版本（Windows `where claude` 定位后按 .exe > .cmd/.bat > 无扩展名择优——npm 全局目录的无扩展名 sh shim 排在前但不可直接 spawn；过滤 WindowsApps 商店别名；`.cmd/.bat` 经 `cmd /D /S /C call` 执行 `--version`）+ npm registry `/latest` 查最新稳定版，semver 严格比较（latest > current 才「可升级」，预发布/抢跑不误报）；`claude_run_upgrade` 隐藏窗口执行临时脚本：`claude update` 失败兜底 `npm i -g @anthropic-ai/claude-code@latest`（bat errorlevel 链透传，npm 优先取 claude 同目录兄弟文件），输出重定向临时文件、回传尾部 2000 字，前端升级后自动重查版本。
 - **批量添加**：扫描 Claude Code 项目目录，`unmangle_candidates` 反解出真实路径并验证存在性，失效项目（`missing`）不参与添加；已在清单中的项目标记跳过。清单存**项目绝对路径**于 `config.projects`。
@@ -76,7 +77,7 @@
 ## 铁律
 
 - **版本号只由用户明确要求时才改**——任何功能开发/修复/提交都不动 `package.json` / `src-tauri/Cargo.toml` / `src-tauri/tauri.conf.json` 的 version（以及 Cargo.lock），仅在用户明确说「改版本/推版本」时才三处同步更新。
-- **绝不删除数据根的 `config.json` / `.bak`**——用户收藏在这里。`save_config` 三步保护：写临时文件 → 旧文件备份为 `.bak` → 原子替换；`load_config` 读主文件失败时自动从 `.bak` 回退。
+- **绝不删除数据根的 `config.json` / `.bak`**——用户的项目清单、排序与置顶会话都在这里。`save_config` 三步保护：写临时文件 → 旧文件备份为 `.bak` → 原子替换；`load_config` 读主文件失败时自动从 `.bak` 回退。
 - ⚠️ **必须用 `npm run tauri build`（或 `npx tauri build`）构建，禁止直接 `cargo build --release`**：只有 tauri CLI 自动加 `--features tauri/custom-protocol`，缺它产物是 dev 模式，运行时连 `http://localhost:1420` 白屏。
 - 国内网络首次构建需 crates.io 镜像（用户 `~/.cargo/config.toml` 已配 rsproxy.cn）。
 - **新增任何按钮类必须做墨迹居中补偿，并放大目检/实测**（历史规律：每加新按钮都漏这条被用户发现）。中文字体 YaHei 的字形墨迹与行盒中心不重合，偏移方向由 line-height 决定：
