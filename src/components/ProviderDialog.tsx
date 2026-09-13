@@ -287,6 +287,13 @@ export default function ProviderDialog({ state, onClose, onChanged, toast }: Pro
   }, [form?.jsonText]);
 
   // ---------- 供应商切换 ----------
+  /** 后端告警串（backfill_skipped:<id> / backfill_failed:<id>）翻译成用户可读文案 */
+  const readableWarning = (w: string) => {
+    if (w.startsWith("backfill_skipped:")) return "磁盘上的 settings.json 已不属于离任供应商（可能被外部工具改写），其手工修改未回填";
+    if (w.startsWith("backfill_failed:")) return "离任供应商的配置回填失败（settings.json 读取异常）";
+    return w;
+  };
+
   const switchTo = async (p: ProviderInfo) => {
     if (p.id === currentId) return;
     setBusy(true);
@@ -295,7 +302,7 @@ export default function ProviderDialog({ state, onClose, onChanged, toast }: Pro
       onChanged(out.list);
       toast(
         out.warnings.length
-          ? `已切换到「${p.name}」（告警：${out.warnings.join("；")}）`
+          ? `已切换到「${p.name}」（注意：${out.warnings.map(readableWarning).join("；")}）`
           : `已切换到「${p.name}」，新开的 Claude Code 会话即生效`,
       );
     } catch (e) {
@@ -611,7 +618,10 @@ export default function ProviderDialog({ state, onClose, onChanged, toast }: Pro
     } catch {
       // JSON 非法：只更新结构化输入框，不动 JSON 文本
     }
-    echoRef.current = nextJson;
+    // 只在 jsonText 真的变化时打标：非法 JSON 路径 nextJson === form.jsonText，
+    // 此时打标会让回读 effect 因字符串未变而不重跑、echoRef 永不清除，
+    // 结构化字段回显从此停摆直到下一次合法的结构化编辑
+    if (nextJson !== form.jsonText) echoRef.current = nextJson;
     setForm({ ...form, jsonText: nextJson, ...extra });
   };
 
@@ -776,11 +786,16 @@ export default function ProviderDialog({ state, onClose, onChanged, toast }: Pro
 
   // ---------- CC Switch 备份导入 ----------
   const importCcswitch = async () => {
-    const picked = await open({
-      multiple: false,
-      title: "选择 CC Switch「导出配置」生成的 SQL 备份",
-      filters: [{ name: "SQL 备份", extensions: ["sql", "txt"] }],
-    });
+    let picked: unknown;
+    try {
+      picked = await open({
+        multiple: false,
+        title: "选择 CC Switch「导出配置」生成的 SQL 备份",
+        filters: [{ name: "SQL 备份", extensions: ["sql", "txt"] }],
+      });
+    } catch {
+      return; // 文件对话框被取消/失败，静默即可
+    }
     if (typeof picked !== "string") return;
     setBusy(true);
     try {

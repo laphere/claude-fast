@@ -232,6 +232,10 @@ export default function ChatView({
   const [railHover, setRailHover] = useState<number | null>(null);
   const mainRef = useRef<HTMLDivElement>(null);
   const scrollRafRef = useRef(0);
+  /** 当前会话 file 镜像：loadMore/jumpTo 的异步回包用它判断是否已切换会话，
+   *  防止旧会话的迟到结果污染新会话的历史列表 */
+  const sessionFileRef = useRef<string | null>(null);
+  sessionFileRef.current = session?.file ?? null;
 
   /** 后端跟踪的会话 id（chat_start 返回，chat_send 等凭它寻址） */
   const sessionKeyRef = useRef<string | null>(null);
@@ -499,6 +503,7 @@ export default function ChatView({
   /** 加载更早的一页（插入顶部并保持滚动位置，原查看页逻辑） */
   const loadMore = useCallback(async () => {
     if (!session || historyLoading || !hasMore) return;
+    const myFile = session.file;
     const body = bodyRef.current;
     const prevHeight = body?.scrollHeight ?? 0;
     const prevTop = body?.scrollTop ?? 0;
@@ -507,6 +512,7 @@ export default function ChatView({
         session.file,
         Math.max(0, histOffset - PAGE_SIZE),
       );
+      if (sessionFileRef.current !== myFile) return; // 已切换会话，丢弃迟到结果
       setHistory((prev) => [...data.messages, ...prev]);
       setHistOffset(data.offset);
       setHasMore(data.hasMore);
@@ -737,12 +743,14 @@ export default function ChatView({
     async (globalIndex: number, blockIndex?: number) => {
       const body = bodyRef.current;
       if (!body) return;
+      const myFile = session?.file ?? null;
       let needFrame = false;
       if (globalIndex < histOffset || globalIndex >= histOffset + history.length) {
         if (!session) return;
         const pageStart = Math.floor(globalIndex / PAGE_SIZE) * PAGE_SIZE;
         try {
           const data = await api.getSessionMessages(session.file, pageStart);
+          if (sessionFileRef.current !== myFile) return; // 已切换会话，丢弃迟到结果
           setHistory(data.messages);
           setHistOffset(data.offset);
           setHasMore(data.hasMore);
@@ -755,6 +763,7 @@ export default function ChatView({
         }
       }
       const locate = () => {
+        if (sessionFileRef.current !== myFile) return; // 已切换会话，不再定位
         const el = body.querySelector(`[data-msg-index="${globalIndex}"]`);
         if (!el) return;
         el.scrollIntoView({ block: "start" });

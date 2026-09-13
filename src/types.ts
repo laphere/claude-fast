@@ -33,11 +33,6 @@ export interface PinnedSession {
   projectPath: string;
 }
 
-export interface CreateResult {
-  file: string;
-  existed: boolean;
-}
-
 export interface ClaudeProject {
   name: string;
   path: string;
