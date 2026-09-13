@@ -1782,26 +1782,16 @@ async fn export_session(
 
 // ---------------- 使用统计仪表盘 ----------------
 
-/// 单个模型的用量汇总
-#[derive(Serialize, Clone)]
+/// 排行条目（项目/模型）的单日用量，供前端按时间范围过滤
+#[derive(Serialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
-pub struct ModelUsage {
-    /// 完整模型名（前端简化显示日期后缀）
-    model: String,
-    tokens: u64,
-    messages: usize,
-}
-
-/// 单日用量
-#[derive(Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct DailyUsage {
-    /// YYYY-MM-DD（消息 timestamp 的日期部分）
+pub struct RankDayUsage {
+    /// YYYY-MM-DD（消息 timestamp 的本地日期）
     date: String,
     tokens: u64,
-    /// 当天有 assistant 消息的会话数（按 sessionId 去重）
-    sessions: usize,
     messages: usize,
+    /// 该日归属的会话数（最后活跃日口径）；模型行恒为 0
+    sessions: usize,
 }
 
 /// 单项目用量
@@ -1815,6 +1805,36 @@ pub struct ProjectUsage {
     sessions: usize,
     messages: usize,
     tokens: u64,
+    /// 按日期升序（范围过滤用）
+    per_day: Vec<RankDayUsage>,
+}
+
+/// 单个模型的用量汇总
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelUsage {
+    /// 完整模型名（前端简化显示日期后缀）
+    model: String,
+    tokens: u64,
+    messages: usize,
+    /// 按日期升序（范围过滤用；sessions 恒为 0）
+    per_day: Vec<RankDayUsage>,
+}
+
+/// 单日用量
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct DailyUsage {
+    /// YYYY-MM-DD（消息 timestamp 的日期部分）
+    date: String,
+    tokens: u64,
+    /// 当天有 assistant 消息的会话数（按 sessionId 去重）
+    sessions: usize,
+    /// 当天活跃的会话数（该日有任何消息的会话，跨天会话每天都计）——
+    /// 趋势图 tooltip 用；sessions 是最后活跃日归属，跨天会话的前几天
+    /// 会「有 token 却 0 会话」，与直觉不符
+    active_sessions: usize,
+    messages: usize,
 }
 
 /// 全局使用统计（仪表盘数据；订阅版 jsonl 无 costUSD，故只统计 token）
@@ -1855,6 +1875,8 @@ struct FileUsage {
     per_day: std::collections::BTreeMap<String, (u64, usize)>,
     /// model -> (tokens, messages)
     per_model: std::collections::HashMap<String, (u64, usize)>,
+    /// date -> model -> (tokens, messages)（项目/模型排行按范围过滤用）
+    per_day_model: std::collections::BTreeMap<String, std::collections::HashMap<String, (u64, usize)>>,
 }
 
 /// 公历日期 → Unix epoch 天数（Howard Hinnant days_from_civil，civil_from_days 的反函数）
@@ -1943,6 +1965,14 @@ fn scan_file_usage(content: &str, tz_offset_minutes: i64) -> FileUsage {
             let e = u.per_day.entry(d.clone()).or_default();
             e.0 += line_tokens;
             e.1 += 1;
+            let de = u
+                .per_day_model
+                .entry(d.clone())
+                .or_default()
+                .entry(model.clone())
+                .or_default();
+            de.0 += line_tokens;
+            de.1 += 1;
         }
         let m = u.per_model.entry(model).or_default();
         m.0 += line_tokens;
@@ -2012,16 +2042,25 @@ struct LedgerEntry {
     per_day: std::collections::BTreeMap<String, (u64, usize)>,
     /// model -> (tokens, messages)
     per_model: std::collections::HashMap<String, (u64, usize)>,
+    /// date -> model -> (tokens, messages)（项目/模型排行按范围过滤用）
+    #[serde(default)]
+    per_day_model: std::collections::BTreeMap<String, std::collections::HashMap<String, (u64, usize)>>,
 }
 
 /// 用量台账（数据根 stats-ledger.json）
 #[derive(Serialize, Deserialize, Default)]
 struct StatsLedger {
+    /// 台账结构版本：不一致（含旧文件缺字段 → 0）则现存文件全部重扫一次
+    #[serde(default)]
+    version: u32,
     /// 记录时的时区偏移（分钟）：per_day 与时区相关，变化则现存文件全部重扫
     tz_offset_minutes: i64,
     /// key = 会话文件绝对路径
     files: std::collections::HashMap<String, LedgerEntry>,
 }
+
+/// v2：LedgerEntry 新增 per_day_model（排行按范围过滤）
+const LEDGER_VERSION: u32 = 2;
 
 fn ledger_path_in(root: &Path) -> PathBuf {
     root.join("stats-ledger.json")
@@ -2059,8 +2098,11 @@ fn aggregate_stats_ledger(
     ledger: &mut StatsLedger,
 ) -> UsageStats {
     // 时区变化：per_day 与时区相关，现存文件需全部重扫（已删条目保留旧时区归属）
+    // 台账版本不一致（旧文件缺 per_day_model）同理全部重扫一次
     let tz_changed = ledger.tz_offset_minutes != tz_offset_minutes;
     ledger.tz_offset_minutes = tz_offset_minutes;
+    let full_rescan = tz_changed || ledger.version != LEDGER_VERSION;
+    ledger.version = LEDGER_VERSION;
 
     // ---- 刷新现存文件 ----
     for (name, path, dir) in projects {
@@ -2090,9 +2132,9 @@ fn aggregate_stats_ledger(
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|d| d.as_millis() as u64);
             let size = meta.map(|m| m.len()).unwrap_or(0);
-            // 命中台账且未变更（且时区未变）→ 无需重扫；项目显示名/路径随扫描刷新
+            // 命中台账且未变更（且时区未变、版本一致）→ 无需重扫；项目显示名/路径随扫描刷新
             if let Some(mtime) = mtime {
-                if !tz_changed {
+                if !full_rescan {
                     if let Some(entry) = ledger.files.get(&key) {
                         if entry.mtime == mtime && entry.size == size {
                             let entry = ledger.files.get_mut(&key).unwrap();
@@ -2126,6 +2168,7 @@ fn aggregate_stats_ledger(
                     cache_creation_tokens: u.cache_creation_tokens,
                     per_day: u.per_day.clone(),
                     per_model: u.per_model.clone(),
+                    per_day_model: u.per_day_model.clone(),
                 },
             );
         }
@@ -2146,13 +2189,33 @@ fn aggregate_stats_ledger(
     // 窗口内被重复计入，出现「全部比近 30 天还少」的反直觉结果）
     let mut day_sessions: std::collections::HashMap<String, std::collections::HashSet<String>> =
         std::collections::HashMap::new();
+    // 当日活跃会话（date -> sessionId 集合）：跨天会话在每个活跃日都计，
+    // 供趋势图 tooltip 展示「当天到底有几个会话在跑」
+    let mut day_active: std::collections::HashMap<String, std::collections::HashSet<String>> =
+        std::collections::HashMap::new();
     let mut day_map: std::collections::BTreeMap<String, (u64, usize)> =
         std::collections::BTreeMap::new();
     let mut model_map: std::collections::HashMap<String, (u64, usize)> =
         std::collections::HashMap::new();
-    // 项目聚合按真实路径去重（同一项目目录的已删/现存条目归并到一行）
-    let mut project_map: std::collections::HashMap<String, ProjectUsage> =
+    // 项目聚合按真实路径去重（同一项目目录的已删/现存条目归并到一行），
+    // 同时攒按天明细供前端按范围过滤（项目行内 sessions 用最后活跃日口径，
+    // 与汇总卡一致：窗口内累加 = 窗口内去重会话数）
+    struct ProjectAgg {
+        name: String,
+        path: String,
+        sessions: usize,
+        messages: usize,
+        tokens: u64,
+        days: std::collections::BTreeMap<String, (u64, usize)>,
+        day_sessions: std::collections::HashMap<String, std::collections::HashSet<String>>,
+    }
+    let mut project_map: std::collections::HashMap<String, ProjectAgg> =
         std::collections::HashMap::new();
+    // 模型按天明细（model -> date -> (tokens, messages)）
+    let mut model_days: std::collections::HashMap<
+        String,
+        std::collections::BTreeMap<String, (u64, usize)>,
+    > = std::collections::HashMap::new();
     for e in ledger.files.values() {
         stats.sessions += 1;
         stats.messages += e.messages;
@@ -2165,6 +2228,7 @@ fn aggregate_stats_ledger(
             let dm = day_map.entry(d.clone()).or_default();
             dm.0 += t;
             dm.1 += m;
+            day_active.entry(d.clone()).or_default().insert(e.session_id.clone());
         }
         // token/消息按天累加，但会话数只记到 per_day 的最后一天
         // （BTreeMap 末 key = 最后活跃日）
@@ -2179,18 +2243,39 @@ fn aggregate_stats_ledger(
             mm.0 += t;
             mm.1 += m;
         }
-        let pu = project_map
+        for (d, models) in &e.per_day_model {
+            for (mo, (t, m)) in models {
+                let md = model_days.entry(mo.clone()).or_default();
+                let e2 = md.entry(d.clone()).or_default();
+                e2.0 += t;
+                e2.1 += m;
+            }
+        }
+        let pa = project_map
             .entry(e.project_path.clone())
-            .or_insert_with(|| ProjectUsage {
+            .or_insert_with(|| ProjectAgg {
                 name: e.project_name.clone(),
                 path: e.project_path.clone(),
                 sessions: 0,
                 messages: 0,
                 tokens: 0,
+                days: Default::default(),
+                day_sessions: Default::default(),
             });
-        pu.sessions += 1;
-        pu.messages += e.messages;
-        pu.tokens += e.tokens;
+        pa.sessions += 1;
+        pa.messages += e.messages;
+        pa.tokens += e.tokens;
+        for (d, (t, m)) in &e.per_day {
+            let de = pa.days.entry(d.clone()).or_default();
+            de.0 += t;
+            de.1 += m;
+        }
+        if let Some(last_day) = e.per_day.keys().next_back() {
+            pa.day_sessions
+                .entry(last_day.clone())
+                .or_default()
+                .insert(e.session_id.clone());
+        }
     }
     stats.earliest = day_map.keys().next().cloned();
     stats.latest = day_map.keys().next_back().cloned();
@@ -2198,6 +2283,7 @@ fn aggregate_stats_ledger(
         .into_iter()
         .map(|(date, (tokens, messages))| DailyUsage {
             sessions: day_sessions.get(&date).map(|s| s.len()).unwrap_or(0),
+            active_sessions: day_active.get(&date).map(|s| s.len()).unwrap_or(0),
             date,
             tokens,
             messages,
@@ -2206,13 +2292,53 @@ fn aggregate_stats_ledger(
     stats.per_model = model_map
         .into_iter()
         .map(|(model, (tokens, messages))| ModelUsage {
+            per_day: model_days
+                .remove(&model)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(date, (tokens, messages))| RankDayUsage {
+                    date,
+                    tokens,
+                    messages,
+                    sessions: 0,
+                })
+                .collect(),
             model,
             tokens,
             messages,
         })
         .collect();
     stats.per_model.sort_by(|a, b| b.tokens.cmp(&a.tokens));
-    stats.per_project = project_map.into_values().collect();
+    stats.per_project = project_map
+        .into_values()
+        .map(|pa| {
+            let ProjectAgg {
+                name,
+                path,
+                sessions,
+                messages,
+                tokens,
+                days,
+                day_sessions,
+            } = pa;
+            ProjectUsage {
+                per_day: days
+                    .into_iter()
+                    .map(|(date, (tokens, messages))| RankDayUsage {
+                        sessions: day_sessions.get(&date).map(|s| s.len()).unwrap_or(0),
+                        date,
+                        tokens,
+                        messages,
+                    })
+                    .collect(),
+                name,
+                path,
+                sessions,
+                messages,
+                tokens,
+            }
+        })
+        .collect();
     stats.per_project.sort_by(|a, b| b.tokens.cmp(&a.tokens));
     stats
 }
@@ -4478,8 +4604,78 @@ mod tests {
         assert_eq!(s.per_day[1].date, "2026-08-13");
         assert_eq!(s.per_day[1].sessions, 1);
         assert_eq!(s.per_day[1].tokens, 51);
+        // 当日活跃口径：08-12 上 A、B 都有消息（A 的归属日是 08-13 也不影响）
+        assert_eq!(s.per_day[0].active_sessions, 2);
+        assert_eq!(s.per_day[1].active_sessions, 1);
+        // 项目/模型排行的按天明细（前端按范围过滤用）
+        assert_eq!(s.per_project[0].per_day.len(), 2);
+        assert_eq!(s.per_project[0].per_day[0].date, "2026-08-12");
+        assert_eq!(s.per_project[0].per_day[0].tokens, 302);
+        assert_eq!(s.per_project[0].per_day[0].sessions, 1); // A 归属 08-13，当天只有 B
+        assert_eq!(s.per_project[0].per_day[1].date, "2026-08-13");
+        assert_eq!(s.per_project[0].per_day[1].tokens, 51);
+        assert_eq!(s.per_project[0].per_day[1].sessions, 1); // A 的最后活跃日
+        assert_eq!(s.per_model[0].per_day.len(), 2);
+        assert_eq!(s.per_model[0].per_day[0].date, "2026-08-12");
+        assert_eq!(s.per_model[0].per_day[0].tokens, 302);
+        assert_eq!(s.per_model[0].per_day[0].messages, 2);
+        assert_eq!(s.per_model[0].per_day[1].tokens, 51);
+        assert_eq!(s.per_model[0].per_day[1].messages, 1);
+        // 排行全时段总量不受按天明细影响
+        assert_eq!(s.per_project[0].sessions, 2);
+        assert_eq!(s.per_project[0].tokens, 302 + 51);
         // 全时段每日累加 == 去重会话数（与「全部」口径一致）
         assert_eq!(s.per_day.iter().map(|d| d.sessions).sum::<usize>(), s.sessions);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// 旧版本台账（缺 per_day_model，version 缺省为 0）：mtime/size 虽未变，
+    /// 版本号不一致仍触发现存文件全量重扫补齐明细
+    #[test]
+    fn stats_ledger_version_bump_forces_rescan() {
+        let root = temp_root("ledger-ver");
+        let pa = root.join("projects").join("D--work-alpha");
+        fs::create_dir_all(&pa).unwrap();
+        let line = |ts: &str, tokens: u64| {
+            format!(
+                r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"x"}}],"model":"claude-sonnet-4","usage":{{"input_tokens":{tokens},"output_tokens":1}}}},"timestamp":"{ts}"}}"#,
+            )
+        };
+        let fa = pa.join("aaaaaaaa-1111-4111-8111-111111111111.jsonl");
+        fs::write(&fa, line("2026-08-12T01:00:00.000Z", 100)).unwrap();
+        let meta = fs::metadata(&fa).unwrap();
+        let mtime = meta
+            .modified()
+            .unwrap()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        // 伪造旧版台账条目：mtime/size 与现存文件一致（本可命中免扫捷径），但无 per_day_model
+        let mut ledger = StatsLedger {
+            tz_offset_minutes: 0,
+            ..Default::default() // version = 0 ≠ LEDGER_VERSION
+        };
+        ledger.files.insert(
+            fa.to_string_lossy().to_string(),
+            LedgerEntry {
+                mtime,
+                size: meta.len(),
+                session_id: "aaaaaaaa-1111-4111-8111-111111111111".to_string(),
+                project_dir: "D--work-alpha".to_string(),
+                project_name: "alpha".to_string(),
+                project_path: "D:\\work\\alpha".to_string(),
+                messages: 1,
+                tokens: 101,
+                ..Default::default()
+            },
+        );
+        let projects = vec![("alpha".to_string(), "D:\\work\\alpha".to_string(), pa.clone())];
+        let s = aggregate_stats_ledger(&projects, &[], 0, &mut ledger);
+        assert_eq!(ledger.version, LEDGER_VERSION);
+        let e = &ledger.files[&fa.to_string_lossy().to_string()];
+        assert_eq!(e.per_day_model["2026-08-12"]["claude-sonnet-4"], (101, 1));
+        assert_eq!(s.per_project[0].per_day[0].tokens, 101);
+        assert_eq!(s.per_model[0].per_day[0].tokens, 101);
         fs::remove_dir_all(&root).unwrap();
     }
 
