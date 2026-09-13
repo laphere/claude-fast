@@ -183,8 +183,10 @@ export default function StatsDialog({ onClose }: Props) {
       .sort((a, b) => b.tokens - a.tokens);
   }, [stats, rangeStart]);
 
-  const maxProjectVal = projectRows[0]?.[projSort] ?? 1;
-  const maxModelTokens = modelRows[0]?.tokens ?? 1;
+  // `|| 1` 兜底：所选窗口内全为 0 用量时首行值是 0（不是 undefined），
+  // `?? 1` 接不住，0 作分母会算出 width: NaN%
+  const maxProjectVal = projectRows[0]?.[projSort] || 1;
+  const maxModelTokens = modelRows[0]?.tokens || 1;
 
   return (
     <Modal title="使用统计" width={660} onClose={onClose}>

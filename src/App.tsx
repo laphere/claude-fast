@@ -135,11 +135,29 @@ export default function App() {
     [order, pinnedSessions, projectDirs, excludedDirs, dark],
   );
 
+  // ---------- Toast ----------
+
+  const toastTimerRef = useRef<number | null>(null);
+  const showToast = useCallback((msg: string, duration = 2500) => {
+    // 清掉上一个计时器：否则连续 toast 时，前一条的定时器会提前清掉后一条
+    if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current);
+    setToast(msg);
+    toastTimerRef.current = window.setTimeout(() => {
+      toastTimerRef.current = null;
+      setToast(null);
+    }, duration);
+  }, []);
+
   // ---------- 数据加载 ----------
 
+  /** load 竞态守卫：健康检查等异步回包可能晚于下一次 load，过期结果不得覆盖新状态 */
+  const loadSeqRef = useRef(0);
+
   const load = useCallback(async () => {
+    const seq = ++loadSeqRef.current;
     try {
       const [list, cfg] = await Promise.all([api.listProjects(), api.loadConfig()]);
+      if (seq !== loadSeqRef.current) return;
       setItems(list);
       setOrder(cfg.order ?? []);
       setPinnedSessions(cfg.pinnedSessions ?? []);
@@ -151,18 +169,22 @@ export default function App() {
       setSelectedKey((k) => (k && list.some((l) => l.key === k) ? k : null));
       // 健康检查在后台异步执行（不阻塞列表渲染）；
       // 路径不存在的结果回来后自动标记失效。
+      // 按路径映射回填而非按下标：两次 load 并发时列表可能已变，
+      // 下标回填会让「失效」标记整体错位；path 是稳定锚点
+      const paths = list.map((l) => l.path);
       api
-        .checkProjects(list.map((l) => l.path))
+        .checkProjects(paths)
         .then((results) => {
+          const byPath = new Map(paths.map((p, i) => [p, results[i] ?? false]));
           setItems((prev) =>
-            prev.map((l, i) => ({ ...l, healthy: results[i] ?? false })),
+            prev.map((l) => (byPath.has(l.path) ? { ...l, healthy: byPath.get(l.path)! } : l)),
           );
         })
         .catch(() => {});
     } catch (e) {
       showToast("加载失败：" + String(e));
     }
-  }, []);
+  }, [showToast]);
 
   /** 重新拉取置顶区数据（置顶/取消、重命名、删除、回收站恢复或清空后调用）。
    *  后端按 config 清单实时解析元数据，已不存在的会话文件会被跳过。 */
@@ -186,8 +208,7 @@ export default function App() {
       .then((info) => {
         if (info.installMode && !localStorage.getItem("cf-data-tip")) {
           localStorage.setItem("cf-data-tip", "1");
-          setToast(`数据目录：${info.path}（项目清单与置顶会话保存在此）`);
-          window.setTimeout(() => setToast(null), 5000);
+          showToast(`数据目录：${info.path}（项目清单与置顶会话保存在此）`, 5000);
         }
       })
       .catch(() => {});
@@ -196,13 +217,6 @@ export default function App() {
   useEffect(() => {
     document.documentElement.dataset.theme = dark ? "dark" : "light";
   }, [dark]);
-
-  // ---------- Toast ----------
-
-  const showToast = useCallback((msg: string) => {
-    setToast(msg);
-    window.setTimeout(() => setToast(null), 2500);
-  }, []);
 
   // ---------- 配置持久化 / 主题 ----------
 
@@ -395,6 +409,15 @@ export default function App() {
       // 此处严禁再用本地（过期）projectDirs/excludedDirs 走 persistConfig——
       // 会把后端刚写入的排除清单覆盖回旧值，导致被移除的项目被扫描加回来。
       // load() 会从磁盘带回新的 order / pinnedSessions / excluded。
+      // 展开态/会话缓存/正在查看的会话也要清：重新添加同一路径时不带旧数据复活
+      setExpandedKey((k) => (k === l.key ? null : k));
+      setSessionsByKey((prev) => {
+        if (!(l.key in prev)) return prev;
+        const next = { ...prev };
+        delete next[l.key];
+        return next;
+      });
+      setActiveSession((cur) => (cur && cur.key === l.key ? null : cur));
       await refreshPinned();
       await load();
       showToast(`已从列表移除 ${l.name}`);
@@ -654,6 +677,7 @@ export default function App() {
             await load();
             showToast(`批量添加完成：新增 ${count} 个项目`);
           }}
+          onRefresh={() => void load()}
         />
       )}
 

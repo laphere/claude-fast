@@ -25,6 +25,24 @@ pub(crate) const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// 启动脚本专用目录（相对数据根目录）
 const SCRIPTS_DIR: &str = "scripts";
 
+/// config.json 全程无内存态，每次读改写都是「load → 改 → save」三段式；Tauri 命令
+/// 在多线程上并发执行，不加锁时后写者会拿自己读到的旧快照覆盖对方的修改
+/// （拖拽排序撞上 purge 丢置顶、并发加项目丢清单等）。所有 config 读改写入口必须持有此锁，
+/// 且持锁期间严禁调用另一个持锁函数（std Mutex 不可重入，会死锁）
+static CONFIG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn config_lock() -> std::sync::MutexGuard<'static, ()> {
+    CONFIG_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// stats-ledger.json 的读改写锁（同 CONFIG_LOCK 的理由：台账 load → 聚合 → save
+/// 并发交错会丢掉刚登记的已删会话历史）。与 CONFIG_LOCK 分开，统计耗时不应阻塞配置写
+static LEDGER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn ledger_lock() -> std::sync::MutexGuard<'static, ()> {
+    LEDGER_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// 当前平台的启动脚本扩展名：Windows 用 .bat，macOS 用 .sh
 fn script_ext() -> &'static str {
     #[cfg(windows)]
@@ -85,6 +103,9 @@ pub struct Config {
     /// 用排除清单让「移除」对扫描来源的项目同样生效
     #[serde(default)]
     excluded: Vec<String>,
+    /// 旧 config 缺该字段时不能让整份配置解析失败（其余字段全有 default，
+    /// 唯独它漏了会让用户清单/置顶/供应商静默回退默认值）；false 与前端初值一致
+    #[serde(default)]
     dark: bool,
     /// 关闭窗口行为：None=每次询问；Some("quit")=直接退出；Some("minimize")=最小化到托盘
     #[serde(default)]
@@ -257,12 +278,15 @@ fn app_data_root() -> PathBuf {
 ///    开发目录、整体移动的文件夹、绿色版均走此路径。
 /// 2. **安装模式**：找不到便携标记时回退到应用数据目录
 ///    （%APPDATA%\claude-fast），首次运行自动创建 scripts/ 子目录。
-fn resolve_root_dir() -> PathBuf {
+///
+/// 返回 (数据根, 是否安装模式)。模式判定必须在查找现场做：
+/// 便携根通常是 exe 的**祖先**目录，「root != exe_dir」恒真，判不出模式
+fn resolve_root_with_mode() -> (PathBuf, bool) {
     let exe = std::env::current_exe().unwrap_or_default();
     let mut dir = exe.parent().map(Path::to_path_buf).unwrap_or_default();
     for _ in 0..6 {
         if is_root_dir(&dir) {
-            return dir;
+            return (dir, false);
         }
         match dir.parent() {
             Some(p) => dir = p.to_path_buf(),
@@ -272,7 +296,11 @@ fn resolve_root_dir() -> PathBuf {
     // 安装模式：应用数据目录（幂等创建 scripts/，保证「安装后自动生效」）
     let app = app_data_root();
     let _ = fs::create_dir_all(app.join(SCRIPTS_DIR));
-    app
+    (app, true)
+}
+
+fn resolve_root_dir() -> PathBuf {
+    resolve_root_with_mode().0
 }
 
 fn strip_bom(bytes: &[u8]) -> &[u8] {
@@ -460,6 +488,7 @@ fn ensure_projects_migrated_in(root: &Path) {
                 .collect()
         })
         .unwrap_or_default();
+    let _guard = config_lock();
     let cfg = load_config_from(root);
     let mut projects: Vec<String> = Vec::new();
     for p in key_to_path.values() {
@@ -475,25 +504,27 @@ fn ensure_projects_migrated_in(root: &Path) {
             }
         }
     }
-    let _ = save_config_to(
-        root,
-        order,
-        Vec::new(),
-        projects,
-        Vec::new(),
-        cfg.dark,
-        cfg.close_action,
-    );
+    let mut cfg = cfg;
+    cfg.projects = projects;
+    cfg.order = order;
+    // 直接整份落盘；save_config_to 内部也持锁，嵌套会死锁
+    let _ = save_config_file(root, &cfg);
 }
 
 #[tauri::command]
-fn list_projects() -> Vec<ProjectItem> {
-    let cfg = load_config();
-    list_projects_impl(&claude_projects_dir(), &cfg.projects, &cfg.excluded)
+async fn list_projects() -> Vec<ProjectItem> {
+    // 同步命令在主线程执行：unmangle 枚举 + 每路径 is_dir 是重 I/O，会卡 UI
+    tauri::async_runtime::spawn_blocking(|| {
+        let cfg = load_config();
+        list_projects_impl(&claude_projects_dir(), &cfg.projects, &cfg.excluded)
+    })
+    .await
+    .unwrap_or_default()
 }
 
 #[tauri::command]
 fn add_project(path: String) -> Result<(), String> {
+    let _guard = config_lock();
     let mut cfg = load_config();
     if !stat_is_dir(&path) {
         return Err("路径不存在或不是文件夹".to_string());
@@ -501,18 +532,14 @@ fn add_project(path: String) -> Result<(), String> {
     add_project_to(&mut cfg.projects, &path);
     // 重新加入 = 解除排除
     cfg.excluded.retain(|x| !x.eq_ignore_ascii_case(&path));
-    save_config(
-        cfg.order.clone(),
-        cfg.pinned_sessions.clone(),
-        cfg.projects.clone(),
-        cfg.excluded.clone(),
-        cfg.dark,
-        cfg.close_action.clone(),
-    )
+    // cfg 就来自持锁下的最新读取，直接整份落盘即可；
+    // 不能再走 save_config（内部也持锁，std Mutex 不可重入会死锁）
+    save_config_file(&resolve_root_dir(), &cfg)
 }
 
 #[tauri::command]
 fn remove_project(path: String) -> Result<(), String> {
+    let _guard = config_lock();
     let mut cfg = load_config();
     remove_project_from(&mut cfg.projects, &path);
     // 手动排序里同步移除（排序键与列表键同为项目路径）
@@ -527,14 +554,7 @@ fn remove_project(path: String) -> Result<(), String> {
     {
         cfg.excluded.push(path.clone());
     }
-    save_config(
-        cfg.order.clone(),
-        cfg.pinned_sessions.clone(),
-        cfg.projects.clone(),
-        cfg.excluded.clone(),
-        cfg.dark,
-        cfg.close_action.clone(),
-    )
+    save_config_file(&resolve_root_dir(), &cfg)
 }
 
 /// 读取配置：主文件损坏时自动回退到 .bak 并恢复主文件（用户数据不丢失）
@@ -586,6 +606,7 @@ fn save_config_to(
     dark: bool,
     close_action: Option<String>,
 ) -> Result<(), String> {
+    let _guard = config_lock();
     // 读改写而非重建：保留 save_config 参数之外的字段（providers / current_provider），
     // 否则设置对话框一保存就会把供应商清单清空
     let mut cfg = load_config_from(root);
@@ -671,10 +692,12 @@ fn launch_project(path: String) -> Result<(), String> {
                 .map(|d| d.as_millis())
                 .unwrap_or(0)
         ));
+        // 路径必须放进双引号：sh_quote 只转义 `\ " $ \``，不包引号时空格会拆参数、
+        // `;` 等字符会逃逸成命令分隔符（resume 脚本的 `cd \"{}\"` 是同款正确写法）
         fs::write(
             &sh,
             format!(
-                "#!/bin/bash\ncd {} || exit 1\nexec claude\n",
+                "#!/bin/bash\ncd \"{}\" || exit 1\nexec claude\n",
                 sh_quote(&dir)
             ),
         )
@@ -711,7 +734,9 @@ fn sh_quote(s: &str) -> String {
 
 /// 校验 resume 的项目路径（防命令注入，两平台共用）：
 /// 空路径拒绝；控制字符一律拒绝；路径必须真实存在。
-/// Windows：cmd 引号较弱，`%VAR%` `^` `& | < > ( )` 等即使双引号内仍有作用，故显式拒绝。
+/// Windows：路径拼进 `cd /d "<路径>"` 双引号内，`& | < > ^ ( )` 均为字面量不构成注入，
+/// 只需拒掉引号内仍有效的字符——`"`（截断引号）与 `%`（环境变量展开，`%APPDATA%` 等
+/// 引号内照样展开）；`!`（延迟展开变量，防御注册表 AutoRun 开启 delayed expansion）
 /// macOS：路径经 sh_quote 转义后放进 `cd "..."`，双引号内 `$ ` \ "` 之外的特殊字符
 /// 均为字面量，故不再额外拒字符——否则会误伤含 `(` `)` `'` `\` 等的合法 mac 路径
 /// （这类路径在「新建/启动」能通过，resume 却拒绝，造成行为不一致）。
@@ -722,7 +747,7 @@ fn validate_resume_path(project_path: &str) -> Result<(), String> {
     }
     #[cfg(windows)]
     {
-        let forbidden = ['"', '&', '|', '<', '>', '^', '%', '!', '(', ')'];
+        let forbidden = ['"', '%', '!'];
         for c in forbidden {
             if proj.contains(c) {
                 return Err("项目路径包含非法字符".to_string());
@@ -1872,6 +1897,13 @@ async fn export_session(
 ) -> Result<u64, String> {
     let (path, session_id) = validate_session_file(&file)?;
     let dest = PathBuf::from(&dest_path);
+    // Windows 文件系统大小写不敏感，PathBuf 相等比较却区分大小写，
+    // 换大小写即可绕过「不能导出到会话文件本身」的检查覆盖原文件
+    #[cfg(windows)]
+    if dest.to_string_lossy().eq_ignore_ascii_case(&path.to_string_lossy()) {
+        return Err("导出目标不能是会话文件本身".to_string());
+    }
+    #[cfg(not(windows))]
     if dest == path {
         return Err("导出目标不能是会话文件本身".to_string());
     }
@@ -2159,9 +2191,13 @@ struct StatsLedger {
     /// 台账结构版本：不一致（含旧文件缺字段 → 0）则现存文件全部重扫一次
     #[serde(default)]
     version: u32,
-    /// 记录时的时区偏移（分钟）：per_day 与时区相关，变化则现存文件全部重扫
+    /// 记录时的时区偏移（分钟）：per_day 与时区相关，变化则现存文件全部重扫。
+    /// 必须有 default：缺字段会让整本台账反序列化失败清零（version 缺省为 0 ≠
+    /// LEDGER_VERSION 会触发全量重扫，所以兜底值不影响口径正确性）
+    #[serde(default)]
     tz_offset_minutes: i64,
     /// key = 会话文件绝对路径
+    #[serde(default)]
     files: std::collections::HashMap<String, LedgerEntry>,
 }
 
@@ -2462,48 +2498,56 @@ fn aggregate_stats_in(projects: &[(String, String, PathBuf)], tz_offset_minutes:
 /// tz_offset_minutes：本地时区偏移（东八区 = 480），单日统计按本地日期归属。
 #[tauri::command]
 async fn get_usage_stats(tz_offset_minutes: Option<i64>) -> Result<UsageStats, String> {
-    let dir = claude_projects_dir();
-    let excluded = load_config().excluded;
-    let mut projects: Vec<(String, String, PathBuf)> = Vec::new();
-    let Ok(entries) = fs::read_dir(&dir) else {
-        return Ok(UsageStats::default());
-    };
-    for e in entries.flatten() {
-        let d = e.path();
-        if !d.is_dir() {
-            continue;
-        }
-        let mangled = e.file_name().to_string_lossy().to_string();
-        let candidates = unmangle_candidates(&mangled);
-        let real = candidates.iter().find(|c| Path::new(c).exists());
-        // 与列表口径一致：任一候选路径命中排除清单即不统计
-        let is_excluded = candidates
-            .iter()
-            .any(|c| excluded.iter().any(|x| x.eq_ignore_ascii_case(c)));
-        if is_excluded {
-            continue;
-        }
-        let (name, path) = match real {
-            Some(r) => (
-                Path::new(r)
-                    .file_name()
-                    .map(|s| s.to_string_lossy().to_string())
-                    .unwrap_or_else(|| mangled.clone()),
-                r.clone(),
-            ),
-            // 项目目录已不存在：用首选候选路径显示（历史会话仍有统计价值）
-            None => (
-                mangled.clone(),
-                candidates.first().cloned().unwrap_or(mangled.clone()),
-            ),
+    // 全量扫描属重 I/O，挪到阻塞线程池（tokio worker 上直接做同步文件读会占死 worker）
+    tauri::async_runtime::spawn_blocking(move || {
+        let dir = claude_projects_dir();
+        let excluded = load_config().excluded;
+        let mut projects: Vec<(String, String, PathBuf)> = Vec::new();
+        let Ok(entries) = fs::read_dir(&dir) else {
+            return Ok(UsageStats::default());
         };
-        projects.push((name, path, d));
-    }
-    let root = resolve_root_dir();
-    let mut ledger = load_ledger_from(&root);
-    let stats = aggregate_stats_ledger(&projects, &excluded, tz_offset_minutes.unwrap_or(0), &mut ledger);
-    save_ledger_to(&root, &ledger);
-    Ok(stats)
+        for e in entries.flatten() {
+            let d = e.path();
+            if !d.is_dir() {
+                continue;
+            }
+            let mangled = e.file_name().to_string_lossy().to_string();
+            let candidates = unmangle_candidates(&mangled);
+            let real = candidates.iter().find(|c| Path::new(c).exists());
+            // 与列表口径一致：任一候选路径命中排除清单即不统计
+            let is_excluded = candidates
+                .iter()
+                .any(|c| excluded.iter().any(|x| x.eq_ignore_ascii_case(c)));
+            if is_excluded {
+                continue;
+            }
+            let (name, path) = match real {
+                Some(r) => (
+                    Path::new(r)
+                        .file_name()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_else(|| mangled.clone()),
+                    r.clone(),
+                ),
+                // 项目目录已不存在：用首选候选路径显示（历史会话仍有统计价值）
+                None => (
+                    mangled.clone(),
+                    candidates.first().cloned().unwrap_or(mangled.clone()),
+                ),
+            };
+            projects.push((name, path, d));
+        }
+        // 台账读改写持锁：并发两次统计会互相覆盖刚登记的条目（丢已删会话历史）
+        let _guard = ledger_lock();
+        let root = resolve_root_dir();
+        let mut ledger = load_ledger_from(&root);
+        let stats =
+            aggregate_stats_ledger(&projects, &excluded, tz_offset_minutes.unwrap_or(0), &mut ledger);
+        save_ledger_to(&root, &ledger);
+        Ok(stats)
+    })
+    .await
+    .map_err(|e| format!("统计任务执行失败：{e}"))?
 }
 
 /// 向会话 jsonl 追加 custom-title 行（核心逻辑，供 command 与测试复用）
@@ -2525,6 +2569,10 @@ fn append_custom_title(path: &Path, session_id: &str, title: &str) -> Result<(),
 /// 校验会话文件路径：必须位于 Claude Code 项目目录下、名称为 <uuid>.jsonl。
 /// 返回 (path, session_id)。
 fn validate_session_file(file: &str) -> Result<(PathBuf, String), String> {
+    validate_session_file_in(file, &claude_projects_dir())
+}
+
+fn validate_session_file_in(file: &str, projects_dir: &Path) -> Result<(PathBuf, String), String> {
     let path = PathBuf::from(file);
     let name = path
         .file_name()
@@ -2537,7 +2585,15 @@ fn validate_session_file(file: &str) -> Result<(PathBuf, String), String> {
     if !is_valid_uuid(&session_id) {
         return Err("非法会话文件".to_string());
     }
-    if !path.starts_with(&claude_projects_dir()) {
+    // starts_with 是逐组件词法前缀匹配，不规范化 `..`（`projects/../x` 也能通过），
+    // 必须先 canonicalize 成真实绝对路径再比对（顺带统一 \\?\ 前缀与大小写）
+    let dir_canon = projects_dir
+        .canonicalize()
+        .map_err(|_| "会话文件不在 Claude Code 目录中".to_string())?;
+    let canon = path
+        .canonicalize()
+        .map_err(|_| "会话文件不存在".to_string())?;
+    if !canon.starts_with(&dir_canon) {
         return Err("会话文件不在 Claude Code 目录中".to_string());
     }
     Ok((path, session_id))
@@ -2708,13 +2764,23 @@ fn list_trashed_sessions_in(trash_root: &Path) -> Vec<TrashedSession> {
 
 /// 列出回收站中的全部会话备份（按删除时间倒序）
 #[tauri::command]
-fn list_trashed_sessions() -> Vec<TrashedSession> {
-    list_trashed_sessions_in(&trash_root())
+async fn list_trashed_sessions() -> Vec<TrashedSession> {
+    // 每个备份文件都要 head/tail 读取与解析，回收站大时明显耗时，挪到阻塞线程池
+    tauri::async_runtime::spawn_blocking(|| list_trashed_sessions_in(&trash_root()))
+        .await
+        .unwrap_or_default()
 }
 
 /// 校验回收站备份文件路径：必须位于数据根 trash/sessions/ 下、名称为 <uuid>.jsonl。
 /// 返回 (path, session_id, mangled 项目目录名)。
 fn validate_trash_file(file: &str) -> Result<(PathBuf, String, String), String> {
+    validate_trash_file_in(file, &trash_root())
+}
+
+fn validate_trash_file_in(
+    file: &str,
+    trash_root: &Path,
+) -> Result<(PathBuf, String, String), String> {
     let path = PathBuf::from(file);
     let name = path
         .file_name()
@@ -2727,8 +2793,14 @@ fn validate_trash_file(file: &str) -> Result<(PathBuf, String, String), String> 
     if !is_valid_uuid(&session_id) {
         return Err("非法备份文件".to_string());
     }
-    let trash_root = resolve_root_dir().join("trash").join("sessions");
-    if !path.starts_with(&trash_root) {
+    // 同 validate_session_file_in：canonicalize 后再比对，防 `..` 词法穿越
+    let root_canon = trash_root
+        .canonicalize()
+        .map_err(|_| "备份文件不在回收站中".to_string())?;
+    let canon = path
+        .canonicalize()
+        .map_err(|_| "备份文件不存在".to_string())?;
+    if !canon.starts_with(&root_canon) {
         return Err("备份文件不在回收站中".to_string());
     }
     // 备份路径结构：trash/sessions/<ts>/<mangled>/<uuid>.jsonl
@@ -2786,6 +2858,7 @@ fn purge_session(file: String) -> Result<(), String> {
 /// 彻底删除会话后清掉置顶清单里已失效的条目。保存失败只是条目多留一会儿，
 /// 不影响删除结果，所以吞掉错误（与旧脚本迁移的落盘处理一致）。
 fn prune_pins_after_purge() {
+    let _guard = config_lock();
     let mut cfg = load_config();
     prune_dead_pins(&mut cfg);
     let _ = save_config_file(&resolve_root_dir(), &cfg);
@@ -3043,6 +3116,7 @@ async fn purge_claude_project_data(paths: Vec<String>) -> Result<usize, String> 
         }
         // 项目的会话数据连同置顶条目一起消失，同步撤掉（保存失败不影响已完成的清除）
         let root = resolve_root_dir();
+        let _guard = config_lock();
         let mut cfg = load_config_from(&root);
         drop_pins_for_projects(&mut cfg, &paths);
         let _ = save_config_file(&root, &cfg);
@@ -3083,6 +3157,7 @@ fn provider_list() -> ProviderListState {
 }
 
 fn provider_list_from(config_dir: &Path, root: &Path) -> ProviderListState {
+    let _guard = config_lock();
     let mut cfg = load_config_from(root);
     // 首次使用：自动把 live 配置整文件收编为 default 供应商（cc-switch 语义），
     // 清单为空时 current 必然失效，导入后直接指向 default
@@ -3120,6 +3195,7 @@ fn provider_save_from(
     root: &Path,
     input: provider::ProviderInfo,
 ) -> Result<ProviderListState, String> {
+    let _guard = config_lock();
     let mut p = input;
     if p.name.trim().is_empty() {
         return Err("供应商名称不能为空".to_string());
@@ -3154,6 +3230,7 @@ fn provider_delete_from(
     root: &Path,
     id: &str,
 ) -> Result<ProviderListState, String> {
+    let _guard = config_lock();
     let mut cfg = load_config_from(root);
     if cfg.current_provider.as_deref() == Some(id) {
         return Err("不能删除当前启用的供应商，请先切换到其他供应商".to_string());
@@ -3182,6 +3259,7 @@ fn provider_reorder_from(
     root: &Path,
     ids: &[String],
 ) -> Result<ProviderListState, String> {
+    let _guard = config_lock();
     let mut cfg = load_config_from(root);
     cfg.providers
         .sort_by_key(|p| ids.iter().position(|id| p.id == *id).unwrap_or(usize::MAX));
@@ -3202,6 +3280,7 @@ fn provider_switch_from(
     root: &Path,
     id: &str,
 ) -> Result<ProviderSwitchOutcome, String> {
+    let _guard = config_lock();
     let mut cfg = load_config_from(root);
     let warnings = provider::switch_provider_from(
         config_dir,
@@ -3242,6 +3321,7 @@ fn provider_import_ccswitch_from(
                 .to_string(),
         );
     }
+    let _guard = config_lock();
     let mut cfg = load_config_from(root);
     let mut added = 0usize;
     let mut skipped = 0usize;
@@ -3289,18 +3369,29 @@ fn provider_read_live() -> Option<serde_json::Value> {
 
 /// 拉取供应商可用模型列表（OpenAI 兼容 /v1/models，候选地址逐个探测）
 #[tauri::command]
-fn fetch_models_for_config(
+async fn fetch_models_for_config(
     base_url: String,
     api_key: String,
 ) -> Result<Vec<model_fetch::FetchedModel>, String> {
-    model_fetch::fetch_models(&base_url, &api_key)
+    // 逐候选 15s 超时、最多 4 个候选，网络差时同步执行可冻结 UI 近 1 分钟
+    tauri::async_runtime::spawn_blocking(move || model_fetch::fetch_models(&base_url, &api_key))
+        .await
+        .map_err(|e| format!("模型拉取任务执行失败：{e}"))?
 }
 
 /// 查询供应商的 Coding Plan 用量（凭据取自其 settingsConfig.env；
 /// 非已知厂商返回 supported=false，前端静默）
 #[tauri::command]
-fn provider_query_usage(id: String) -> usage_query::UsageResult {
-    provider_usage_from(&resolve_root_dir(), &id)
+async fn provider_query_usage(id: String) -> usage_query::UsageResult {
+    // 配额查询走 HTTP（逐接口超时），同步执行会阻塞主线程
+    match tauri::async_runtime::spawn_blocking(move || {
+        provider_usage_from(&resolve_root_dir(), &id)
+    })
+    .await
+    {
+        Ok(r) => r,
+        Err(_) => usage_query::UsageResult::unsupported(),
+    }
 }
 
 fn provider_usage_from(root: &Path, id: &str) -> usage_query::UsageResult {
@@ -3364,14 +3455,10 @@ fn open_url_impl(url: &str) -> Result<(), String> {
 /// （数据根在 %APPDATA% 而非 exe 所在目录）
 #[tauri::command]
 fn get_data_root() -> DataRootInfo {
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(Path::to_path_buf))
-        .unwrap_or_default();
-    let root = resolve_root_dir();
+    let (root, install_mode) = resolve_root_with_mode();
     DataRootInfo {
         path: root.to_string_lossy().to_string(),
-        install_mode: root != exe_dir,
+        install_mode,
     }
 }
 
@@ -3441,6 +3528,88 @@ mod tests {
         let _ = fs::remove_dir_all(&p);
         fs::create_dir_all(&p).unwrap();
         p
+    }
+
+    const TEST_UUID: &str = "5426d6d0-c08f-43bd-94df-4d6d99e5c699";
+
+    #[test]
+    fn validate_session_file_rejects_traversal_and_missing() {
+        let root = temp_root("validate-sess");
+        let projects = root.join("projects");
+        let mangled = projects.join("-Users-foo-bar");
+        fs::create_dir_all(&mangled).unwrap();
+        let real = mangled.join(format!("{TEST_UUID}.jsonl"));
+        fs::write(&real, "{\"type\":\"user\"}").unwrap();
+        // 越界目录里放同名文件，构造 `projects/../evil/<uuid>.jsonl` 词法穿越
+        let evil = root.join("evil");
+        fs::create_dir_all(&evil).unwrap();
+        let evil_file = evil.join(format!("{TEST_UUID}.jsonl"));
+        fs::write(&evil_file, "{}").unwrap();
+
+        // 合法：真实位于 projects 下的 <uuid>.jsonl
+        let (path, sid) =
+            validate_session_file_in(real.to_str().unwrap(), &projects).unwrap();
+        assert_eq!(sid, TEST_UUID);
+        assert_eq!(path, real);
+        // 穿越：`..` 拼接的路径即便词法前缀是 projects 也必须拒绝
+        let traversal = projects
+            .join("..")
+            .join("evil")
+            .join(format!("{TEST_UUID}.jsonl"));
+        assert!(validate_session_file_in(traversal.to_str().unwrap(), &projects).is_err());
+        // 文件不存在：canonicalize 失败必须拒绝（旧逻辑 starts_with 不要求存在）
+        assert!(validate_session_file_in(
+            mangled.join("ffffffff-ffff-ffff-ffff-ffffffffffff.jsonl").to_str().unwrap(),
+            &projects,
+        )
+        .is_err());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn validate_trash_file_rejects_traversal() {
+        let root = temp_root("validate-trash");
+        let trash = root.join("trash").join("sessions");
+        let backup = trash.join("20260913_120000").join("-Users-foo-bar");
+        fs::create_dir_all(&backup).unwrap();
+        let real = backup.join(format!("{TEST_UUID}.jsonl"));
+        fs::write(&real, "{}").unwrap();
+        assert!(validate_trash_file_in(real.to_str().unwrap(), &trash).is_ok());
+        let traversal = trash
+            .join("..")
+            .join("..")
+            .join("evil")
+            .join(format!("{TEST_UUID}.jsonl"));
+        fs::create_dir_all(root.join("evil")).unwrap();
+        fs::write(root.join("evil").join(format!("{TEST_UUID}.jsonl")), "{}").unwrap();
+        assert!(validate_trash_file_in(traversal.to_str().unwrap(), &trash).is_err());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn config_missing_dark_field_still_parses() {
+        let root = temp_root("config-dark");
+        // 旧版/外部工具生成的 config 没有 dark 字段：不能整份解析失败
+        let json = format!(
+            r#"{{"order":["a"],"projects":["a"],"excluded":[],"pinnedSessions":[],"providers":[],"currentProvider":null,"closeAction":null}}"#
+        );
+        fs::write(root.join("config.json"), json).unwrap();
+        let cfg = load_config_from(&root);
+        assert!(!cfg.dark);
+        assert_eq!(cfg.projects, vec!["a".to_string()]);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn ledger_missing_tz_or_files_field_still_parses() {
+        // 缺 tz/files 的旧 JSON 必须字段级兜底，而不是整本清零
+        let ledger: StatsLedger =
+            serde_json::from_str(r#"{"version":2}"#).unwrap();
+        assert_eq!(ledger.tz_offset_minutes, 0);
+        assert!(ledger.files.is_empty());
+        let ledger: StatsLedger =
+            serde_json::from_str(r#"{"tz_offset_minutes":480}"#).unwrap();
+        assert!(ledger.files.is_empty());
     }
 
     #[test]
@@ -4244,15 +4413,28 @@ mod tests {
     fn build_resume_cmdline_rejects_bad_paths() {
         // 空路径
         assert!(build_resume_cmdline("", "x").is_err());
-        // 引号
+        // 引号（截断 cd 的引号边界）
         assert!(build_resume_cmdline("D:\\My\\\"Workspaces", "x").is_err());
-        // cmd 特殊字符（& | < > %）
-        assert!(build_resume_cmdline("D:\\a&b", "x").is_err());
-        assert!(build_resume_cmdline("D:\\a|b", "x").is_err());
+        // %VAR% 引号内仍会展开；! 防延迟展开
         assert!(build_resume_cmdline("D:\\a%b", "x").is_err());
+        assert!(build_resume_cmdline("D:\\a!b", "x").is_err());
         // 不存在的目录
         let nonexist = std::env::temp_dir().join(format!("cf-no-such-{}", std::process::id()));
         assert!(build_resume_cmdline(nonexist.to_str().unwrap(), "x").is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn build_resume_cmdline_allows_quoted_literals() {
+        // 双引号内 & | < > ^ ( ) 均为字面量：含空格与括号的合法路径不得误拒
+        let dir = temp_root("resume (x86) & test");
+        let cmd = build_resume_cmdline(
+            dir.to_str().unwrap(),
+            "5426d6d0-c08f-43bd-94df-4d6d99e5c699",
+        )
+        .unwrap();
+        assert!(cmd.contains("resume (x86) & test"));
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

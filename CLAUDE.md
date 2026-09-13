@@ -20,7 +20,11 @@
 | 文件 | 作用 |
 |---|---|
 | `src/` | 前端：React + TypeScript + Vite。`App.tsx` 状态管理；`src/components/` UI 组件（对话框/列表/会话查看器等）；`src/lib/api.ts` 封装全部 Tauri invoke |
-| `src-tauri/src/lib.rs` | 后端：**全部 commands 与单元测试都在此**（约 2800 行，`#[cfg(test)]`）。项目清单系：`list_projects`/`add_project`/`remove_project`/`launch_project`/`check_projects`；一次性迁移：`ensure_projects_migrated` |
+| `src-tauri/src/lib.rs` | 后端主文件（约 5500 行，**全部 commands 与大部分单元测试都在此**，`#[cfg(test)]`）。项目清单系：`list_projects`/`add_project`/`remove_project`/`launch_project`/`check_projects`；一次性迁移：`ensure_projects_migrated`；另有用量统计台账（`get_usage_stats`/`StatsLedger`，约 1940–2600 行区段） |
+| `src-tauri/src/provider.rs` | 供应商切换（读写 `~/.claude/settings.json`：指纹守卫回填、current 重锚定、cc-switch SQL 备份导入） |
+| `src-tauri/src/model_fetch.rs` | 供应商可用模型拉取（OpenAI 兼容 /v1/models，候选地址逐个探测） |
+| `src-tauri/src/usage_query.rs` | Coding Plan 套餐用量查询适配器（Kimi/GLM/MiniMax/ZenMux/OpenCode 五家厂商 HTTP 接口；**不是** jsonl 用量统计——统计在 lib.rs） |
+| `src-tauri/src/claude_update.rs` | Claude Code 版本探测与一键升级（semver 比较、bat errorlevel 链兜底 npm 安装） |
 | `README.md` | 使用说明、构建方法 |
 
 > 本目录为**纯源码库**（与 GitHub 仓库一致）：不含 exe、scripts、config.json——这些运行时产物/用户数据都在数据根目录（见「数据根目录」）。
@@ -37,7 +41,7 @@
 
 - `script_ext()` 返回 bat/sh；`legacy_marker()` 兼容旧标记 `claude-claude-fast.<ext>`；`parse_cd_path` 兼容 `cd /d` 与 `cd "/path"` 两种语法。
 - `launch_claude`：Windows 走 `ShellExecuteW` 开 cmd（Rust `Command` args 的引号会被 cmd 误解析，必须 ShellExecuteW）；macOS 走 `open -a Terminal`。
-- `resume_session(file, project_path)`：新开终端窗口执行 `claude --resume <session-id>`。Windows 用 `build_resume_cmdline` 拼防注入命令行；macOS 写临时 .sh 到系统临时目录再 `open -a Terminal`（无需 osascript 自动化权限）。共用 `validate_resume_path`，但平台规则不同：Windows 拒绝 cmd 元字符；macOS 路径经 `sh_quote` 进 `cd "..."` 后元字符均为字面量，故仅拒控制字符 + 要求路径存在（避免误伤含 `( ) ' \` 的合法 mac 路径）。
+- `resume_session(file, project_path)`：新开终端窗口执行 `claude --resume <session-id>`。Windows 用 `build_resume_cmdline` 拼防注入命令行；macOS 写临时 .sh 到系统临时目录再 `open -a Terminal`（无需 osascript 自动化权限）。共用 `validate_resume_path`，但平台规则不同：Windows 路径进 `cd /d "<...>"` 双引号内，`& | < > ^ ( )` 均为字面量不构成注入，只拒引号内仍有效的 `"` `%` `!`（引号截断 / 变量展开 / 延迟展开）；macOS 路径经 `sh_quote` 进 `cd "..."` 后元字符均为字面量，故仅拒控制字符 + 要求路径存在（避免误伤含 `( ) ' \` 的合法 mac 路径）。`launch_project` 的 macOS 临时脚本同样把路径放进 `cd "<sh_quote>"` 双引号内（历史上漏过引号，含空格路径必坏、`;` 可逃逸，勿改回）。
 - `open_folder`：explorer.exe / `open`；`check_claude`：`where` / `sh -c "command -v claude"`（均 3 秒超时，阻塞线程池执行不卡 UI）。
 
 ## mangle / unmangle（Claude Code 项目目录名解析）
@@ -57,7 +61,7 @@
 - **回收站（删除 = 移入回收站）**：`delete_session` 先备份到数据根 `trash/sessions/<时间戳>/<项目>/` 再删除；「🗑 回收站」对话框可 `restore_session` 恢复（移回原目录，Claude Code 可继续 resume）或 `purge_session` / `purge_trash` 永久删除（行内二次确认）。
 - **会话内容查看**：左右分栏（左 360px 项目/会话列表，右内容区）。`get_session_messages(file)` 全量读 jsonl 提取 user/assistant 消息（text/thinking/tool_use/tool_result 块，`MAX_SESSION_MESSAGES=500` 截断，过滤 sidechain/isMeta/命令消息），前端聊天式渲染（**思考+工具调用按 Claude Code 终端风格跨消息合并折叠**：连续的思考/工具块折为一个活动组摘要行（如「思考 · 读取 2 个文件 · 执行 1 条命令」，ActivityGroup + activitySummary），点击展开看思考/工具行；工具行展开同时看输入 JSON 与执行结果——结果合并进工具行不再单独成卡，仅无主结果保留独立结果卡；活动组嵌套折叠后搜索跳转会同时展开外层组（`closest("details.activity")`）；围栏代码块等宽）。
 - **会话域增强（搜索 / 统计 / 导出 / 文件导航）**：`search_session_messages(file, keyword)` 全文件全文搜索（text 块 + tool_use 输入，跳过 thinking/tool_result，大小写不敏感，上限 `MAX_SEARCH_HITS=200`），命中跳转可跨分页定位（加载含目标消息的页 + `data-msg-index` 滚动 + `data-block-idx` 展开 diff 卡）；`get_session_messages` 返回 `SessionUsageStats`（token 统计：usage 字段新旧两种格式防御式解析，meta 区展示总计/输入/输出/缓存读取）；`export_session(file, dest, format)` 导出 Markdown（`render_session_markdown`：text 原样 / thinking 引用块 / tool_use 摘要行不转储 input / tool_result 截断 200 字符）或 JSONL 原文复制；变更文件面板聚合 Edit/Write/MultiEdit 的 `file_path`（相对路径，按目录分组），点击定位到首见消息并展开对应卡片。
-- **使用统计仪表盘**（工具栏「📊 统计」）：`get_usage_stats(tz_offset_minutes)` 流式扫描所有项目 jsonl 聚合 token 用量（只提取 usage/timestamp/model，不构造消息；**按 message.id 去重**——流式写入把一次响应拆成多行、每行带同一份 usage，不去重会成倍虚高；**sidechain 子代理消息也计入**；**单日按本地时区归属**——timestamp 是 UTC，直接截日期会错位一个时区；**每日会话数按「最后活跃日」归属**——跨天会话只计一次，任意日期窗口内每日累加 = 窗口内去重会话数（若按「当天活跃」逐日计入，跨天会话被重复累加，会出现「全部会话数 < 近30天会话数」的反直觉结果）；excluded 项目不计（含其台账历史）；**用量台账（数据根 `stats-ledger.json`）持久累计**——统计口径为**历史累计消耗**，会话删除（回收站/清空/Claude Code 自身清理）后其用量仍保留在统计中，台账建立之前已删除的会话无从恢复；时区变化触发现存文件全量重扫；现存文件 mtime+size 未变时跳过重扫（内存 `USAGE_CACHE` 与台账双层命中））。前端弹窗：汇总卡（会话/消息/token）+ 每日 token 柱状趋势（近 7 天/30 天/全部切换，只作用汇总与趋势；近 N 天 = **严格日历窗口**——含今天往前 N 个自然日，无用量日计 0 占位，趋势图柱距与日历时间成正比）+ 项目排行（token/会话数排序）+ 模型分布（按 token，消息级归属）。**订阅版 jsonl 无 costUSD，故不做成本统计**。
+- **使用统计仪表盘**（工具栏「📊 统计」）：`get_usage_stats(tz_offset_minutes)` 逐行解析所有项目 jsonl 聚合 token 用量（单文件全量读入内存后逐行遍历，只提取 usage/timestamp/model，不构造消息；**按 message.id 去重**——流式写入把一次响应拆成多行、每行带同一份 usage，不去重会成倍虚高；注意去重粒度是单文件内，`claude --resume`/compact 拷贝出的新文件（同 message.id）仍会双计，为已知取舍；**sidechain 子代理消息也计入**；**单日按本地时区归属**——timestamp 是 UTC，直接截日期会错位一个时区；**每日会话数按「最后活跃日」归属**——跨天会话只计一次，任意日期窗口内每日累加 = 窗口内去重会话数（若按「当天活跃」逐日计入，跨天会话被重复累加，会出现「全部会话数 < 近30天会话数」的反直觉结果）；excluded 项目不计（含其台账历史）；**用量台账（数据根 `stats-ledger.json`）持久累计**——统计口径为**历史累计消耗**，会话删除（回收站/清空/Claude Code 自身清理）后其用量仍保留在统计中，台账建立之前已删除的会话无从恢复；时区变化触发现存文件全量重扫；现存文件 mtime+size 未变时跳过重扫（内存 `USAGE_CACHE` 与台账双层命中））。前端弹窗：汇总卡（会话/消息/token）+ 每日 token 柱状趋势（近 7 天/30 天/全部切换，只作用汇总与趋势；近 N 天 = **严格日历窗口**——含今天往前 N 个自然日，无用量日计 0 占位，趋势图柱距与日历时间成正比）+ 项目排行（token/会话数排序）+ 模型分布（按 token，消息级归属）。**订阅版 jsonl 无 costUSD，故不做成本统计**。
 - **单实例**（`tauri-plugin-single-instance`）：重复启动不新建进程，回调里 show + unminimize + set_focus + `set_always_on_top` 开关（对抗 Windows 前台锁定，勿当冗余代码删掉）把已有窗口调到前台。
 - 其他：深色主题（`dark`）、搜索过滤、右键菜单、全局拖拽排序、置顶会话聚合区、关闭行为可选（`close_action`：询问/退出/最小化到托盘）、系统托盘（显示窗口/退出）。状态存 `config.json`。
 
@@ -71,6 +75,8 @@
 ## 铁律
 
 - **绝不删除数据根的 `config.json` / `.bak`**——用户的项目清单、排序与置顶会话都在这里。`save_config` 三步保护：写临时文件 → 旧文件备份为 `.bak` → 原子替换；`load_config` 读主文件失败时自动从 `.bak` 回退。
+- **config / 台账的读改写必须持锁**：`CONFIG_LOCK`（config.json）/ `LEDGER_LOCK`（stats-ledger.json）是全局 Mutex，所有「load → 改 → save」入口必须先拿锁；持锁期间**严禁调用另一个持锁函数**（std Mutex 不可重入，嵌套即死锁）——这也是 `add_project` 等命令直接调 `save_config_file` 而不走 `save_config` 的原因。
+- **会话文件路径校验必须走 canonicalize**：`validate_session_file_in` / `validate_trash_file_in` 对 `path.starts_with(dir)` 前先 canonicalize 双方——`starts_with` 是逐组件词法匹配，不规范化 `..`，单独使用可被 `projects/../evil/<uuid>.jsonl` 穿越。
 - ⚠️ **必须用 `npm run tauri build`（或 `npx tauri build`）构建，禁止直接 `cargo build --release`**：只有 tauri CLI 自动加 `--features tauri/custom-protocol`，缺它产物是 dev 模式，运行时连 `http://localhost:1420` 白屏。
 - 国内网络首次构建需 crates.io 镜像（用户 `~/.cargo/config.toml` 已配 rsproxy.cn）。
 - **新增任何按钮类必须做墨迹居中补偿，并放大目检/实测**（历史规律：每加新按钮都漏这条被用户发现）。中文字体 YaHei 的字形墨迹与行盒中心不重合，偏移方向由 line-height 决定：
@@ -87,7 +93,7 @@
 ```bash
 npm install                  # 前端依赖
 npm run tauri dev            # 开发模式（热更新）
-cd src-tauri && cargo test   # 后端单元测试（60 个：路径解析/脚本生成/配置/扫描/根目录定位/会话管理/mangle/sh_quote）
+cd src-tauri && cargo test   # 后端单元测试（141 个：路径解析/配置/扫描/根目录定位/会话管理/mangle/sh_quote/回收站/台账/供应商/模型拉取/版本升级）
 npm run tauri build          # 生产构建
 # macOS 通吃包（Intel + Apple Silicon）：npm run tauri build -- --target universal-apple-darwin
 ```

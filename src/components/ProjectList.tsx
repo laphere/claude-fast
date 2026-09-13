@@ -95,11 +95,17 @@ export default function ProjectList({
   };
 
   if (items.length === 0) {
+    // 搜索中（dragEnabled=false 即搜索期）与「真的没有项目」是两种空态
+    const searching = !dragEnabled;
     return (
       <div className="empty">
         <div className="empty-icon">🗂</div>
-        <div>没有找到匹配的项目</div>
-        <div className="empty-sub">点击「批量添加」扫描 Claude Code 项目，或「新建」手动添加</div>
+        <div>{searching ? "没有找到匹配的项目" : "还没有项目"}</div>
+        <div className="empty-sub">
+          {searching
+            ? "换个关键词试试，或清空搜索查看全部项目"
+            : "点击「批量添加」扫描 Claude Code 项目，或「新建」手动添加"}
+        </div>
       </div>
     );
   }

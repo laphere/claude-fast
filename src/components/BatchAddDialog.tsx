@@ -6,9 +6,12 @@ import Modal from "./Modal";
 interface Props {
   onClose: () => void;
   onDone: (addedCount: number) => void;
+  /** 部分失败时对话框留在原地，但磁盘 config 已变——宿主必须重新 load()，
+   *  否则本地 projectDirs 长期过期，后续 persistConfig 会把刚加的条目覆盖掉 */
+  onRefresh?: () => void;
 }
 
-export default function BatchAddDialog({ onClose, onDone }: Props) {
+export default function BatchAddDialog({ onClose, onDone, onRefresh }: Props) {
   const [projects, setProjects] = useState<ClaudeProject[] | null>(null);
   const [dir, setDir] = useState("");
   const [checked, setChecked] = useState<Set<string>>(new Set());
@@ -82,6 +85,8 @@ export default function BatchAddDialog({ onClose, onDone }: Props) {
     );
     if (!errors.length) {
       onDone(added);
+    } else {
+      onRefresh?.();
     }
   };
 

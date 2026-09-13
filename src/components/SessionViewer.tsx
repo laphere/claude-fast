@@ -577,6 +577,10 @@ export default function SessionViewer({
   const mainRef = useRef<HTMLDivElement>(null);
   const scrollRafRef = useRef(0);
   const prevFileRef = useRef<string | null>(null);
+  /** 当前会话 file 的镜像：jumpTo/loadMore 的异步回包用它判断是否已切换会话，
+   *  防止旧会话的迟到结果污染新会话的消息列表 */
+  const sessionFileRef = useRef<string | null>(null);
+  sessionFileRef.current = session?.file ?? null;
 
   // 初始加载：默认取最后 500 条（session 切换或点「刷新」时重新加载）
   useEffect(() => {
@@ -641,6 +645,7 @@ export default function SessionViewer({
   // 加载更早的一页（offset - 500），插入顶部并保持滚动位置
   const loadMore = useCallback(async () => {
     if (!session || loadingMore || !hasMore) return;
+    const myFile = session.file;
     const body = bodyRef.current;
     const prevHeight = body?.scrollHeight ?? 0;
     const prevTop = body?.scrollTop ?? 0;
@@ -650,6 +655,7 @@ export default function SessionViewer({
         session.file,
         Math.max(0, offset - PAGE_SIZE),
       );
+      if (sessionFileRef.current !== myFile) return; // 已切换会话，丢弃迟到结果
       setMessages((prev) => [...data.messages, ...prev]);
       setOffset(data.offset);
       setHasMore(data.hasMore);
@@ -774,12 +780,14 @@ export default function SessionViewer({
   const jumpTo = useCallback(
     async (globalIndex: number, blockIndex?: number) => {
       if (!session) return;
+      const myFile = session.file;
       const first = offset; // messages[0] 的全局序号
       let needFrame = false;
       if (globalIndex < first || globalIndex >= first + messages.length) {
         const pageStart = Math.floor(globalIndex / PAGE_SIZE) * PAGE_SIZE;
         try {
           const data = await api.getSessionMessages(session.file, pageStart);
+          if (sessionFileRef.current !== myFile) return; // 已切换会话，丢弃迟到结果
           setMessages(data.messages);
           setOffset(data.offset);
           setHasMore(data.hasMore);
@@ -792,6 +800,7 @@ export default function SessionViewer({
         }
       }
       const locate = () => {
+        if (sessionFileRef.current !== myFile) return; // 已切换会话，不再定位
         const body = bodyRef.current;
         if (!body) return;
         const el = body.querySelector(`[data-msg-index="${globalIndex}"]`);
