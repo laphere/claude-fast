@@ -22,10 +22,9 @@ interface Props {
   dragEnabled: boolean;
   onToggleExpand: (key: string) => void;
   onTogglePin: (key: string, session: SessionInfo) => void;
-  onRenameSession: (key: string, session: SessionInfo) => void;
-  onDeleteSession: (key: string, session: SessionInfo) => void;
+  /** 会话右键菜单（继续/重命名/置顶/删除收进菜单，行上不再放按钮） */
+  onSessionContextMenu: (key: string, session: SessionInfo, x: number, y: number) => void;
   onOpenSession: (key: string, session: SessionInfo) => void;
-  onResumeSession: (key: string, session: SessionInfo) => void;
   onContextMenu: (x: number, y: number, key: string) => void;
 }
 
@@ -42,10 +41,8 @@ export default function ProjectList({
   dragEnabled,
   onToggleExpand,
   onTogglePin,
-  onRenameSession,
-  onDeleteSession,
+  onSessionContextMenu,
   onOpenSession,
-  onResumeSession,
   onContextMenu,
 }: Props) {
   // ---------- 全局拖拽排序（仅临时视觉状态，顺序真源在 App 的 order 数组）----------
@@ -193,9 +190,7 @@ export default function ProjectList({
                       active={s.file === activeSessionFile}
                       onOpen={() => onOpenSession(l.key, s)}
                       onTogglePin={() => onTogglePin(l.key, s)}
-                      onResume={() => onResumeSession(l.key, s)}
-                      onRename={() => onRenameSession(l.key, s)}
-                      onDelete={() => onDeleteSession(l.key, s)}
+                      onContextMenu={(e) => onSessionContextMenu(l.key, s, e.clientX, e.clientY)}
                     />
                   ))
                 )}

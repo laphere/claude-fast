@@ -45,7 +45,13 @@ export default function App() {
   const [dark, setDark] = useState(false);
   const [search, setSearch] = useState("");
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
-  const [menu, setMenu] = useState<{ x: number; y: number; key: string } | null>(null);
+  /** 右键菜单：key=项目 key；session 非空时会话菜单（key 为其归属项目/路径） */
+  const [menu, setMenu] = useState<{
+    x: number;
+    y: number;
+    key: string;
+    session: SessionInfo | null;
+  } | null>(null);
   const [dialog, setDialog] = useState<DialogKind>(null);
   const [confirm, setConfirm] = useState<ConfirmState | null>(null);
   const [toast, setToast] = useState<string | null>(null);
@@ -567,9 +573,9 @@ export default function App() {
             projects={items}
             onOpenSession={loadSessionMessages}
             onTogglePin={togglePin}
-            onResumeSession={resumeSession}
-            onRenameSession={(key, session) => setRenameTarget({ session, key })}
-            onDeleteSession={confirmDeleteSession}
+            onSessionContextMenu={(projectPath, session, x, y) =>
+              setMenu({ x, y, key: projectPath, session })
+            }
           />
           <ProjectList
             items={sorted}
@@ -584,11 +590,9 @@ export default function App() {
             dragEnabled={search.trim() === ""}
             onToggleExpand={toggleExpand}
             onTogglePin={togglePin}
-            onRenameSession={(key, session) => setRenameTarget({ session, key })}
-            onDeleteSession={confirmDeleteSession}
+            onSessionContextMenu={(key, session, x, y) => setMenu({ x, y, key, session })}
             onOpenSession={loadSessionMessages}
-            onResumeSession={resumeSession}
-            onContextMenu={(x, y, key) => setMenu({ x, y, key })}
+            onContextMenu={(x, y, key) => setMenu({ x, y, key, session: null })}
           />
         </div>
         <SessionViewer
@@ -614,6 +618,8 @@ export default function App() {
           x={menu.x}
           y={menu.y}
           project={items.find((l) => l.key === menu.key) ?? null}
+          session={menu.session}
+          sessionPinned={menu.session ? pinnedFiles.has(menu.session.file) : false}
           onClose={() => setMenu(null)}
           onMoveTop={moveTop}
           onOpenFolder={openFolder}
@@ -623,6 +629,10 @@ export default function App() {
             setMenu(null);
             setDialog("health");
           }}
+          onResumeSession={(s) => resumeSession(menu.key, s)}
+          onRenameSession={(s) => setRenameTarget({ session: s, key: menu.key })}
+          onTogglePinSession={(s) => togglePin(menu.key, s)}
+          onDeleteSession={(s) => confirmDeleteSession(menu.key, s)}
         />
       )}
 

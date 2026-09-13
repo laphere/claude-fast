@@ -13,9 +13,8 @@ interface Props {
   projects: Project[];
   onOpenSession: (projectPath: string, session: SessionInfo) => void;
   onTogglePin: (projectPath: string, session: SessionInfo) => void;
-  onResumeSession: (projectPath: string, session: SessionInfo) => void;
-  onRenameSession: (projectPath: string, session: SessionInfo) => void;
-  onDeleteSession: (projectPath: string, session: SessionInfo) => void;
+  /** 会话右键菜单（继续/重命名/取消置顶/删除收进菜单，行上不再放按钮） */
+  onSessionContextMenu: (projectPath: string, session: SessionInfo, x: number, y: number) => void;
 }
 
 /** 项目名徽标：项目已不在列表里（手工改过 config 等）时退化为路径末段 */
@@ -33,9 +32,7 @@ export default function PinnedSessions({
   projects,
   onOpenSession,
   onTogglePin,
-  onResumeSession,
-  onRenameSession,
-  onDeleteSession,
+  onSessionContextMenu,
 }: Props) {
   const shown = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -64,9 +61,7 @@ export default function PinnedSessions({
             projectName={projectNameOf(projects, s.projectPath)}
             onOpen={() => onOpenSession(s.projectPath, s)}
             onTogglePin={() => onTogglePin(s.projectPath, s)}
-            onResume={() => onResumeSession(s.projectPath, s)}
-            onRename={() => onRenameSession(s.projectPath, s)}
-            onDelete={() => onDeleteSession(s.projectPath, s)}
+            onContextMenu={(e) => onSessionContextMenu(s.projectPath, s, e.clientX, e.clientY)}
           />
         ))}
       </div>

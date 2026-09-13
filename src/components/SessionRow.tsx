@@ -1,5 +1,6 @@
+import type { MouseEvent } from "react";
 import type { SessionInfo } from "../types";
-import { PencilIcon, PinIcon, PlayIcon, TrashIcon } from "./Icons";
+import { PinIcon } from "./Icons";
 
 interface Props {
   session: SessionInfo;
@@ -11,9 +12,8 @@ interface Props {
   projectName?: string;
   onOpen: () => void;
   onTogglePin: () => void;
-  onResume: () => void;
-  onRename: () => void;
-  onDelete: () => void;
+  /** 右键菜单（继续/重命名/置顶/删除都收进菜单，行上不再放按钮挤占标题宽度） */
+  onContextMenu?: (e: MouseEvent) => void;
 }
 
 /** 相对时间：刚刚 / x 分钟前 / x 小时前 / 昨天 / MM-DD HH:mm */
@@ -36,15 +36,18 @@ export default function SessionRow({
   projectName,
   onOpen,
   onTogglePin,
-  onResume,
-  onRename,
-  onDelete,
+  onContextMenu,
 }: Props) {
   return (
     <div
       className={`session-row ${active ? "active" : ""}`}
       onClick={onOpen}
-      title="点击查看会话内容"
+      onContextMenu={(e) => {
+        if (!onContextMenu) return;
+        e.preventDefault();
+        onContextMenu(e);
+      }}
+      title={[session.title, session.summary].filter(Boolean).join("\n")}
     >
       <button
         className="session-pin"
@@ -66,36 +69,6 @@ export default function SessionRow({
           {session.summary && ` · ${session.summary}`}
         </div>
       </div>
-      <button
-        className="session-rename session-resume"
-        title="继续对话（resume）"
-        onClick={(e) => {
-          e.stopPropagation();
-          onResume();
-        }}
-      >
-        <PlayIcon />
-      </button>
-      <button
-        className="session-rename session-edit"
-        title="重命名会话"
-        onClick={(e) => {
-          e.stopPropagation();
-          onRename();
-        }}
-      >
-        <PencilIcon />
-      </button>
-      <button
-        className="session-rename session-del"
-        title="删除会话（移入回收站，可恢复）"
-        onClick={(e) => {
-          e.stopPropagation();
-          onDelete();
-        }}
-      >
-        <TrashIcon />
-      </button>
     </div>
   );
 }

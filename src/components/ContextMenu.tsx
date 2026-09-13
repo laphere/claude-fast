@@ -1,10 +1,14 @@
 ﻿import { useEffect, useRef } from "react";
-import type { Project } from "../types";
+import type { Project, SessionInfo } from "../types";
 
 interface Props {
   x: number;
   y: number;
   project: Project | null;
+  /** 非空时渲染会话菜单组（继续/重命名/置顶/删除），此时不渲染项目组 */
+  session: SessionInfo | null;
+  /** 该会话当前是否已置顶（决定置顶项文案） */
+  sessionPinned: boolean;
   onClose: () => void;
   /** 把项目移到列表最前（替代已下线的收藏置顶） */
   onMoveTop: (l: Project) => void;
@@ -12,16 +16,24 @@ interface Props {
   onCopyPath: (l: Project) => void;
   onRemove: (l: Project) => void;
   onHealth: () => void;
+  onResumeSession: (s: SessionInfo) => void;
+  onRenameSession: (s: SessionInfo) => void;
+  onTogglePinSession: (s: SessionInfo) => void;
+  onDeleteSession: (s: SessionInfo) => void;
 }
 
 export default function ContextMenu({
-  x, y, project,
+  x, y, project, session, sessionPinned,
   onClose,
   onMoveTop,
   onOpenFolder,
   onCopyPath,
   onRemove,
   onHealth,
+  onResumeSession,
+  onRenameSession,
+  onTogglePinSession,
+  onDeleteSession,
 }: Props) {
   const ref = useRef<HTMLDivElement>(null);
 
@@ -48,32 +60,56 @@ export default function ContextMenu({
 
   return (
     <div className="context-menu" ref={ref} style={style}>
-      {project && (
+      {session ? (
         <>
           <div className="context-title">
-            {project.name}
-            {project.healthy === false && <span className="tag tag-danger">失效</span>}
+            <span className="context-title-text">{session.title}</span>
           </div>
           <div className="context-sep" />
-          <button className="context-item" onClick={() => { onMoveTop(project); onClose(); }}>
-            移到最前
+          <button className="context-item" onClick={() => { onResumeSession(session); onClose(); }}>
+            继续对话（resume）
           </button>
-          <button className="context-item" onClick={() => { onOpenFolder(project); onClose(); }}>
-            打开所在文件夹
+          <button className="context-item" onClick={() => { onRenameSession(session); onClose(); }}>
+            重命名
           </button>
-          <button className="context-item" onClick={() => { onCopyPath(project); onClose(); }}>
-            复制路径
-          </button>
-          <div className="context-sep" />
-          <button className="context-item context-danger" onClick={() => { onRemove(project); onClose(); }}>
-                        {project.healthy === false ? "✗ 移除（目录已失效）" : "从列表移除"}
+          <button className="context-item" onClick={() => { onTogglePinSession(session); onClose(); }}>
+            {sessionPinned ? "取消置顶" : "置顶（顶部聚合区常驻）"}
           </button>
           <div className="context-sep" />
+          <button className="context-item context-danger" onClick={() => { onDeleteSession(session); onClose(); }}>
+            删除（移入回收站）
+          </button>
+        </>
+      ) : (
+        <>
+          {project && (
+            <>
+              <div className="context-title">
+                {project.name}
+                {project.healthy === false && <span className="tag tag-danger">失效</span>}
+              </div>
+              <div className="context-sep" />
+              <button className="context-item" onClick={() => { onMoveTop(project); onClose(); }}>
+                移到最前
+              </button>
+              <button className="context-item" onClick={() => { onOpenFolder(project); onClose(); }}>
+                打开所在文件夹
+              </button>
+              <button className="context-item" onClick={() => { onCopyPath(project); onClose(); }}>
+                复制路径
+              </button>
+              <div className="context-sep" />
+              <button className="context-item context-danger" onClick={() => { onRemove(project); onClose(); }}>
+                            {project.healthy === false ? "✗ 移除（目录已失效）" : "从列表移除"}
+              </button>
+              <div className="context-sep" />
+            </>
+          )}
+          <button className="context-item" onClick={() => { onHealth(); onClose(); }}>
+            健康检查
+          </button>
         </>
       )}
-      <button className="context-item" onClick={() => { onHealth(); onClose(); }}>
-        健康检查
-      </button>
     </div>
   );
 }
