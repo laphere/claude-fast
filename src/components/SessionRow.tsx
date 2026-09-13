@@ -1,5 +1,5 @@
 import type { SessionInfo } from "../types";
-import { PinIcon, TrashIcon } from "./Icons";
+import { PinIcon } from "./Icons";
 
 interface Props {
   session: SessionInfo;
@@ -11,8 +11,7 @@ interface Props {
   projectName?: string;
   onOpen: () => void;
   onTogglePin: () => void;
-  onDelete: () => void;
-  /** 会话行右键菜单（查看内容/终端继续/重命名收进菜单） */
+  /** 会话行右键菜单（终端继续/重命名/置顶/删除收进菜单，行上不再放按钮挤占标题宽度） */
   onContextMenu: (x: number, y: number) => void;
 }
 
@@ -28,7 +27,7 @@ export function formatTime(ms: number): string {
   return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-/** 单条会话行：项目内会话列表与置顶聚合区共用（仅图钉语义与项目名徽标不同） */
+/** 单条会话行：置顶聚合区专用（项目内会话列表为内联行） */
 export default function SessionRow({
   session,
   pinned,
@@ -36,7 +35,6 @@ export default function SessionRow({
   projectName,
   onOpen,
   onTogglePin,
-  onDelete,
   onContextMenu,
 }: Props) {
   return (
@@ -48,7 +46,9 @@ export default function SessionRow({
         e.stopPropagation();
         onContextMenu(e.clientX, e.clientY);
       }}
-      title="点击在 app 内继续对话，右键更多操作"
+      title={[session.title, session.summary, "点击在 app 内继续对话 · 右键更多操作"]
+        .filter(Boolean)
+        .join("\n")}
     >
       <button
         className="session-pin"
@@ -70,16 +70,6 @@ export default function SessionRow({
           {session.summary && ` · ${session.summary}`}
         </div>
       </div>
-      <button
-        className="session-rename session-del"
-        title="删除会话（移入回收站，可恢复）"
-        onClick={(e) => {
-          e.stopPropagation();
-          onDelete();
-        }}
-      >
-        <TrashIcon />
-      </button>
     </div>
   );
 }

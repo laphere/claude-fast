@@ -78,7 +78,7 @@ export default function App() {
     session: SessionInfo;
     key: string;
   } | null>(null);
-  /** 会话行右键菜单（重命名/终端继续） */
+  /** 会话行右键菜单（终端继续/重命名/置顶/删除） */
   const [sessionMenu, setSessionMenu] = useState<{
     x: number;
     y: number;
@@ -692,7 +692,6 @@ export default function App() {
             projects={items}
             onOpenSession={continueInAppChat}
             onTogglePin={togglePin}
-            onDeleteSession={confirmDeleteSession}
             onSessionContextMenu={(x, y, key, session) =>
               setSessionMenu({ x, y, key, session })
             }
@@ -709,11 +708,10 @@ export default function App() {
             dragEnabled={search.trim() === ""}
             onTogglePin={togglePin}
             onToggleExpand={toggleExpand}
-            onRenameSession={(key, session) => setRenameTarget({ session, key })}
-            onDeleteSession={confirmDeleteSession}
             onSessionContextMenu={(x, y, key, session) =>
               setSessionMenu({ x, y, key, session })
-            }            onChatProject={startInAppChat}
+            }
+            onChatProject={startInAppChat}
             onChatSession={continueInAppChat}
             onContextMenu={(x, y, key) => setMenu({ x, y, key })}
           />
@@ -787,9 +785,12 @@ export default function App() {
           x={sessionMenu.x}
           y={sessionMenu.y}
           session={sessionMenu.session}
+          sessionPinned={pinnedFiles.has(sessionMenu.session.file)}
           onClose={() => setSessionMenu(null)}
           onResumeTerminal={() => resumeSession(sessionMenu.key, sessionMenu.session)}
           onRename={() => setRenameTarget({ session: sessionMenu.session, key: sessionMenu.key })}
+          onTogglePin={() => togglePin(sessionMenu.key, sessionMenu.session)}
+          onDelete={() => confirmDeleteSession(sessionMenu.key, sessionMenu.session)}
         />
       )}
 

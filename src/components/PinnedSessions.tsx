@@ -14,8 +14,7 @@ interface Props {
   /** 点击 = 在 app 内继续该会话（打开/激活对话 tab） */
   onOpenSession: (projectPath: string, session: SessionInfo) => void;
   onTogglePin: (projectPath: string, session: SessionInfo) => void;
-  onDeleteSession: (projectPath: string, session: SessionInfo) => void;
-  /** 会话行右键菜单（与项目内会话行同源） */
+  /** 会话行右键菜单（终端继续/重命名/取消置顶/删除收进菜单，行上不再放按钮挤占标题宽度） */
   onSessionContextMenu: (x: number, y: number, projectPath: string, session: SessionInfo) => void;
 }
 
@@ -34,7 +33,6 @@ export default function PinnedSessions({
   projects,
   onOpenSession,
   onTogglePin,
-  onDeleteSession,
   onSessionContextMenu,
 }: Props) {
   const shown = useMemo(() => {
@@ -64,7 +62,6 @@ export default function PinnedSessions({
             projectName={projectNameOf(projects, s.projectPath)}
             onOpen={() => onOpenSession(s.projectPath, s)}
             onTogglePin={() => onTogglePin(s.projectPath, s)}
-            onDelete={() => onDeleteSession(s.projectPath, s)}
             onContextMenu={(x, y) => onSessionContextMenu(x, y, s.projectPath, s)}
           />
         ))}

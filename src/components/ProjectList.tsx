@@ -1,7 +1,7 @@
 import { useCallback, useState } from "react";
 import type { DragEvent } from "react";
 import type { Project, SessionInfo } from "../types";
-import { ChatIcon, PinIcon, TrashIcon } from "./Icons";
+import { ChatIcon, PinIcon } from "./Icons";
 
 interface Props {
   items: Project[];
@@ -21,9 +21,7 @@ interface Props {
   /** 是否启用拖拽排序（搜索过滤期间禁用） */
   dragEnabled: boolean;
   onToggleExpand: (key: string) => void;
-  onRenameSession: (key: string, session: SessionInfo) => void;
-  onDeleteSession: (key: string, session: SessionInfo) => void;
-  /** 会话行右键菜单（查看内容/终端继续/重命名收进菜单） */
+  /** 会话行右键菜单（终端继续/重命名/置顶/删除收进菜单，行上不再放按钮挤占标题宽度） */
   onSessionContextMenu: (x: number, y: number, key: string, session: SessionInfo) => void;
   /** app 内新开对话 */
   onChatProject: (key: string) => void;
@@ -56,7 +54,6 @@ export default function ProjectList({
   onTogglePin,
   dragEnabled,
   onToggleExpand,
-  onDeleteSession,
   onSessionContextMenu,
   onChatProject,
   onChatSession,
@@ -211,7 +208,9 @@ export default function ProjectList({
                         e.stopPropagation();
                         onSessionContextMenu(e.clientX, e.clientY, l.key, s);
                       }}
-                      title="点击在 app 内继续对话，右键更多操作"
+                      title={[s.title, s.summary, "点击在 app 内继续对话 · 右键更多操作"]
+                        .filter(Boolean)
+                        .join("\n")}
                     >
                       <button
                         className="session-pin"
@@ -230,16 +229,6 @@ export default function ProjectList({
                           {s.summary && ` · ${s.summary}`}
                         </div>
                       </div>
-                      <button
-                        className="session-rename session-del"
-                        title="删除会话（移入回收站，可恢复）"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onDeleteSession(l.key, s);
-                        }}
-                      >
-                        <TrashIcon />
-                      </button>
                     </div>
                   ))
                 )}
