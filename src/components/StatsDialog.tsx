@@ -60,11 +60,13 @@ function StatCard({ num, label, sub }: { num: string; label: string; sub?: strin
 }
 
 /** 使用统计仪表盘：汇总卡 / 每日趋势 / 项目排行 / 模型分布。
- *  时间范围切换只作用于汇总卡与趋势图；排行与模型分布始终为全部时间。
+ *  时间范围切换作用于汇总卡、趋势图、项目排行与模型分布。
  *  近 N 天 = 严格日历窗口：含今天往前 N 个自然日，无用量日计 0 占位
  *  （趋势图柱距与日历时间成正比）；全部 = 所有有数据的日子。
- *  会话数口径：每日值 = 当日最后活跃的会话数（跨天会话只计一次），
- *  因此任一范围窗口内累加 = 窗口内去重会话数，不会出现「全部 < 近30天」。 */
+ *  会话数口径：汇总卡用每日 sessions（最后活跃日归属，跨天会话只计一次），
+ *  窗口内累加 = 去重会话数，不会出现「全部 < 近30天」；趋势图 tooltip 用
+ *  activeSessions（当日活跃，跨天会话每天都计）——否则跨天会话的前几天
+ *  会显示「有 token 却 0 个会话」。 */
 export default function StatsDialog({ onClose }: Props) {
   const [stats, setStats] = useState<UsageStats | null>(null);
   const [loading, setLoading] = useState(true);
@@ -106,7 +108,7 @@ export default function StatsDialog({ onClose }: Props) {
     );
     return Array.from({ length: n }, (_, i) => {
       const date = addDaysStr(start, i);
-      return byDate.get(date) ?? { date, tokens: 0, sessions: 0, messages: 0 };
+      return byDate.get(date) ?? { date, tokens: 0, sessions: 0, activeSessions: 0, messages: 0 };
     });
   }, [stats, range]);
 
@@ -138,13 +140,51 @@ export default function StatsDialog({ onClose }: Props) {
   // 零填充后窗口长度恒为 N，空窗判断看是否全 0（「全部」范围 perDay 可能为空数组）
   const windowHasData = days.some((d) => d.tokens > 0 || d.messages > 0);
 
-  const sortedProjects = useMemo(() => {
-    if (!stats) return [];
-    return [...stats.perProject].sort((a, b) => b[projSort] - a[projSort]);
-  }, [stats, projSort]);
+  // 排行（项目/模型）与汇总同范围：全部 = 原样（后端已按 token 倒序）；
+  // 近 N 天 = 各条目 perDay 按窗口起点过滤累加（sessions 为最后活跃日归属，
+  // 窗口内累加 = 窗口内去重会话数，与汇总卡口径一致）
+  const rangeStart = range === "all" ? null : windowStart(range === "7d" ? 7 : 30);
 
-  const maxProjectVal = sortedProjects[0]?.[projSort] ?? 1;
-  const maxModelTokens = stats?.perModel[0]?.tokens ?? 1;
+  const projectRows = useMemo(() => {
+    if (!stats) return [];
+    return stats.perProject
+      .map((p) => {
+        if (rangeStart === null) return p;
+        let tokens = 0,
+          messages = 0,
+          sessions = 0;
+        for (const d of p.perDay) {
+          if (d.date >= rangeStart) {
+            tokens += d.tokens;
+            messages += d.messages;
+            sessions += d.sessions;
+          }
+        }
+        return { ...p, tokens, messages, sessions };
+      })
+      .sort((a, b) => b[projSort] - a[projSort]);
+  }, [stats, rangeStart, projSort]);
+
+  const modelRows = useMemo(() => {
+    if (!stats) return [];
+    return stats.perModel
+      .map((m) => {
+        if (rangeStart === null) return m;
+        let tokens = 0,
+          messages = 0;
+        for (const d of m.perDay) {
+          if (d.date >= rangeStart) {
+            tokens += d.tokens;
+            messages += d.messages;
+          }
+        }
+        return { ...m, tokens, messages };
+      })
+      .sort((a, b) => b.tokens - a.tokens);
+  }, [stats, rangeStart]);
+
+  const maxProjectVal = projectRows[0]?.[projSort] ?? 1;
+  const maxModelTokens = modelRows[0]?.tokens ?? 1;
 
   return (
     <Modal title="使用统计" width={660} onClose={onClose}>
@@ -160,7 +200,7 @@ export default function StatsDialog({ onClose }: Props) {
             </button>
           ))}
         </div>
-        <span className="stats-range-note">汇总与趋势按范围；排行与模型为全部时间；已删会话仍计入</span>
+        <span className="stats-range-note">汇总、趋势、排行与模型均按所选范围；已删会话仍计入</span>
         <button
           className="btn"
           style={{ marginLeft: "auto" }}
@@ -229,7 +269,7 @@ export default function StatsDialog({ onClose }: Props) {
                     }}
                   >
                     {days[hoverDay].date} · {fmtTokens(days[hoverDay].tokens)} token ·{" "}
-                    {days[hoverDay].sessions} 个会话（最后活跃）
+                    {days[hoverDay].activeSessions} 个会话
                   </div>
                 )}
               </div>
@@ -261,7 +301,7 @@ export default function StatsDialog({ onClose }: Props) {
               ))}
             </span>
           </div>
-          {sortedProjects.map((p) => (
+          {projectRows.map((p) => (
             <div key={p.path} className="stat-row" title={p.path}>
               <div
                 className="stat-row-bar"
@@ -275,7 +315,7 @@ export default function StatsDialog({ onClose }: Props) {
 
           {/* ---- 模型分布 ---- */}
           <div className="stat-sec-title">模型分布（按 token）</div>
-          {stats.perModel.map((m) => (
+          {modelRows.map((m) => (
             <div key={m.model} className="stat-row" title={m.model}>
               <div
                 className="stat-row-bar"

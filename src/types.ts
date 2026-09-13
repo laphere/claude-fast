@@ -231,12 +231,24 @@ export interface PlanDecisionPoint {
   options: PlanChoiceOption[];
 }
 
+/** 排行条目（项目/模型）的单日用量，供前端按时间范围过滤 */
+export interface RankDayUsage {
+  /** YYYY-MM-DD */
+  date: string;
+  tokens: number;
+  messages: number;
+  /** 该日归属的会话数（最后活跃日口径）；模型行恒为 0 */
+  sessions: number;
+}
+
 /** 单个模型的用量汇总（统计口径：sidechain 子代理消息也计入） */
 export interface ModelUsage {
   /** 完整模型名（前端简化显示日期后缀） */
   model: string;
   tokens: number;
   messages: number;
+  /** 按日期升序（范围过滤用；sessions 恒为 0） */
+  perDay: RankDayUsage[];
 }
 
 /** 单日用量 */
@@ -247,6 +259,8 @@ export interface DailyUsage {
   /** 归属到该日的会话数：会话按**最后活跃日**归属，跨天会话只计一次，
    *  任意日期窗口内累加 = 窗口内去重会话数（与全部范围的总会话数口径一致） */
   sessions: number;
+  /** 当日活跃会话数（该日有任何消息的会话，跨天会话每天都计）——趋势图 tooltip 用 */
+  activeSessions: number;
   messages: number;
 }
 
@@ -257,6 +271,8 @@ export interface ProjectUsage {
   sessions: number;
   messages: number;
   tokens: number;
+  /** 按日期升序（范围过滤用；sessions 为最后活跃日归属） */
+  perDay: RankDayUsage[];
 }
 
 /** 全局使用统计（仪表盘；口径 = **历史累计消耗**：后端用量台账持久记录每个会话
