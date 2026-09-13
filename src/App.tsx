@@ -1,10 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api } from "./lib/api";
-import type { CloseAction, Project, ProviderListState, SessionInfo } from "./types";
+import type {
+  CloseAction,
+  PinnedSession,
+  PinnedSessionInfo,
+  Project,
+  ProviderListState,
+  SessionInfo,
+} from "./types";
 import Header from "./components/Header";
 import Toolbar from "./components/Toolbar";
 import ProjectList from "./components/ProjectList";
+import PinnedSessions from "./components/PinnedSessions";
 import StatusBar from "./components/StatusBar";
 import ContextMenu from "./components/ContextMenu";
 import NewLauncherDialog from "./components/NewLauncherDialog";
@@ -33,7 +41,7 @@ export default function App() {
   const [items, setItems] = useState<Project[]>([]);
   const [projectDirs, setProjectDirs] = useState<string[]>([]);
   const [excludedDirs, setExcludedDirs] = useState<string[]>([]);
-  const [favorites, setFavorites] = useState<string[]>([]);
+  const [order, setOrder] = useState<string[]>([]);
   const [dark, setDark] = useState(false);
   const [search, setSearch] = useState("");
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
@@ -55,6 +63,10 @@ export default function App() {
   const [sessionsByKey, setSessionsByKey] = useState<
     Record<string, SessionInfo[] | null | undefined>
   >({});
+  /** 置顶清单（config 真源，顺序即展示顺序） */
+  const [pinnedSessions, setPinnedSessions] = useState<PinnedSession[]>([]);
+  /** 置顶区展示数据：后端按清单实时解析的元数据（文件缺失的条目会被后端跳过） */
+  const [pinnedMeta, setPinnedMeta] = useState<PinnedSessionInfo[]>([]);
   const [renameTarget, setRenameTarget] = useState<{
     session: SessionInfo;
     key: string;
@@ -104,7 +116,9 @@ export default function App() {
       setCloseChoiceOpen(false);
       if (remember) {
         setCloseAction(action);
-        await api.saveConfig(favorites, projectDirs, excludedDirs, dark, action).catch(() => {});
+        await api
+          .saveConfig(order, pinnedSessions, projectDirs, excludedDirs, dark, action)
+          .catch(() => {});
       }
       if (action === "minimize") {
         await getCurrentWindow().hide();
@@ -112,7 +126,7 @@ export default function App() {
         await api.quitApp();
       }
     },
-    [favorites, projectDirs, excludedDirs, dark],
+    [order, pinnedSessions, projectDirs, excludedDirs, dark],
   );
 
   // ---------- 数据加载 ----------
@@ -121,7 +135,8 @@ export default function App() {
     try {
       const [list, cfg] = await Promise.all([api.listProjects(), api.loadConfig()]);
       setItems(list);
-      setFavorites(cfg.favorites ?? []);
+      setOrder(cfg.order ?? []);
+      setPinnedSessions(cfg.pinnedSessions ?? []);
       setProjectDirs(cfg.projects ?? []);
       setExcludedDirs(cfg.excluded ?? []);
       setDark(cfg.dark ?? false);
@@ -143,8 +158,19 @@ export default function App() {
     }
   }, []);
 
+  /** 重新拉取置顶区数据（置顶/取消、重命名、删除、回收站恢复或清空后调用）。
+   *  后端按 config 清单实时解析元数据，已不存在的会话文件会被跳过。 */
+  const refreshPinned = useCallback(async () => {
+    try {
+      setPinnedMeta(await api.listPinnedSessions());
+    } catch {
+      // 拉取失败不打断主流程，置顶区保持上一次结果
+    }
+  }, []);
+
   useEffect(() => {
     load();
+    refreshPinned();
     api.checkClaude().then(setClaudeOk).catch(() => setClaudeOk(false));
     // 供应商清单（首次调用会把 live 配置收编为 default 供应商）；失败不阻塞主流程
     api.providerList().then(setProviderState).catch(() => {});
@@ -154,12 +180,12 @@ export default function App() {
       .then((info) => {
         if (info.installMode && !localStorage.getItem("cf-data-tip")) {
           localStorage.setItem("cf-data-tip", "1");
-          setToast(`数据目录：${info.path}（项目清单与收藏保存在此）`);
+          setToast(`数据目录：${info.path}（项目清单与置顶会话保存在此）`);
           window.setTimeout(() => setToast(null), 5000);
         }
       })
       .catch(() => {});
-  }, [load]);
+  }, [load, refreshPinned]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = dark ? "dark" : "light";
@@ -172,59 +198,53 @@ export default function App() {
     window.setTimeout(() => setToast(null), 2500);
   }, []);
 
-  // ---------- 收藏 / 主题 ----------
+  // ---------- 配置持久化 / 主题 ----------
 
   const persistConfig = useCallback(
-    async (favs: string[], d: boolean, ca?: CloseAction) => {
+    async (
+      ord: string[],
+      pins: PinnedSession[],
+      d: boolean,
+      ca?: CloseAction,
+    ): Promise<boolean> => {
       try {
         await api.saveConfig(
-          favs,
+          ord,
+          pins,
           projectDirs,
           excludedDirs,
           d,
           ca === undefined ? closeAction : ca,
         );
+        return true;
       } catch (e) {
         showToast("保存配置失败：" + String(e));
+        return false;
       }
     },
     [showToast, closeAction, projectDirs, excludedDirs],
   );
 
-  const toggleFav = useCallback(
-    async (key: string) => {
-      const next = favorites.includes(key)
-        ? favorites.filter((f) => f !== key)
-        : [...favorites, key];
-      setFavorites(next);
-      await persistConfig(next, dark);
-    },
-    [favorites, dark, persistConfig],
-  );
-
-  /** 收藏拖拽排序：按 key 重排（非索引），对过滤/失效 key 天然安全 */
-  const reorderFavorites = useCallback(
-    async (draggedKey: string, targetKey: string, before: boolean) => {
-      if (draggedKey === targetKey) return;
-      if (!favorites.includes(draggedKey) || !favorites.includes(targetKey))
-        return;
-      const next = favorites.filter((k) => k !== draggedKey);
-      const to = next.indexOf(targetKey);
-      next.splice(before ? to : to + 1, 0, draggedKey);
-      if (next.every((k, i) => k === favorites[i])) return; // 位置未变，免写盘
-      setFavorites(next);
-      await persistConfig(next, dark);
-    },
-    [favorites, dark, persistConfig],
-  );
-
   const toggleTheme = useCallback(async () => {
     const next = !dark;
     setDark(next);
-    await persistConfig(favorites, next);
-  }, [dark, favorites, persistConfig]);
+    await persistConfig(order, pinnedSessions, next);
+  }, [dark, order, pinnedSessions, persistConfig]);
 
   // ---------- 列表派生数据 ----------
+
+  /** 当前整条项目序列：order 收录项 + 其余按名称追加在后。
+   *  这样「拖一次」之后所有项目都有显式顺序，之后的排序不再受名称影响。 */
+  const fullOrder = useCallback(() => {
+    const known = new Set(order);
+    return [
+      ...order,
+      ...items
+        .filter((l) => !known.has(l.key))
+        .sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"))
+        .map((l) => l.key),
+    ];
+  }, [order, items]);
 
   const sorted = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -234,16 +254,82 @@ export default function App() {
         l.name.toLowerCase().includes(q) ||
         l.path.toLowerCase().includes(q),
     );
-    // 收藏组按 favorites 数组顺序渲染（拖拽排序的真源；合并列表原始顺序与此无关）
+    // 按 order 数组顺序渲染（未收录的新项目按名称追加在后）
     const byKey = new Map(filtered.map((l) => [l.key, l]));
-    const fav = favorites
+    const knownKeys = new Set(order);
+    const known = order
       .map((k) => byKey.get(k))
       .filter((l): l is Project => !!l);
     const rest = filtered
-      .filter((l) => !favorites.includes(l.key))
+      .filter((l) => !knownKeys.has(l.key))
       .sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"));
-    return [...fav, ...rest];
-  }, [items, favorites, search]);
+    return [...known, ...rest];
+  }, [items, order, search]);
+
+  /** 全局拖拽排序：把 draggedKey 插到 targetKey 之前/之后，整表落盘 */
+  const reorder = useCallback(
+    async (draggedKey: string, targetKey: string, before: boolean) => {
+      if (draggedKey === targetKey) return;
+      const base = fullOrder();
+      if (!base.includes(draggedKey) || !base.includes(targetKey)) return;
+      const next = base.filter((k) => k !== draggedKey);
+      const to = next.indexOf(targetKey);
+      next.splice(before ? to : to + 1, 0, draggedKey);
+      if (next.every((k, i) => k === base[i])) return; // 位置未变，免写盘
+      setOrder(next);
+      await persistConfig(next, pinnedSessions, dark);
+    },
+    [fullOrder, pinnedSessions, dark, persistConfig],
+  );
+
+  /** 右键「移到最前」：与拖拽同一套全序列语义，省去从列表底部拖到顶部 */
+  const moveTop = useCallback(
+    async (l: Project) => {
+      const base = fullOrder();
+      if (!base.includes(l.key)) return;
+      if (base[0] === l.key) {
+        showToast(`${l.name} 已经在最前`);
+        return;
+      }
+      const next = [l.key, ...base.filter((k) => k !== l.key)];
+      setOrder(next);
+      await persistConfig(next, pinnedSessions, dark);
+      showToast(`已把 ${l.name} 移到最前`);
+    },
+    [fullOrder, pinnedSessions, dark, persistConfig, showToast],
+  );
+
+  // ---------- 会话置顶（全局聚合区） ----------
+
+  const pinnedFiles = useMemo(
+    () => new Set(pinnedSessions.map((p) => p.file)),
+    [pinnedSessions],
+  );
+
+  /** 置顶 / 取消置顶。新置顶插在最前（置顶区不支持拖拽排序，顺序即置顶时间倒序） */
+  const togglePin = useCallback(
+    async (projectPath: string, session: SessionInfo) => {
+      const pinned = pinnedSessions.some((p) => p.file === session.file);
+      const next = pinned
+        ? pinnedSessions.filter((p) => p.file !== session.file)
+        : [{ file: session.file, projectPath }, ...pinnedSessions];
+      setPinnedSessions(next);
+      if (pinned) {
+        // 立刻从置顶区移除，避免等待后端往返
+        setPinnedMeta((prev) => prev.filter((s) => s.file !== session.file));
+      }
+      if (!(await persistConfig(order, next, dark))) {
+        // 落盘失败必须回滚：否则该会话被 pinnedFiles 从项目列表滤掉、又不在置顶区，
+        // 等于凭空消失。回到磁盘实际状态即可。
+        setPinnedSessions(pinnedSessions);
+        await refreshPinned();
+        return;
+      }
+      await refreshPinned();
+      showToast(pinned ? "已取消置顶" : "已置顶（见顶部置顶会话）");
+    },
+    [pinnedSessions, order, dark, persistConfig, refreshPinned, showToast],
+  );
 
   const missing = items.filter((l) => l.healthy === false);
 
@@ -299,15 +385,15 @@ export default function App() {
         showToast("移除失败：" + String(e));
         return;
       }
-      const favs = favorites.filter((f) => f !== l.key);
-      if (favs.length !== favorites.length) {
-        setFavorites(favs);
-        await persistConfig(favs, dark);
-      }
+      // 排序去该项目、撤该项目置顶会话都由后端 remove_project 持久化完成，
+      // 此处严禁再用本地（过期）projectDirs/excludedDirs 走 persistConfig——
+      // 会把后端刚写入的排除清单覆盖回旧值，导致被移除的项目被扫描加回来。
+      // load() 会从磁盘带回新的 order / pinnedSessions / excluded。
+      await refreshPinned();
       await load();
       showToast(`已从列表移除 ${l.name}`);
     },
-    [favorites, dark, persistConfig, load, showToast],
+    [refreshPinned, load, showToast],
   );
 
   const confirmRemove = useCallback(
@@ -363,9 +449,10 @@ export default function App() {
           if (list) setSessionsByKey((prev) => ({ ...prev, [key]: list }));
         }
       }
+      await refreshPinned(); // 置顶区标题同步
       showToast("已重命名");
     },
-    [renameTarget, expandedKey, items, showToast],
+    [renameTarget, expandedKey, items, refreshPinned, showToast],
   );
 
   const refreshSessions = useCallback(
@@ -383,6 +470,9 @@ export default function App() {
       try {
         await api.deleteSession(session.file);
         await refreshSessions(key);
+        // 置顶条目**保留**（后端亦然）：文件只是进了回收站，恢复回原路径即自动复活，
+        // 此处重拉后该会话因文件缺失暂时从置顶区消失
+        await refreshPinned();
         // 右侧正显示该会话 → 清空
         setActiveSession((cur) =>
           cur && cur.session.file === session.file ? null : cur,
@@ -392,7 +482,7 @@ export default function App() {
         showToast("删除失败：" + String(e));
       }
     },
-    [refreshSessions, showToast],
+    [refreshSessions, refreshPinned, showToast],
   );
 
   const confirmDeleteSession = useCallback(
@@ -416,7 +506,8 @@ export default function App() {
       setActiveSession({
         session,
         key,
-        projectPath: launcher?.path ?? null,
+        // key 本身即项目绝对路径；items 里查不到（如已移除项目）时用 key 兜底
+        projectPath: launcher?.path ?? key,
       });
     },
     [items],
@@ -425,12 +516,9 @@ export default function App() {
   const resumeSession = useCallback(
     async (key: string, session: SessionInfo) => {
       const launcher = items.find((x) => x.key === key);
-      if (!launcher?.path) {
-        showToast("该项目未解析到路径，无法继续对话");
-        return;
-      }
       try {
-        await api.resumeSession(session.file, launcher.path);
+        // key 本身即项目绝对路径，items 里查不到（项目已不在列表）时用 key 兜底
+        await api.resumeSession(session.file, launcher?.path ?? key);
         showToast(`已打开「${session.title}」的继续对话窗口`);
       } catch (e) {
         showToast("启动失败：" + String(e));
@@ -472,19 +560,30 @@ export default function App() {
 
       <main className="main main-split">
         <div className="main-left">
+          <PinnedSessions
+            items={pinnedMeta}
+            search={search}
+            activeSessionFile={activeSession?.session.file ?? null}
+            projects={items}
+            onOpenSession={loadSessionMessages}
+            onTogglePin={togglePin}
+            onResumeSession={resumeSession}
+            onRenameSession={(key, session) => setRenameTarget({ session, key })}
+            onDeleteSession={confirmDeleteSession}
+          />
           <ProjectList
             items={sorted}
-            favorites={favorites}
+            pinnedFiles={pinnedFiles}
             selectedKey={selectedKey}
             expandedKey={expandedKey}
             activeSessionFile={activeSession?.session.file ?? null}
             sessionsByKey={sessionsByKey}
             onSelect={setSelectedKey}
             onLaunch={launch}
-            onToggleFav={toggleFav}
+            onReorder={reorder}
             dragEnabled={search.trim() === ""}
-            onReorderFavorite={reorderFavorites}
             onToggleExpand={toggleExpand}
+            onTogglePin={togglePin}
             onRenameSession={(key, session) => setRenameTarget({ session, key })}
             onDeleteSession={confirmDeleteSession}
             onOpenSession={loadSessionMessages}
@@ -506,7 +605,6 @@ export default function App() {
 
       <StatusBar
         total={items.length}
-        favCount={favorites.length}
         missingCount={missing.length}
         claudeOk={claudeOk}
       />
@@ -516,9 +614,8 @@ export default function App() {
           x={menu.x}
           y={menu.y}
           project={items.find((l) => l.key === menu.key) ?? null}
-          favorites={favorites}
           onClose={() => setMenu(null)}
-          onToggleFav={toggleFav}
+          onMoveTop={moveTop}
           onOpenFolder={openFolder}
           onCopyPath={copyPath}
           onRemove={confirmRemove}
@@ -608,7 +705,7 @@ export default function App() {
           onClose={() => setSettingsOpen(false)}
           onSave={async (action) => {
             setCloseAction(action);
-            await persistConfig(favorites, dark, action);
+            await persistConfig(order, pinnedSessions, dark, action);
             setSettingsOpen(false);
             showToast("设置已保存");
           }}
@@ -629,6 +726,8 @@ export default function App() {
           onChanged={() => {
             // 回收站操作后刷新当前展开项目的会话列表
             if (expandedKey) refreshSessions(expandedKey);
+            // 恢复的会话可能命中置顶条目（条目在删除时保留）→ 重拉置顶区
+            refreshPinned();
           }}
           onToast={showToast}
         />

@@ -14,6 +14,8 @@ import type {
   ProviderSwitchOutcome,
   UsageResult,
   Config,
+  PinnedSession,
+  PinnedSessionInfo,
   Project,
   SessionInfo,
   SessionMessages,
@@ -29,14 +31,16 @@ export const api = {
   listProjects: () => invoke<Project[]>("list_projects"),
   loadConfig: () => invoke<Config>("load_config"),
   saveConfig: (
-    favorites: string[],
+    order: string[],
+    pinnedSessions: PinnedSession[],
     projects: string[],
     excluded: string[],
     dark: boolean,
     closeAction?: string | null,
   ) =>
     invoke("save_config", {
-      favorites,
+      order,
+      pinnedSessions,
       projects,
       excluded,
       dark,
@@ -91,6 +95,9 @@ export const api = {
   // ---------- 会话管理 ----------
   listSessions: (projectPath: string) =>
     invoke<SessionInfo[]>("list_sessions", { projectPath }),
+  /** 置顶会话清单（跨项目聚合；后端按 config 顺序实时解析元数据，失效文件自动跳过） */
+  listPinnedSessions: () =>
+    invoke<PinnedSessionInfo[]>("list_pinned_sessions"),
   renameSession: (file: string, newTitle: string) =>
     invoke("rename_session", { file, newTitle }),
   /** 删除会话 = 移入回收站，返回备份路径 */

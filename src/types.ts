@@ -12,8 +12,10 @@ export interface Project {
 export type CloseAction = "quit" | "minimize" | null;
 
 export interface Config {
-  /** 收藏的项目绝对路径（置顶） */
-  favorites: string[];
+  /** 用户手动排序的项目绝对路径（全局拖拽排序真源；未收录项按名称追加在后） */
+  order: string[];
+  /** 置顶会话清单（全局聚合区；顺序即展示顺序，新置顶插最前） */
+  pinnedSessions?: PinnedSession[];
   /** 手动添加的项目路径清单 */
   projects: string[];
   /** 被用户从列表移除的项目路径（会话扫描会重新发现它们，需排除） */
@@ -21,6 +23,14 @@ export interface Config {
   dark: boolean;
   /** null/undefined = 每次询问；"quit" = 直接退出；"minimize" = 最小化到托盘 */
   closeAction?: CloseAction;
+}
+
+/** 置顶会话条目（持久化在 config 里） */
+export interface PinnedSession {
+  /** 会话 jsonl 文件绝对路径；重命名不改文件名、回收站恢复回原路径，故可作稳定锚点 */
+  file: string;
+  /** 所属项目绝对路径（置顶时刻记录，不靠 mangled 目录名反推） */
+  projectPath: string;
 }
 
 export interface CreateResult {
@@ -46,6 +56,12 @@ export interface SessionInfo {
   lastModified: number;
   /** jsonl 文件绝对路径（重命名时回传） */
   file: string;
+}
+
+/** 置顶区展示项：会话元数据 + 所属项目路径（后端按置顶清单实时解析） */
+export interface PinnedSessionInfo extends SessionInfo {
+  /** 所属项目绝对路径：显示项目名徽标、判断项目失效、resume 时用 */
+  projectPath: string;
 }
 
 /** 回收站中的会话备份（删除 = 移入回收站，可恢复） */

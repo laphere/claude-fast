@@ -1,11 +1,12 @@
 import { useCallback, useState } from "react";
 import type { DragEvent } from "react";
 import type { Project, SessionInfo } from "../types";
-import { PencilIcon, PlayIcon, TrashIcon } from "./Icons";
+import SessionRow from "./SessionRow";
 
 interface Props {
   items: Project[];
-  favorites: string[];
+  /** 已置顶会话的文件集合：置顶会话不在项目列表里重复显示 */
+  pinnedFiles: Set<string>;
   selectedKey: string | null;
   /** 当前展开会话列表的项目 key */
   expandedKey: string | null;
@@ -15,12 +16,12 @@ interface Props {
   sessionsByKey: Record<string, SessionInfo[] | null | undefined>;
   onSelect: (key: string) => void;
   onLaunch: (key: string) => void;
-  onToggleFav: (key: string) => void;
-  /** 收藏项拖拽排序：把 draggedKey 移动到 targetKey 之前/之后 */
-  onReorderFavorite: (draggedKey: string, targetKey: string, before: boolean) => void;
+  /** 全局拖拽排序：把 draggedKey 移动到 targetKey 之前/之后 */
+  onReorder: (draggedKey: string, targetKey: string, before: boolean) => void;
   /** 是否启用拖拽排序（搜索过滤期间禁用） */
   dragEnabled: boolean;
   onToggleExpand: (key: string) => void;
+  onTogglePin: (key: string, session: SessionInfo) => void;
   onRenameSession: (key: string, session: SessionInfo) => void;
   onDeleteSession: (key: string, session: SessionInfo) => void;
   onOpenSession: (key: string, session: SessionInfo) => void;
@@ -28,40 +29,28 @@ interface Props {
   onContextMenu: (x: number, y: number, key: string) => void;
 }
 
-/** 相对时间：刚刚 / x 分钟前 / x 小时前 / 昨天 / MM-DD HH:mm */
-function formatTime(ms: number): string {
-  const diff = Date.now() - ms;
-  if (diff < 60_000) return "刚刚";
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`;
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`;
-  if (diff < 172_800_000) return "昨天";
-  const d = new Date(ms);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
-
 export default function ProjectList({
   items,
-  favorites,
+  pinnedFiles,
   selectedKey,
   expandedKey,
   activeSessionFile,
   sessionsByKey,
   onSelect,
   onLaunch,
-  onToggleFav,
-  onReorderFavorite,
+  onReorder,
   dragEnabled,
   onToggleExpand,
+  onTogglePin,
   onRenameSession,
   onDeleteSession,
   onOpenSession,
   onResumeSession,
   onContextMenu,
 }: Props) {
-  // ---------- 收藏拖拽排序（仅临时视觉状态，顺序真源在 App 的 favorites 数组）----------
+  // ---------- 全局拖拽排序（仅临时视觉状态，顺序真源在 App 的 order 数组）----------
 
-  /** 正在拖拽的收藏项 key */
+  /** 正在拖拽的项目 key */
   const [dragKey, setDragKey] = useState<string | null>(null);
   /** 悬停目标行 key */
   const [overKey, setOverKey] = useState<string | null>(null);
@@ -80,13 +69,9 @@ export default function ProjectList({
     setDragKey(key);
   };
 
-  const handleDragOver = (
-    e: DragEvent<HTMLDivElement>,
-    key: string,
-    isFav: boolean,
-  ) => {
-    if (!dragKey || !isFav) return; // 不 preventDefault → 此处不可放置（浏览器显示禁用光标）
-    e.preventDefault();
+  const handleDragOver = (e: DragEvent<HTMLDivElement>, key: string) => {
+    if (!dragKey) return;
+    e.preventDefault(); // 任意行都是合法目标
     e.dataTransfer.dropEffect = "move";
     const r = e.currentTarget.getBoundingClientRect();
     const pos = e.clientY < r.top + r.height / 2 ? "above" : "below";
@@ -101,19 +86,15 @@ export default function ProjectList({
     setOverKey(null);
   };
 
-  const handleDrop = (
-    e: DragEvent<HTMLDivElement>,
-    key: string,
-    isFav: boolean,
-  ) => {
-    if (!dragKey || !isFav) return;
+  const handleDrop = (e: DragEvent<HTMLDivElement>, key: string) => {
+    if (!dragKey) return;
     e.preventDefault();
     e.stopPropagation();
     const r = e.currentTarget.getBoundingClientRect();
     const before = e.clientY < r.top + r.height / 2; // 从事件重算，不依赖 state
     const dragged = dragKey;
     clearDragState();
-    onReorderFavorite(dragged, key, before);
+    onReorder(dragged, key, before);
   };
 
   if (items.length === 0) {
@@ -129,26 +110,27 @@ export default function ProjectList({
   return (
     <div className="list">
       {items.map((l) => {
-        const isFav = favorites.includes(l.key);
-        const canDrag = dragEnabled && isFav;
         const showDrop = overKey === l.key && l.key !== dragKey;
         const isSelected = l.key === selectedKey;
         const isExpanded = l.key === expandedKey;
         const sessions = sessionsByKey[l.key];
+        // 置顶会话不在项目里重复显示（置顶区单独列出）
+        const visibleSessions =
+          sessions?.filter((s) => !pinnedFiles.has(s.file)) ?? null;
         return (
           <div key={l.key} className={`row-wrap ${isExpanded ? "expanded" : ""}`}>
             <div
               className={`row ${isSelected ? "selected" : ""} ${
                 l.healthy === false ? "broken" : ""
-              } ${isFav ? "row-fav" : ""} ${l.key === dragKey ? "dragging" : ""} ${
+              } ${dragEnabled ? "row-draggable" : ""} ${l.key === dragKey ? "dragging" : ""} ${
                 showDrop ? (overPos === "above" ? "drop-above" : "drop-below") : ""
               }`}
-              draggable={canDrag}
+              draggable={dragEnabled}
               onDragStart={(e) => handleDragStart(e, l.key)}
               onDragEnd={clearDragState}
-              onDragOver={(e) => handleDragOver(e, l.key, isFav)}
+              onDragOver={(e) => handleDragOver(e, l.key)}
               onDragLeave={(e) => handleDragLeave(e, l.key)}
-              onDrop={(e) => handleDrop(e, l.key, isFav)}
+              onDrop={(e) => handleDrop(e, l.key)}
               onClick={() => {
                 onSelect(l.key);
                 onToggleExpand(l.key);
@@ -159,16 +141,6 @@ export default function ProjectList({
                 onContextMenu(e.clientX, e.clientY, l.key);
               }}
             >
-              <button
-                className={`star ${isFav ? "star-on" : ""}`}
-                title={isFav ? "取消收藏" : "收藏（置顶）"}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onToggleFav(l.key);
-                }}
-              >
-                ★
-              </button>
               <div className="row-body" title="展开/收起会话列表">
                 <div className="row-label">
                   {l.name}
@@ -210,54 +182,21 @@ export default function ProjectList({
                   <div className="session-empty">
                     暂无会话（Claude Code 未在本项目启动过）
                   </div>
+                ) : visibleSessions && visibleSessions.length === 0 ? (
+                  <div className="session-empty">会话已全部置顶（见顶部置顶会话）</div>
                 ) : (
-                  sessions.map((s) => (
-                    <div
+                  visibleSessions!.map((s) => (
+                    <SessionRow
                       key={s.sessionId}
-                      className={`session-row ${
-                        s.file === activeSessionFile ? "active" : ""
-                      }`}
-                      onClick={() => onOpenSession(l.key, s)}
-                      title="点击查看会话内容"
-                    >
-                      <div className="session-body">
-                        <div className="session-title">{s.title}</div>
-                        <div className="session-meta">
-                          {formatTime(s.lastModified)}
-                          {s.summary && ` · ${s.summary}`}
-                        </div>
-                      </div>
-                      <button
-                        className="session-rename session-resume"
-                        title="继续对话（resume）"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onResumeSession(l.key, s);
-                        }}
-                      >
-                        <PlayIcon />
-                      </button>
-                      <button
-                        className="session-rename session-edit"
-                        title="重命名会话"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onRenameSession(l.key, s);
-                        }}
-                      >
-                        <PencilIcon />
-                      </button>
-                      <button
-                        className="session-rename session-del"
-                        title="删除会话（移入回收站，可恢复）"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onDeleteSession(l.key, s);
-                        }}
-                      >
-                        <TrashIcon />
-                      </button>
-                    </div>
+                      session={s}
+                      pinned={false}
+                      active={s.file === activeSessionFile}
+                      onOpen={() => onOpenSession(l.key, s)}
+                      onTogglePin={() => onTogglePin(l.key, s)}
+                      onResume={() => onResumeSession(l.key, s)}
+                      onRename={() => onRenameSession(l.key, s)}
+                      onDelete={() => onDeleteSession(l.key, s)}
+                    />
                   ))
                 )}
               </div>

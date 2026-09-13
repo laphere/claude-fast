@@ -14,7 +14,7 @@ claude-fast/
 └── README.md
 ```
 
-> 本目录为**纯源码库**（与 GitHub 仓库一致）。程序本体通过**安装包**分发（Windows：`Claude助手_<版本>_x64-setup.exe`；macOS：`.app` + `Claude助手_<版本>_<架构>.dmg`）；用户数据（项目清单与收藏 `config.json`）在安装版数据目录 `%APPDATA%\claude-fast`（macOS 为 `~/Library/Application Support/claude-fast`）。
+> 本目录为**纯源码库**（与 GitHub 仓库一致）。程序本体通过**安装包**分发（Windows：`Claude助手_<版本>_x64-setup.exe`；macOS：`.app` + `Claude助手_<版本>_<架构>.dmg`）；用户数据（项目清单、排序与置顶会话 `config.json`）在安装版数据目录 `%APPDATA%\claude-fast`（macOS 为 `~/Library/Application Support/claude-fast`）。
 
 ## 使用
 
@@ -26,11 +26,12 @@ Tauri 应用为 GUI 程序，启动时**不会出现多余的 cmd 窗口**，关
 - **🗑 回收站** → 顶部工具栏按钮；删除的会话在这里，可一键恢复（回到原项目，Claude Code 可继续 resume）或永久删除（需再次确认）
 - **📖 会话内容查看** → 点击会话行，右侧区域以聊天形式显示会话内容（用户/助手消息、思考过程折叠、工具调用与结果折叠、代码块等宽渲染；超过 500 条只显示最近部分；代码变更以 Claude Code 风格 diff 呈现——带行号的增删行高亮）；点会话内容区的「刷新」按钮可重新加载该会话的最新内容
 - **▶ 继续对话** → 点击会话行 ▶ 按钮（或右侧「继续对话」按钮），新开终端窗口在项目目录执行 `claude --resume <会话id>` 继续对话（窗口保持不关）
-- **★ 收藏** → 把常用项目置顶。点每行左侧星标，或右键项目选「收藏 / 取消收藏」；**已收藏项可整行拖拽排序**（搜索过滤期间禁用拖拽），顺序保存在 `config.json`，重启后依然有效
+- **排序（全局拖拽）** → **项目行可整行拖拽**调整顺序（搜索过滤期间禁用拖拽），顺序保存在 `config.json` 的 `order`，重启后依然有效；未拖过的项目按名称排在末尾，右键菜单「移到最前」可一键置顶某个项目
+- **📌 置顶会话** → 会话行左侧的图钉按钮把重要会话置顶到左栏顶部的**置顶会话聚合区**（跨项目汇总、带项目名徽标；没有置顶会话时该区整块不显示）。置顶会话不再在项目列表里重复出现，在置顶区点图钉即取消置顶；会话删除后条目保留，从回收站恢复即自动回到置顶区
 - **批量添加** → 一键扫描 Claude Code 项目目录（Windows `%USERPROFILE%\.claude\projects`；macOS `~/.claude/projects`——Claude Code CLI 的规范路径），自动反向解析真实路径，勾选后一键**加入项目列表**（路径已失效的项目标红跳过，已在列表中的自动跳过）
 - **健康检查** → 列表渲染后自动后台检查各项目路径；失效目录用**红色**标记且不可启动，点「健康检查」按钮可弹出详细报告（含 `claude` 命令是否可用）
 - **🌙 深色 / ☀ 浅色** → 切换主题，偏好保存在 `config.json`
-- **右键菜单** → 收藏 / 取消收藏、打开所在文件夹、复制路径、从列表移除（从列表移除的项目不会再被会话扫描自动加回）
+- **右键菜单** → 移到最前、打开所在文件夹、复制路径、从列表移除（从列表移除的项目不会再被会话扫描自动加回）
 - **新 建** → 输入项目路径（或点「浏览…」选文件夹），单个加入项目列表
 - **开机自启动** → 设置里一键开关（tauri-plugin-autostart）
 
@@ -69,10 +70,10 @@ npm run tauri build -- --target universal-apple-darwin
 - **数据目录定位（双模式）**：exe 从自身所在目录向上逐级查找首个含 `config.json` + `scripts/` 子目录的目录（兼容旧的 `claude-claude-fast.bat` 标记）——**便携模式**（开发目录/绿色版/整个文件夹移动）。找不到标记时回退到 **安装模式**：`%APPDATA%\claude-fast`（macOS 为 `~/Library/Application Support/claude-fast`），首次运行自动创建 `scripts/` 目录。因此：绿色版把 exe 放项目根即可用；安装版装到 Program Files（只读）也能正常读写用户数据。
 - **项目清单（去脚本化模型）**：主列表 = Claude 会话目录扫描（`unmangle_candidates` 反向解析 mangled 目录名并验证存在性，Windows 盘符格式与 macOS `/` 格式各有实现）∪ `config.projects` 手动清单，按路径去重；`excluded` 排除清单保证「从列表移除」的项目不被扫描自动加回；路径不存在的项目标红失效、不可启动。启动**不经过任何脚本文件**（`scripts/` 仅作数据根标记与旧版迁移来源保留）。
 - **启动方式**：Windows 用 `ShellExecuteW` 新开 cmd 运行 `cmd /k cd /d "<项目>" && claude`（shell 层启动会正常分配新控制台，`/k` 让 claude 退出后窗口保留）；继续对话为 `claude --resume <session-id>`；macOS 写临时 .sh 后 `open -a Terminal`。
-- **config.json 保护**：`save_config` 采用「写临时文件 → 备份旧文件到 `.bak` → 原子替换」三步；`load_config` 读取失败时自动从 `.bak` 回退。**绝不删除 `config.json` / `.bak`**，否则用户的收藏丢失。
-- **旧启动脚本迁移（一次性）**：去脚本化前的版本把项目存在 `scripts/` 下的启动脚本里。旧 config（无 `projects` 字段）首次被新版加载时，解析旧脚本的 `cd` 路径（兼容 bat 的 `cd /d "..."` 与 sh 的 `cd "/path"`）自动迁移为项目清单与收藏映射；脚本文件保留在磁盘不删，可自行清理。
+- **config.json 保护**：`save_config` 采用「写临时文件 → 备份旧文件到 `.bak` → 原子替换」三步；`load_config` 读取失败时自动从 `.bak` 回退。**绝不删除 `config.json` / `.bak`**，否则用户的项目清单、排序与置顶会话丢失。
+- **旧启动脚本迁移（一次性）**：去脚本化前的版本把项目存在 `scripts/` 下的启动脚本里。旧 config（无 `projects` 字段）首次被新版加载时，解析旧脚本的 `cd` 路径（兼容 bat 的 `cd /d "..."` 与 sh 的 `cd "/path"`）自动迁移为项目清单与排序（旧「收藏」即置顶语义，承接为排序最前几项）；脚本文件保留在磁盘不删，可自行清理。
 - **打包目标**：`bundle.targets = ["nsis", "app", "dmg"]`（`tauri.conf.json`）——各平台构建时自动过滤：Windows 只打 NSIS 安装包，macOS 只打 .app + .dmg；不要删掉该字段（Tauri 在 Windows 上的默认目标是 MSI/WiX，会导致打包失败）。
-- **前端**（`src/`）：`App.tsx` 状态管理 + 组件化 UI（列表 / 搜索 / 收藏 / 右键菜单 / 各对话框），`src/lib/api.ts` 封装 Tauri invoke 调用。
+- **前端**（`src/`）：`App.tsx` 状态管理 + 组件化 UI（项目列表 / 置顶会话区 / 搜索 / 右键菜单 / 各对话框），`src/lib/api.ts` 封装 Tauri invoke 调用。
 
 ## 添加新项目
 
@@ -84,6 +85,6 @@ npm run tauri build -- --target universal-apple-darwin
 
 - 启动/继续对话均为**新开终端窗口**在项目目录运行 claude（Windows 经 ShellExecuteW 开 cmd，macOS 用 Terminal.app）。
 - Windows 采用 `/k` 模式：claude 退出后终端窗口保留，便于查看输出。
-- 项目清单、收藏、主题、自启动等全部保存在 `config.json`；从列表移除的项目会记入排除清单，不会被会话扫描自动加回。
+- 项目清单、项目排序、置顶会话、主题、自启动等全部保存在 `config.json`；从列表移除的项目会记入排除清单，不会被会话扫描自动加回。
 - **跨平台**：Windows 与 macOS 行为一致（项目清单/会话管理/回收站/批量添加全部支持）；Claude Code CLI 的会话目录为 `~/.claude/projects`（规范路径），批量添加来源即此。
 - 国内网络下首次 `cargo build` 拉取依赖很慢，可在 `C:\Users\<你>\.cargo\config.toml` 配置 crates.io 镜像（本项目用的是 `https://rsproxy.cn/index/` sparse 源）。
