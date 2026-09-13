@@ -2084,6 +2084,11 @@ fn scan_file_usage(content: &str, tz_offset_minutes: i64) -> FileUsage {
             .or_else(|| v.get("model").and_then(|m| m.as_str()))
             .unwrap_or("unknown")
             .to_string();
+        // <synthetic> 是 Claude Code 本地生成的占位助手消息（打断应答「No response
+        // requested.」/API 报错回显），usage 恒为 0：跳过，不进模型分布与消息计数
+        if model == "<synthetic>" {
+            continue;
+        }
         let date = v
             .get("timestamp")
             .and_then(|t| t.as_str())
@@ -2433,6 +2438,8 @@ fn aggregate_stats_ledger(
         .collect();
     stats.per_model = model_map
         .into_iter()
+        // 老台账条目里可能已存有 <synthetic>（零 token 占位消息），聚合出口再滤一次
+        .filter(|(model, _)| model != "<synthetic>")
         .map(|(model, (tokens, messages))| ModelUsage {
             per_day: model_days
                 .remove(&model)
@@ -4911,6 +4918,23 @@ mod tests {
         let u = scan_file_usage(jsonl, 0);
         assert_eq!(u.messages, 0);
         assert!(u.per_day.is_empty());
+    }
+
+    #[test]
+    fn scan_file_usage_skips_synthetic_placeholder() {
+        // <synthetic> 是打断应答/API 报错的本地占位消息（usage 恒 0），
+        // 不进模型分布，也不把消息计数 +1
+        let jsonl = format!(
+            "{}\n{}\n",
+            r#"{"type":"assistant","message":{"id":"msg_s","role":"assistant","model":"<synthetic>","content":[{"type":"text","text":"No response requested."}],"usage":{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}},"timestamp":"2026-08-12T06:47:47.000Z"}"#,
+            r#"{"type":"assistant","message":{"id":"msg_r","role":"assistant","model":"glm-5.3","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":10,"output_tokens":5}},"timestamp":"2026-08-12T07:00:00.000Z"}"#,
+        );
+        let u = scan_file_usage(&jsonl, 0);
+        assert_eq!(u.messages, 1);
+        assert_eq!(u.tokens, 15);
+        assert!(u.per_model.get("<synthetic>").is_none());
+        assert_eq!(u.per_model["glm-5.3"], (15, 1));
+        assert!(u.per_day_model["2026-08-12"].get("<synthetic>").is_none());
     }
 
     #[test]

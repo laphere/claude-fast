@@ -165,6 +165,8 @@ export default function StatsDialog({ onClose }: Props) {
       .sort((a, b) => b[projSort] - a[projSort]);
   }, [stats, rangeStart, projSort]);
 
+  // 窗口内 0 token 的模型不进分布（含 <synthetic> 这类零 token 系统消息模型，
+  // 以及窗口切换后无用量的模型），空列表态由下方 maxModelTokens 兜底
   const modelRows = useMemo(() => {
     if (!stats) return [];
     return stats.perModel
@@ -180,6 +182,7 @@ export default function StatsDialog({ onClose }: Props) {
         }
         return { ...m, tokens, messages };
       })
+      .filter((m) => m.tokens > 0 || m.messages > 0)
       .sort((a, b) => b.tokens - a.tokens);
   }, [stats, rangeStart]);
 
