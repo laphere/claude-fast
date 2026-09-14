@@ -1998,9 +1998,10 @@ pub struct UsageStats {
     per_model: Vec<ModelUsage>,
 }
 
-/// 单个 jsonl 文件的用量聚合（统计口径与查看器不同：**sidechain 子代理消息
-/// 也计入**——它们同样是真实 token 消耗；只提取字段不构造消息结构，比
-/// parse_session_messages 轻得多）。
+/// 单个 jsonl 文件的用量聚合（统计口径与查看器不同：**子代理消息也计入**——
+/// 旧布局内联在父文件里的 `isSidechain` 行与新布局独立落盘的
+/// `<会话>/subagents/*.jsonl` 都是真实 token 消耗；只提取字段不构造消息结构，
+/// 比 parse_session_messages 轻得多）。
 #[derive(Clone, Default)]
 struct FileUsage {
     messages: usize,
@@ -2051,14 +2052,41 @@ fn local_date_of(epoch_ms: i64, tz_offset_minutes: i64) -> String {
     format!("{y:04}-{m:02}-{d:02}")
 }
 
+/// 同一 message.id 的一个候选快照（流式写入把一次响应拆成多行，见
+/// `better_usage_row` 的取舍规则）
+struct UsageRow {
+    /// 该行带 `stop_reason`——流式的收尾行，usage 是这次响应的最终值
+    final_row: bool,
+    tokens: u64,
+    usage: Usage,
+    model: String,
+    /// 本地时区日期（YYYY-MM-DD）
+    date: Option<String>,
+}
+
+/// 新行是否该取代旧行成为 message.id 的代表行：**收尾行优先**（带 `stop_reason`
+/// 的那条），同为收尾行或同为中间行时取 token 更大者。
+///
+/// 不能简单地"取第一次出现"：部分写入次序下同一响应的前几行 usage 全 0（只有
+/// thinking/text 块、没有 stop_reason），真实用量在收尾行上——取首行会把整条
+/// 消息记成 0（实测有会话因此只统计到真实值的 1.3%）。
+fn better_usage_row(new: &UsageRow, old: &UsageRow) -> bool {
+    if new.final_row != old.final_row {
+        return new.final_row;
+    }
+    new.tokens > old.tokens
+}
+
 /// 流式扫描一个 jsonl 的用量（核心逻辑，供 command 与测试复用）。
-/// **按 message.id 去重**：Claude Code 流式写入把一次 API 响应拆成多行
-/// （每个内容块一行），每行携带同一份 usage，不去重会成倍虚高。
+/// **按 message.id 取代表行**（见 `better_usage_row`）：同一响应的多行是不同
+/// 时刻的快照，逐行相加会成倍虚高，取首行则可能取到全 0 的占位行。
 /// **日期按本地时区归属**：timestamp 是 UTC，直接截日期会让单日统计错位
 /// 一个时区（如东八区晚间高峰归到错误的日期）。
 fn scan_file_usage(content: &str, tz_offset_minutes: i64) -> FileUsage {
-    let mut u = FileUsage::default();
-    let mut seen_msg_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // 先按 id 收敛出代表行，读完再聚合（取首行的错误只能靠"读完才知道哪行是收尾行"避免）
+    let mut rows: std::collections::HashMap<String, UsageRow> = std::collections::HashMap::new();
+    // 无 message.id 的行无从去重（罕见），逐条计入
+    let mut anonymous: Vec<UsageRow> = Vec::new();
     for line in content.lines() {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
             continue;
@@ -2072,12 +2100,6 @@ fn scan_file_usage(content: &str, tz_offset_minutes: i64) -> FileUsage {
         let Some(usage) = parse_usage(msg.get("usage")) else {
             continue;
         };
-        // 同一响应的多行共享 message.id：只统计第一次出现
-        if let Some(id) = msg.get("id").and_then(|i| i.as_str()) {
-            if !seen_msg_ids.insert(id.to_string()) {
-                continue;
-            }
-        }
         let model = msg
             .get("model")
             .and_then(|m| m.as_str())
@@ -2094,31 +2116,53 @@ fn scan_file_usage(content: &str, tz_offset_minutes: i64) -> FileUsage {
             .and_then(|t| t.as_str())
             .and_then(iso_to_epoch_ms)
             .map(|ms| local_date_of(ms, tz_offset_minutes));
-        let line_tokens = usage.input_tokens
-            + usage.output_tokens
-            + usage.cache_read_input_tokens
-            + usage.cache_creation_input_tokens;
+        let row = UsageRow {
+            final_row: msg.get("stop_reason").and_then(|s| s.as_str()).is_some(),
+            tokens: usage.input_tokens
+                + usage.output_tokens
+                + usage.cache_read_input_tokens
+                + usage.cache_creation_input_tokens,
+            usage,
+            model,
+            date,
+        };
+        match msg.get("id").and_then(|i| i.as_str()) {
+            Some(id) => {
+                let replace = match rows.get(id) {
+                    Some(old) => better_usage_row(&row, old),
+                    None => true,
+                };
+                if replace {
+                    rows.insert(id.to_string(), row);
+                }
+            }
+            None => anonymous.push(row),
+        }
+    }
+
+    let mut u = FileUsage::default();
+    for row in rows.into_values().chain(anonymous) {
         u.messages += 1;
-        u.tokens += line_tokens;
-        u.input_tokens += usage.input_tokens;
-        u.output_tokens += usage.output_tokens;
-        u.cache_read_tokens += usage.cache_read_input_tokens;
-        u.cache_creation_tokens += usage.cache_creation_input_tokens;
-        if let Some(d) = &date {
+        u.tokens += row.tokens;
+        u.input_tokens += row.usage.input_tokens;
+        u.output_tokens += row.usage.output_tokens;
+        u.cache_read_tokens += row.usage.cache_read_input_tokens;
+        u.cache_creation_tokens += row.usage.cache_creation_input_tokens;
+        if let Some(d) = &row.date {
             let e = u.per_day.entry(d.clone()).or_default();
-            e.0 += line_tokens;
+            e.0 += row.tokens;
             e.1 += 1;
             let de = u
                 .per_day_model
                 .entry(d.clone())
                 .or_default()
-                .entry(model.clone())
+                .entry(row.model.clone())
                 .or_default();
-            de.0 += line_tokens;
+            de.0 += row.tokens;
             de.1 += 1;
         }
-        let m = u.per_model.entry(model).or_default();
-        m.0 += line_tokens;
+        let m = u.per_model.entry(row.model).or_default();
+        m.0 += row.tokens;
         m.1 += 1;
     }
     u
@@ -2207,7 +2251,9 @@ struct StatsLedger {
 }
 
 /// v2：LedgerEntry 新增 per_day_model（排行按范围过滤）
-const LEDGER_VERSION: u32 = 2;
+/// v3：扫描范围补上 `<会话>/subagents/**` 子代理文件 + 同一 message.id 改取收尾行
+///     （旧版取首行，占位行会把整条消息记成 0）——老条目口径不对，须全量重扫
+const LEDGER_VERSION: u32 = 3;
 
 fn ledger_path_in(root: &Path) -> PathBuf {
     root.join("stats-ledger.json")
@@ -2233,6 +2279,68 @@ fn save_ledger_to(root: &Path, ledger: &StatsLedger) {
     }
 }
 
+/// 枚举一个项目目录下的用量 jsonl（固定深度、不递归，与 Claude Code 的落盘布局对齐）：
+///
+/// ```text
+/// <项目>/*.jsonl                                      主会话
+/// <项目>/<会话 uuid>/subagents/*.jsonl                Task/Agent 子代理
+/// <项目>/<会话 uuid>/subagents/workflows/wf_*/*.jsonl Workflow 子代理
+/// ```
+///
+/// 返回 (文件路径, 归属会话 uuid)。子代理文件**归属其父会话**：它们不是独立会话，
+/// 拿 `agent-xxx` 当会话 id 会让会话数随子代理数量虚增。只认 uuid 命名的目录，
+/// 项目目录下的 `memory/` 等无关目录自然跳过。
+///
+/// 漏掉 subagents 一层会让子代理（很吃 token）的消耗整块消失——实测某模型因此
+/// 只统计到真实值的一半。
+fn usage_jsonl_files(project_dir: &Path) -> Vec<(PathBuf, String)> {
+    let mut out = Vec::new();
+    let Ok(entries) = fs::read_dir(project_dir) else {
+        return out;
+    };
+    for e in entries.flatten() {
+        let p = e.path();
+        let name = e.file_name().to_string_lossy().to_string();
+        if p.is_file() {
+            if let Some(sid) = name.strip_suffix(".jsonl") {
+                if is_valid_uuid(sid) {
+                    out.push((p, sid.to_string()));
+                }
+            }
+            continue;
+        }
+        if !is_valid_uuid(&name) {
+            continue;
+        }
+        let subagents = p.join("subagents");
+        push_jsonl_files_in(&subagents, &name, &mut out);
+        // Workflow 子代理比普通子代理多嵌套一层 workflows/wf_<ID>/
+        let Ok(workflows) = fs::read_dir(subagents.join("workflows")) else {
+            continue;
+        };
+        for w in workflows.flatten() {
+            if w.path().is_dir() {
+                push_jsonl_files_in(&w.path(), &name, &mut out);
+            }
+        }
+    }
+    out
+}
+
+/// 目录下直接子层的 .jsonl 全部收下（不递归）。不按文件名过滤：子代理目录里的
+/// `journal.jsonl` 没有 assistant 行，扫描时天然跳过。
+fn push_jsonl_files_in(dir: &Path, session_id: &str, out: &mut Vec<(PathBuf, String)>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let p = e.path();
+        if p.is_file() && p.extension().and_then(|x| x.to_str()) == Some("jsonl") {
+            out.push((p, session_id.to_string()));
+        }
+    }
+}
+
 /// 汇总所有项目的用量统计（核心逻辑，供 command 与测试复用）。
 /// projects: (显示名, 真实路径, 项目目录) 列表；日期按 tz_offset_minutes 归属本地时区。
 /// 台账驱动：现存且未变的文件复用上次记录，变更的重扫覆盖，消失的保留
@@ -2253,24 +2361,12 @@ fn aggregate_stats_ledger(
 
     // ---- 刷新现存文件 ----
     for (name, path, dir) in projects {
-        let Ok(entries) = fs::read_dir(dir) else {
-            continue;
-        };
         let project_dir = dir
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("")
             .to_string();
-        for e in entries.flatten() {
-            let p = e.path();
-            let fname = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if !fname.ends_with(".jsonl") {
-                continue;
-            }
-            let session_id = &fname[..fname.len() - 6];
-            if !is_valid_uuid(session_id) {
-                continue;
-            }
+        for (p, session_id) in usage_jsonl_files(dir) {
             let key = p.to_string_lossy().to_string();
             let meta = fs::metadata(&p).ok();
             let mtime = meta
@@ -2347,10 +2443,15 @@ fn aggregate_stats_ledger(
     // 项目聚合按真实路径去重（同一项目目录的已删/现存条目归并到一行），
     // 同时攒按天明细供前端按范围过滤（项目行内 sessions 用最后活跃日口径，
     // 与汇总卡一致：窗口内累加 = 窗口内去重会话数）
+    // 会话数按 session_id 去重（全局与项目行都是）：子代理/workflow 文件的
+    // session_id 记的是父会话（见 usage_jsonl_files），按文件计数会把一个
+    // 会话算成好几个，也会与「按日累加 = 去重会话数」的口径打架
+    let mut seen_sessions: std::collections::HashSet<String> = std::collections::HashSet::new();
     struct ProjectAgg {
         name: String,
         path: String,
         sessions: usize,
+        session_ids: std::collections::HashSet<String>,
         messages: usize,
         tokens: u64,
         days: std::collections::BTreeMap<String, (u64, usize)>,
@@ -2364,7 +2465,9 @@ fn aggregate_stats_ledger(
         std::collections::BTreeMap<String, (u64, usize)>,
     > = std::collections::HashMap::new();
     for e in ledger.files.values() {
-        stats.sessions += 1;
+        if seen_sessions.insert(e.session_id.clone()) {
+            stats.sessions += 1;
+        }
         stats.messages += e.messages;
         stats.tokens += e.tokens;
         stats.input_tokens += e.input_tokens;
@@ -2404,12 +2507,15 @@ fn aggregate_stats_ledger(
                 name: e.project_name.clone(),
                 path: e.project_path.clone(),
                 sessions: 0,
+                session_ids: Default::default(),
                 messages: 0,
                 tokens: 0,
                 days: Default::default(),
                 day_sessions: Default::default(),
             });
-        pa.sessions += 1;
+        if pa.session_ids.insert(e.session_id.clone()) {
+            pa.sessions += 1;
+        }
         pa.messages += e.messages;
         pa.tokens += e.tokens;
         for (d, (t, m)) in &e.per_day {
@@ -2465,6 +2571,7 @@ fn aggregate_stats_ledger(
                 name,
                 path,
                 sessions,
+                session_ids: _,
                 messages,
                 tokens,
                 days,
@@ -4950,6 +5057,114 @@ mod tests {
         assert_eq!(u.messages, 2); // msg_a 去重后只 1 条 + msg_b
         assert_eq!(u.tokens, 120 + 60);
         assert_eq!(u.per_day["2026-08-17"].1, 2); // 当天消息数也是去重口径
+    }
+
+    #[test]
+    fn scan_file_usage_takes_final_snapshot_over_zero_placeholder() {
+        // 真实写入次序：先落 thinking/text 的占位行（usage 全 0、无 stop_reason），
+        // 真实用量在收尾行。取首行会把整条消息记成 0（实测有会话因此只剩 1.3%）
+        let jsonl = format!(
+            "{}\n{}\n{}\n",
+            r#"{"type":"assistant","message":{"id":"msg_p","role":"assistant","content":[{"type":"thinking","thinking":"..."}],"model":"deepseek-v4-flash","usage":{"input_tokens":0,"output_tokens":0}},"timestamp":"2026-08-17T01:00:00.000Z"}"#,
+            r#"{"type":"assistant","message":{"id":"msg_p","role":"assistant","content":[{"type":"text","text":"hi"}],"model":"deepseek-v4-flash","usage":{"input_tokens":0,"output_tokens":0}},"timestamp":"2026-08-17T01:00:01.000Z"}"#,
+            r#"{"type":"assistant","message":{"id":"msg_p","role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Read","input":{}}],"model":"deepseek-v4-flash","usage":{"input_tokens":30754,"output_tokens":1092,"cache_read_input_tokens":640},"stop_reason":"tool_use"},"timestamp":"2026-08-17T01:00:02.000Z"}"#,
+        );
+        let u = scan_file_usage(&jsonl, 0);
+        assert_eq!(u.messages, 1);
+        assert_eq!(u.tokens, 30754 + 1092 + 640);
+        assert_eq!(u.per_model["deepseek-v4-flash"], (32486, 1));
+    }
+
+    #[test]
+    fn scan_file_usage_prefers_final_row_even_if_intermediate_is_bigger() {
+        // 收尾行（stop_reason）优先于 token 更大的中间行：中间行是同一响应的
+        // 快照，只有收尾行是最终值
+        let jsonl = format!(
+            "{}\n{}\n",
+            r#"{"type":"assistant","message":{"id":"msg_q","role":"assistant","content":[{"type":"text","text":"x"}],"model":"glm-5.3","usage":{"input_tokens":900,"output_tokens":300}},"timestamp":"2026-08-17T01:00:00.000Z"}"#,
+            r#"{"type":"assistant","message":{"id":"msg_q","role":"assistant","content":[{"type":"text","text":"x"}],"model":"glm-5.3","usage":{"input_tokens":100,"output_tokens":20},"stop_reason":"end_turn"},"timestamp":"2026-08-17T01:00:01.000Z"}"#,
+        );
+        let u = scan_file_usage(&jsonl, 0);
+        assert_eq!(u.tokens, 120);
+    }
+
+    #[test]
+    fn usage_jsonl_files_covers_subagents_and_workflows() {
+        // 固定深度枚举：主会话 + subagents + workflows/wf_*；无关目录/非会话文件不计
+        let root = temp_root("usage-files");
+        let proj = root.join("D--work-alpha");
+        let sid = "aaaaaaaa-1111-4111-8111-111111111111";
+        fs::create_dir_all(proj.join(sid).join("subagents").join("workflows").join("wf_1")).unwrap();
+        fs::create_dir_all(proj.join("memory")).unwrap();
+        fs::create_dir_all(proj.join(sid).join("tool-results")).unwrap();
+        fs::write(proj.join(format!("{sid}.jsonl")), "").unwrap();
+        fs::write(proj.join("journal.jsonl"), "").unwrap(); // 非 uuid：不计
+        fs::write(proj.join(sid).join("subagents").join("agent-a1.jsonl"), "").unwrap();
+        fs::write(proj.join(sid).join("subagents").join("journal.jsonl"), "").unwrap();
+        fs::write(
+            proj.join(sid).join("subagents").join("workflows").join("wf_1").join("agent-b2.jsonl"),
+            "",
+        )
+        .unwrap();
+        fs::write(proj.join(sid).join("tool-results").join("r1.jsonl"), "").unwrap();
+        fs::write(proj.join("memory").join("m.jsonl"), "").unwrap();
+
+        let mut got: Vec<(String, String)> = usage_jsonl_files(&proj)
+            .into_iter()
+            .map(|(p, s)| {
+                (
+                    p.file_name().unwrap().to_string_lossy().to_string(),
+                    s.clone(),
+                )
+            })
+            .collect();
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                (format!("{sid}.jsonl"), sid.to_string()),
+                ("agent-a1.jsonl".to_string(), sid.to_string()),
+                ("agent-b2.jsonl".to_string(), sid.to_string()),
+                ("journal.jsonl".to_string(), sid.to_string()),
+            ]
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// 子代理文件计入 token，但**不新增会话**（归属父会话）；顶层非 uuid 文件不计
+    #[test]
+    fn stats_ledger_counts_subagent_files_under_parent_session() {
+        let root = temp_root("ledger-subagent");
+        let pa = root.join("projects").join("D--work-alpha");
+        let sid = "aaaaaaaa-1111-4111-8111-111111111111";
+        let sub = pa.join(sid).join("subagents");
+        let wf = sub.join("workflows").join("wf_1");
+        fs::create_dir_all(&wf).unwrap();
+        let line = |ts: &str, tokens: u64| {
+            format!(
+                r#"{{"type":"assistant","message":{{"id":"m{tokens}","role":"assistant","content":[{{"type":"text","text":"x"}}],"model":"deepseek-v4.1-flash","usage":{{"input_tokens":{tokens},"output_tokens":1,"cache_read_input_tokens":0}},"stop_reason":"end_turn"}},"timestamp":"{ts}"}}"#,
+            )
+        };
+        fs::write(pa.join(format!("{sid}.jsonl")), line("2026-08-12T01:00:00.000Z", 100)).unwrap();
+        fs::write(
+            pa.join("journal.jsonl"), // 顶层非 uuid：不是会话文件
+            line("2026-08-12T01:00:00.000Z", 7),
+        )
+        .unwrap();
+        fs::write(sub.join("agent-a1.jsonl"), line("2026-08-12T02:00:00.000Z", 50)).unwrap();
+        fs::write(wf.join("agent-b2.jsonl"), line("2026-08-12T03:00:00.000Z", 25)).unwrap();
+
+        let projects = vec![("alpha".to_string(), "D:\\work\\alpha".to_string(), pa.clone())];
+        let mut ledger = StatsLedger::default();
+        let s = aggregate_stats_ledger(&projects, &[], 0, &mut ledger);
+        assert_eq!(s.tokens, 101 + 51 + 26); // 子代理与 workflow 都计入，journal 不计
+        assert_eq!(s.messages, 3);
+        assert_eq!(s.sessions, 1); // 子代理不新增会话
+        assert_eq!(s.per_project[0].sessions, 1);
+        // 全部归属父会话的活跃日，会话数不随子代理文件重复累加
+        assert_eq!(s.per_day.iter().map(|d| d.sessions).sum::<usize>(), 1);
+        assert_eq!(ledger.files[&sub.join("agent-a1.jsonl").to_string_lossy().to_string()].session_id, sid);
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
