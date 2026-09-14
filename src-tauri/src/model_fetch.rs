@@ -61,7 +61,7 @@ fn fetch_models_from_url(url: &str, api_key: &str) -> Result<Vec<FetchedModel>, 
         .set("Accept", "application/json")
         .call()
         .map_err(|e| match e {
-            ureq::Error::Status(code, mut r) => {
+            ureq::Error::Status(code, r) => {
                 // 错误体同样限长读取：into_string() 会把整个响应体读进内存后才截断，
                 // 异常端点返回超大错误体时造成内存膨胀（与成功路径的 10MB 上限对称）
                 let mut body = String::new();
