@@ -252,7 +252,8 @@ export interface RankDayUsage {
   sessions: number;
 }
 
-/** 单个模型的用量汇总（统计口径：sidechain 子代理消息也计入） */
+/** 单个模型的用量汇总（统计口径：子代理消息也计入——旧布局内联在父文件里的
+ *  sidechain 行与新布局独立落盘的 `<会话>/subagents/*.jsonl` 都算真实消耗） */
 export interface ModelUsage {
   /** 完整模型名（前端简化显示日期后缀） */
   model: string;
