@@ -401,7 +401,7 @@ export default function ProviderDialog({ state, onClose, onChanged, toast }: Pro
   };
 
   const moveProvider = (from: number, to: number) => {
-    const base = dragListRef.current ?? providers;
+    const base = dragListRef.current ?? providersRef.current;
     if (
       from === to ||
       from < 0 ||
