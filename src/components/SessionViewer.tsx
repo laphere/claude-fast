@@ -653,7 +653,9 @@ export default function SessionViewer({
 
   // 加载更早的一页（offset - 500），插入顶部并保持滚动位置
   const loadMore = useCallback(async () => {
-    if (!session || loadingMore || !hasMore) return;
+    // loading 守卫：切换会话时旧内容卸载、浏览器钳制 scrollTop 会触发一次
+    // scroll 事件，此时 offset/hasMore 还是上个会话的陈旧值，不能发起分页
+    if (!session || loading || loadingMore || !hasMore) return;
     const myFile = session.file;
     // 双重作废条件：发起后若发生了跳转/刷新（世代推进）或窗口起点已变
     // （同页双触发、整窗替换），回包一律丢弃——前插页必须恰好接在当前窗口头上
@@ -684,12 +686,12 @@ export default function SessionViewer({
       onToast("加载更早消息失败：" + String(e));
     }
     setLoadingMore(false);
-  }, [session, loadingMore, hasMore, offset, onToast]);
+  }, [session, loading, loadingMore, hasMore, offset, onToast]);
 
   // 加载更晚的一页（窗口末尾续接），追加在尾部：跳转整窗替换后，向下翻
   // 靠它把后面的内容接回来。追加不影响当前滚动位置，无需补偿
   const loadLater = useCallback(async () => {
-    if (!session || loadingMore) return;
+    if (!session || loading || loadingMore) return;
     const myFile = session.file;
     const reqSeq = winSeqRef.current;
     const reqEnd = winRef.current.end; // 追加页必须恰好接在当前窗口末尾
