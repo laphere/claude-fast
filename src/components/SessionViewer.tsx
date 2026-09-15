@@ -531,7 +531,7 @@ interface ChangedFile {
   count: number;
 }
 
-/** 右侧会话内容区：打开定位在最后一条，向上翻自动加载更早的 500 条。
+/** 右侧会话内容区：打开定位在最后一条，翻到窗口边缘自动加载更早/更晚的 500 条。
  *  会话域增强（v2.0.0）：消息搜索、token/成本统计、导出、变更文件导航。 */
 export default function SessionViewer({
   session,
@@ -581,6 +581,12 @@ export default function SessionViewer({
    *  防止旧会话的迟到结果污染新会话的消息列表 */
   const sessionFileRef = useRef<string | null>(null);
   sessionFileRef.current = session?.file ?? null;
+  /** 窗口世代号：初始加载/刷新、jumpTo 这类「整窗替换」操作发起时递增；
+   *  loadMore 的在途回包发现世代已推进（期间发生了跳转/刷新）即整包丢弃 */
+  const winSeqRef = useRef(0);
+  /** 已提交窗口 [start, end) 的镜像：分页回包落地前校验窗口边界未被并发操作
+   *  改动（双触发、整窗替换后的迟到回包），防止同一页被前插/追加两次 */
+  const winRef = useRef({ start: 0, end: 0 });
 
   // 初始加载：默认取最后 500 条（session 切换或点「刷新」时重新加载）
   useEffect(() => {
@@ -589,6 +595,7 @@ export default function SessionViewer({
       setStats(null);
       setSearchResults(null);
       setPrompts([]);
+      winRef.current = { start: 0, end: 0 };
       prevFileRef.current = null;
       return;
     }
@@ -608,10 +615,12 @@ export default function SessionViewer({
     let cancelled = false;
     scrollToBottomRef.current = true;
     setLoading(true);
+    const seq = ++winSeqRef.current; // 递增世代，使在途的 loadMore/旧跳转回包作废
     api
       .getSessionMessages(session.file)
       .then((data) => {
-        if (cancelled) return;
+        if (cancelled || seq !== winSeqRef.current) return;
+        winRef.current = { start: data.offset, end: data.offset + data.messages.length };
         setMessages(data.messages);
         setOffset(data.offset);
         setHasMore(data.hasMore);
@@ -646,6 +655,10 @@ export default function SessionViewer({
   const loadMore = useCallback(async () => {
     if (!session || loadingMore || !hasMore) return;
     const myFile = session.file;
+    // 双重作废条件：发起后若发生了跳转/刷新（世代推进）或窗口起点已变
+    // （同页双触发、整窗替换），回包一律丢弃——前插页必须恰好接在当前窗口头上
+    const reqSeq = winSeqRef.current;
+    const reqStart = winRef.current.start;
     const body = bodyRef.current;
     const prevHeight = body?.scrollHeight ?? 0;
     const prevTop = body?.scrollTop ?? 0;
@@ -656,6 +669,8 @@ export default function SessionViewer({
         Math.max(0, offset - PAGE_SIZE),
       );
       if (sessionFileRef.current !== myFile) return; // 已切换会话，丢弃迟到结果
+      if (reqSeq !== winSeqRef.current || winRef.current.start !== reqStart) return;
+      winRef.current = { start: data.offset, end: winRef.current.end };
       setMessages((prev) => [...data.messages, ...prev]);
       setOffset(data.offset);
       setHasMore(data.hasMore);
@@ -670,6 +685,29 @@ export default function SessionViewer({
     }
     setLoadingMore(false);
   }, [session, loadingMore, hasMore, offset, onToast]);
+
+  // 加载更晚的一页（窗口末尾续接），追加在尾部：跳转整窗替换后，向下翻
+  // 靠它把后面的内容接回来。追加不影响当前滚动位置，无需补偿
+  const loadLater = useCallback(async () => {
+    if (!session || loadingMore) return;
+    const myFile = session.file;
+    const reqSeq = winSeqRef.current;
+    const reqEnd = winRef.current.end; // 追加页必须恰好接在当前窗口末尾
+    if (reqEnd >= total) return; // 后面没有了
+    setLoadingMore(true);
+    try {
+      const data = await api.getSessionMessages(session.file, reqEnd);
+      if (sessionFileRef.current !== myFile) return; // 已切换会话，丢弃迟到结果
+      if (reqSeq !== winSeqRef.current || winRef.current.end !== reqEnd) return;
+      winRef.current = { start: winRef.current.start, end: reqEnd + data.messages.length };
+      setMessages((prev) => [...prev, ...data.messages]);
+      setTotal(data.total);
+      setStats(data.stats);
+    } catch (e) {
+      onToast("加载更晚消息失败：" + String(e));
+    }
+    setLoadingMore(false);
+  }, [session, loadingMore, total, onToast]);
 
   // 进度条高亮跟随滚动：视口顶部附近最近的那条用户发言
   const updateActivePrompt = useCallback(() => {
@@ -688,6 +726,19 @@ export default function SessionViewer({
       if (el.getBoundingClientRect().top - bodyTop <= 140) active = p.index;
       else break;
     }
+    // 触底特例：最后一条发言可能还贴在阅读线以下（差不到一屏过不了线），
+    // 上面的「过线即激活」只能停在倒数第二条；触底时视口已到内容末尾，
+    // 直接取已加载窗口里最后一条有 DOM 的发言
+    if (body.scrollHeight - body.scrollTop - body.clientHeight <= 4) {
+      for (let i = prompts.length - 1; i >= 0; i--) {
+        const p = prompts[i];
+        if (p.index < offset || p.index >= offset + messages.length) continue;
+        if (body.querySelector(`[data-msg-index="${p.index}"]`)) {
+          active = p.index;
+          break;
+        }
+      }
+    }
     setActivePrompt(active);
   }, [prompts, offset, messages.length]);
 
@@ -698,14 +749,18 @@ export default function SessionViewer({
     return () => cancelAnimationFrame(id);
   }, [loading, updateActivePrompt]);
 
-  // 滚到顶部附近自动加载更早
+  // 滚到窗口边缘自动加载：顶部加载更早，底部加载更晚
   const onScroll = useCallback(() => {
     const body = bodyRef.current;
-    if (body && body.scrollTop <= 40) void loadMore();
+    if (body) {
+      if (body.scrollTop <= 40) void loadMore();
+      else if (body.scrollHeight - body.scrollTop - body.clientHeight <= 40)
+        void loadLater();
+    }
     // 进度条高亮用 rAF 节流，一帧最多算一次
     cancelAnimationFrame(scrollRafRef.current);
     scrollRafRef.current = requestAnimationFrame(updateActivePrompt);
-  }, [loadMore, updateActivePrompt]);
+  }, [loadMore, loadLater, updateActivePrompt]);
 
   // tool_use / tool_result 跨消息关联：resultMap 供状态标记，resultBlocks
   // 供折叠展开时在工具行内直接看执行结果（结果不再单独渲染成卡片）
@@ -781,6 +836,9 @@ export default function SessionViewer({
     async (globalIndex: number, blockIndex?: number) => {
       if (!session) return;
       const myFile = session.file;
+      // 跳转是用户最新意图：递增世代，使在途 loadMore / 更早的跳转回包作废，
+      // 否则迟到的回包会按旧窗口前插/替换，造成内容重复或乱序
+      const seq = ++winSeqRef.current;
       const first = offset; // messages[0] 的全局序号
       let needFrame = false;
       if (globalIndex < first || globalIndex >= first + messages.length) {
@@ -788,6 +846,8 @@ export default function SessionViewer({
         try {
           const data = await api.getSessionMessages(session.file, pageStart);
           if (sessionFileRef.current !== myFile) return; // 已切换会话，丢弃迟到结果
+          if (seq !== winSeqRef.current) return; // 期间又发起了更新的跳转/刷新
+          winRef.current = { start: data.offset, end: data.offset + data.messages.length };
           setMessages(data.messages);
           setOffset(data.offset);
           setHasMore(data.hasMore);
@@ -801,6 +861,7 @@ export default function SessionViewer({
       }
       const locate = () => {
         if (sessionFileRef.current !== myFile) return; // 已切换会话，不再定位
+        if (seq !== winSeqRef.current) return; // 已有更新的跳转接管定位
         const body = bodyRef.current;
         if (!body) return;
         const el = body.querySelector(`[data-msg-index="${globalIndex}"]`);
@@ -1182,6 +1243,17 @@ export default function SessionViewer({
                 <div className="viewer-truncated">已到会话开头</div>
               ) : null}
               {renderMessages()}
+              {offset + messages.length < total ? (
+                <button
+                  className="viewer-load-more"
+                  disabled={loadingMore}
+                  onClick={() => void loadLater()}
+                >
+                  {loadingMore
+                    ? "加载中…"
+                    : `↓ 加载更晚的消息（还剩 ${total - offset - messages.length} 条）`}
+                </button>
+              ) : null}
             </>
           )}
         </div>
