@@ -236,6 +236,12 @@ export default function ChatView({
    *  防止旧会话的迟到结果污染新会话的历史列表 */
   const sessionFileRef = useRef<string | null>(null);
   sessionFileRef.current = session?.file ?? null;
+  /** 历史窗口世代号：初始加载/刷新、jumpTo 这类「整窗替换」操作发起时递增；
+   *  分页在途回包发现世代已推进（期间发生了跳转/刷新）即整包丢弃 */
+  const winSeqRef = useRef(0);
+  /** 已提交历史窗口 [start, end) 的镜像：分页回包落地前校验窗口边界未被并发
+   *  操作改动（双触发、整窗替换后的迟到回包），防止同一页被前插/追加两次 */
+  const winRef = useRef({ start: 0, end: 0 });
 
   /** 后端跟踪的会话 id（chat_start 返回，chat_send 等凭它寻址） */
   const sessionKeyRef = useRef<string | null>(null);
@@ -464,6 +470,7 @@ export default function ChatView({
       setPrompts([]);
       setActivePromptKey(null);
       setRailTip(null);
+      winRef.current = { start: 0, end: 0 };
       return;
     }
     setSearchOpen(false);
@@ -474,10 +481,12 @@ export default function ChatView({
     let cancelled = false;
     scrollToBottomRef.current = true;
     setHistoryLoading(true);
+    const seq = ++winSeqRef.current; // 递增世代，使在途分页/旧跳转回包作废
     api
       .getSessionMessages(session.file)
       .then((data) => {
-        if (cancelled) return;
+        if (cancelled || seq !== winSeqRef.current) return;
+        winRef.current = { start: data.offset, end: data.offset + data.messages.length };
         setHistory(data.messages);
         setHistOffset(data.offset);
         setHasMore(data.hasMore);
@@ -504,6 +513,10 @@ export default function ChatView({
   const loadMore = useCallback(async () => {
     if (!session || historyLoading || !hasMore) return;
     const myFile = session.file;
+    // 双重作废条件：发起后若发生了跳转/刷新（世代推进）或窗口起点已变
+    // （同页双触发、整窗替换），回包一律丢弃——前插页必须恰好接在当前窗口头上
+    const reqSeq = winSeqRef.current;
+    const reqStart = winRef.current.start;
     const body = bodyRef.current;
     const prevHeight = body?.scrollHeight ?? 0;
     const prevTop = body?.scrollTop ?? 0;
@@ -513,6 +526,8 @@ export default function ChatView({
         Math.max(0, histOffset - PAGE_SIZE),
       );
       if (sessionFileRef.current !== myFile) return; // 已切换会话，丢弃迟到结果
+      if (reqSeq !== winSeqRef.current || winRef.current.start !== reqStart) return;
+      winRef.current = { start: data.offset, end: winRef.current.end };
       setHistory((prev) => [...data.messages, ...prev]);
       setHistOffset(data.offset);
       setHasMore(data.hasMore);
@@ -525,6 +540,27 @@ export default function ChatView({
       onToast("加载更早消息失败：" + String(e));
     }
   }, [session, historyLoading, hasMore, histOffset, onToast]);
+
+  /** 加载更晚的一页（窗口末尾续接），追加在历史区尾部：跳转整窗替换后，
+   *  向下翻靠它把后面的内容接回来。追加不影响当前滚动位置，无需补偿 */
+  const loadLater = useCallback(async () => {
+    if (!session || historyLoading) return;
+    const myFile = session.file;
+    const reqSeq = winSeqRef.current;
+    const reqEnd = winRef.current.end; // 追加页必须恰好接在当前窗口末尾
+    if (reqEnd >= total) return; // 后面没有了
+    try {
+      const data = await api.getSessionMessages(session.file, reqEnd);
+      if (sessionFileRef.current !== myFile) return; // 已切换会话，丢弃迟到结果
+      if (reqSeq !== winSeqRef.current || winRef.current.end !== reqEnd) return;
+      winRef.current = { start: winRef.current.start, end: reqEnd + data.messages.length };
+      setHistory((prev) => [...prev, ...data.messages]);
+      setTotal(data.total);
+      setStats(data.stats);
+    } catch (e) {
+      onToast("加载更晚消息失败：" + String(e));
+    }
+  }, [session, historyLoading, total, onToast]);
 
   /** 「刷新」：重读 jsonl 并清空实时区（jsonl 为唯一事实来源；对话进行中禁用） */
   const refreshHistory = useCallback(() => {
@@ -744,6 +780,9 @@ export default function ChatView({
       const body = bodyRef.current;
       if (!body) return;
       const myFile = session?.file ?? null;
+      // 跳转是用户最新意图：递增世代，使在途分页/更早的跳转回包作废，
+      // 否则迟到的回包会按旧窗口前插/替换，造成内容重复或乱序
+      const seq = ++winSeqRef.current;
       let needFrame = false;
       if (globalIndex < histOffset || globalIndex >= histOffset + history.length) {
         if (!session) return;
@@ -751,6 +790,8 @@ export default function ChatView({
         try {
           const data = await api.getSessionMessages(session.file, pageStart);
           if (sessionFileRef.current !== myFile) return; // 已切换会话，丢弃迟到结果
+          if (seq !== winSeqRef.current) return; // 期间又发起了更新的跳转/刷新
+          winRef.current = { start: data.offset, end: data.offset + data.messages.length };
           setHistory(data.messages);
           setHistOffset(data.offset);
           setHasMore(data.hasMore);
@@ -764,6 +805,7 @@ export default function ChatView({
       }
       const locate = () => {
         if (sessionFileRef.current !== myFile) return; // 已切换会话，不再定位
+        if (seq !== winSeqRef.current) return; // 已有更新的跳转接管定位
         const el = body.querySelector(`[data-msg-index="${globalIndex}"]`);
         if (!el) return;
         el.scrollIntoView({ block: "start" });
@@ -842,6 +884,27 @@ export default function ChatView({
       if (el.getBoundingClientRect().top - bodyTop <= 140) active = item.key;
       else break;
     }
+    // 触底特例：最后一条发言可能还贴在阅读线以下（差不到一屏过不了线），
+    // 上面的「过线即激活」只能停在倒数第二条；触底时视口已到内容末尾，
+    // 从轨道末尾往回找第一条有 DOM 锚点的条目（历史/实时都可能）
+    if (body.scrollHeight - body.scrollTop - body.clientHeight <= 4) {
+      for (let i = railItems.length - 1; i >= 0; i--) {
+        const item = railItems[i];
+        if (
+          item.kind === "history" &&
+          (item.index < histOffset || item.index >= histOffset + history.length)
+        )
+          continue; // 未加载的分页查不到元素
+        const anchor =
+          item.kind === "live"
+            ? `[data-live-user="${item.liveId}"]`
+            : `[data-msg-index="${item.index}"]`;
+        if (body.querySelector(anchor)) {
+          active = item.key;
+          break;
+        }
+      }
+    }
     setActivePromptKey(active);
   }, [railItems, histOffset, history.length]);
 
@@ -854,11 +917,15 @@ export default function ChatView({
 
   const onChatScroll = useCallback(() => {
     const body = bodyRef.current;
-    if (body && body.scrollTop <= 40) void loadMore();
+    if (body) {
+      if (body.scrollTop <= 40) void loadMore();
+      else if (body.scrollHeight - body.scrollTop - body.clientHeight <= 40)
+        void loadLater();
+    }
     // 高亮用 rAF 节流，一帧最多算一次
     cancelAnimationFrame(scrollRafRef.current);
     scrollRafRef.current = requestAnimationFrame(updateActivePrompt);
-  }, [loadMore, updateActivePrompt]);
+  }, [loadMore, loadLater, updateActivePrompt]);
 
   /** 定位到实时区的用户气泡（本次 sitting 的消息不在历史分页，走 DOM 锚点） */
   const jumpToLive = useCallback((liveId: number) => {
@@ -1332,6 +1399,18 @@ export default function ChatView({
       }
     }
     flush();
+    // 窗口后面还有消息（跳转替换到较早页 / jsonl 增长）→ 尾部给显式入口
+    if (histOffset + history.length < total) {
+      nodes.push(
+        <button
+          key="more-later"
+          className="viewer-load-more"
+          onClick={() => void loadLater()}
+        >
+          ↓ 加载更晚的消息（还剩 {total - histOffset - history.length} 条）
+        </button>,
+      );
+    }
     return nodes;
   };
 
