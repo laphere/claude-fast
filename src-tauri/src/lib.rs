@@ -3305,7 +3305,7 @@ fn provider_save(provider: provider::ProviderInfo) -> Result<ProviderListState, 
 }
 
 fn provider_save_from(
-    _config_dir: &Path,
+    config_dir: &Path,
     root: &Path,
     input: provider::ProviderInfo,
 ) -> Result<ProviderListState, String> {
@@ -3318,6 +3318,9 @@ fn provider_save_from(
         return Err("settingsConfig 必须是 JSON 对象".to_string());
     }
     let mut cfg = load_config_from(root);
+    // 新增条目 id 尚未生成，不可能命中 current；live 快照供下方同步写盘
+    let saved_current = !p.id.is_empty() && cfg.current_provider.as_deref() == Some(p.id.as_str());
+    let live_snapshot = p.settings_config.clone();
     if p.id.is_empty() {
         p.id = uuid::Uuid::new_v4().to_string();
         cfg.providers.push(p);
@@ -3326,6 +3329,17 @@ fn provider_save_from(
             Some(slot) => *slot = p,
             None => cfg.providers.push(p),
         }
+    }
+    // 保存的是当前供应商时同步写 live：只改清单的话磁盘 settings.json 仍是
+    // 旧内容，下次切换的回填（指纹一致即整文件吸收）会把旧 live 灌回清单，
+    // 刚保存的修改被静默回滚（模型映射反复「自己变回去」的根源）。
+    // 先写 live 后写清单：live 写失败时清单未动，两侧不脱节
+    if saved_current {
+        let live_path = provider::claude_settings_path_from(config_dir);
+        provider::write_json_atomic(
+            &live_path,
+            &provider::sanitize_claude_settings(&live_snapshot),
+        )?;
     }
     save_config_file(root, &cfg)?;
     Ok(ProviderListState {
@@ -5576,6 +5590,93 @@ mod tests {
         let reread = provider_list_from(&root, &root);
         let order3: Vec<String> = reread.providers.iter().map(|p| p.id.clone()).collect();
         assert_eq!(order3, vec!["b", "c", "a"]);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// 保存「当前供应商」必须同步写 live：否则磁盘 settings.json 仍是旧内容，
+    /// 下次切换的回填（指纹一致即整文件吸收）会把旧 live 灌回清单，刚保存的
+    /// 修改被静默回滚——Haiku 模型映射反复「自己变回去」的根源
+    #[test]
+    fn provider_save_current_syncs_live_settings() {
+        let root = temp_root("provider-save-current");
+        fs::write(
+            root.join("config.json"),
+            r#"{"order":[],"dark":false,"providers":[
+                {"id":"a","name":"A","settingsConfig":{"env":{"ANTHROPIC_BASE_URL":"https://a.example","ANTHROPIC_AUTH_TOKEN":"sk-1","ANTHROPIC_DEFAULT_HAIKU_MODEL":"old-model"}}},
+                {"id":"b","name":"B","settingsConfig":{}}],
+                "currentProvider":"a"}"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("settings.json"),
+            r#"{"env":{"ANTHROPIC_BASE_URL":"https://a.example","ANTHROPIC_AUTH_TOKEN":"sk-1","ANTHROPIC_DEFAULT_HAIKU_MODEL":"old-model"}}"#,
+        )
+        .unwrap();
+
+        let updated = serde_json::json!({
+            "id": "a",
+            "name": "A",
+            "settingsConfig": { "env": {
+                "ANTHROPIC_BASE_URL": "https://a.example",
+                "ANTHROPIC_AUTH_TOKEN": "sk-1",
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL": "new-model",
+            }},
+            "websiteUrl": null,
+            "category": null,
+        });
+        let info: provider::ProviderInfo = serde_json::from_value(updated).unwrap();
+        provider_save_from(&root, &root, info).unwrap();
+
+        // live 已被同步为新配置；清单同样落盘
+        let live: serde_json::Value =
+            serde_json::from_slice(&fs::read(root.join("settings.json")).unwrap()).unwrap();
+        assert_eq!(
+            live["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"],
+            serde_json::json!("new-model")
+        );
+        let reread = provider_list_from(&root, &root);
+        let a = reread.providers.iter().find(|p| p.id == "a").unwrap();
+        assert_eq!(
+            a.settings_config["env"]["ANTHROPIC_DEFAULT_HAIKU_MODEL"],
+            serde_json::json!("new-model")
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// 保存非当前供应商不碰 live（它本就不在盘上），仅清单落盘
+    #[test]
+    fn provider_save_non_current_leaves_live_untouched() {
+        let root = temp_root("provider-save-other");
+        fs::write(
+            root.join("config.json"),
+            r#"{"order":[],"dark":false,"providers":[
+                {"id":"a","name":"A","settingsConfig":{"env":{"ANTHROPIC_BASE_URL":"https://a.example"}}},
+                {"id":"b","name":"B","settingsConfig":{}}],
+                "currentProvider":"a"}"#,
+        )
+        .unwrap();
+        fs::write(
+            root.join("settings.json"),
+            r#"{"env":{"ANTHROPIC_BASE_URL":"https://a.example","TWEAKED":true}}"#,
+        )
+        .unwrap();
+
+        provider_save_from(&root, &root, provider::ProviderInfo {
+            id: "b".to_string(),
+            name: "B".to_string(),
+            settings_config: serde_json::json!({"env":{"ANTHROPIC_BASE_URL":"https://b.example"}}),
+            website_url: None,
+            category: None,
+        })
+        .unwrap();
+
+        let live: serde_json::Value =
+            serde_json::from_slice(&fs::read(root.join("settings.json")).unwrap()).unwrap();
+        assert_eq!(live["env"]["TWEAKED"], serde_json::json!(true));
+        assert_eq!(
+            live["env"]["ANTHROPIC_BASE_URL"],
+            serde_json::json!("https://a.example")
+        );
         fs::remove_dir_all(&root).unwrap();
     }
 }
