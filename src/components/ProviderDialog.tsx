@@ -775,7 +775,15 @@ export default function ProviderDialog({ state, onClose, onChanged, toast }: Pro
         category: form.category,
       });
       onChanged(list);
-      toast(form.editId ? "供应商已更新" : "供应商已添加");
+      // 后端对「当前供应商」的保存会同步写 live settings.json（否则下次切换的
+      // 回填会把磁盘旧配置灌回清单，刚保存的修改被静默回滚）
+      toast(
+        form.editId
+          ? form.editId === currentId
+            ? "供应商已更新，已同步写入 ~/.claude/settings.json，新开的 Claude Code 会话即生效"
+            : "供应商已更新"
+          : "供应商已添加",
+      );
       setForm(null);
     } catch (e) {
       setFormError(String(e));
