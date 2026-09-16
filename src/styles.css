@@ -18,6 +18,25 @@
   --ok-soft: rgba(22, 163, 74, 0.12);
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.05), 0 8px 24px rgba(0, 0, 0, 0.08);
   --radius: 10px;
+
+  /* 趋势图堆叠色板（浅色主题）：9 色，色相刻意跨冷暖交错排布
+     （1 陶土 / 2 青 / 3 金 / 4 紫 / 5 绿 / 6 玫 / 7 蓝 / 8 棕 / 9 松），
+     这样即便两个用量接近的模型排到相邻色号，堆叠里也能分开。
+     饱和度约 45%、明度约 51%——比 app 主色略淡，但明显高于初版（S31/L47 偏暗沉）。
+     图表段与行内色块都用内联 style 引 var()，所以两套主题各给一组最优值，
+     不必再像初版那样为「同时兼容浅底深底」而把饱和度压到 31%。 */
+  --chart-1: #d4703f;
+  --chart-2: #3f8fa8;
+  --chart-3: #c39620;
+  --chart-4: #8a75b8;
+  --chart-5: #5da24e;
+  --chart-6: #c8647f;
+  --chart-7: #4a80b8;
+  --chart-8: #ab7c48;
+  --chart-9: #5aa295;
+  /* 「其他」折叠项与「未归属」段：中性色，取 --dim 一带的明度 */
+  --chart-other: #a8a29e;
+  --chart-unattributed: #d4cfc6;
 }
 
 [data-theme="dark"] {
@@ -38,6 +57,20 @@
   --ok: #4ade80;
   --ok-soft: rgba(74, 222, 128, 0.14);
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.45), 0 8px 24px rgba(0, 0, 0, 0.55);
+
+  /* 同一组 9 个色相的深色主题版：明度抬到约 62%、饱和度约 50%（深底上不提亮立不住）。
+     与浅色版**序号严格一一对应**（1↔1 … 9↔9），切主题不会改变哪个模型是什么颜色。 */
+  --chart-1: #e28a5f;
+  --chart-2: #5aabc2;
+  --chart-3: #d9ae45;
+  --chart-4: #a894d1;
+  --chart-5: #7cbd6b;
+  --chart-6: #db85a0;
+  --chart-7: #6b9ed6;
+  --chart-8: #c69a6b;
+  --chart-9: #79bcb0;
+  --chart-other: #6f6a63;
+  --chart-unattributed: #4a4640;
 }
 
 /* ============ 基础 ============ */
@@ -1193,6 +1226,10 @@ mark {
 
 .stats-range-note {
   font-size: 10.5px;
+  /* 该 span 也用在 .stat-sec-title 里（标题 font-weight: 600），显式压回常规字重，
+     免得说明文字跟着标题变粗；min-width: 0 让它在 flex 标题行里能收窄省略 */
+  font-weight: 400;
+  min-width: 0;
   color: var(--dim);
   white-space: nowrap;
   overflow: hidden;
@@ -1307,16 +1344,27 @@ mark {
   background: var(--panel-2);
 }
 
-.stat-bar {
+/* 趋势柱按模型堆叠：段内用 flex-grow 按 token 比例分配高度，柱高仍是当日总量。
+   column-reverse 让数组首个（窗口内用量最大的模型）贴底——
+   与下方模型分布的行顺序、tooltip 明细顺序一致，读图不用上下对调。
+   段用 min-height 保底：极小分段（<1px）也留一丝可见，不会整段消失。 */
+.stat-stack {
   width: 100%;
-  background: var(--accent);
-  opacity: 0.72;
+  display: flex;
+  flex-direction: column-reverse;
   border-radius: 2px 2px 0 0;
-  transition: opacity 0.12s;
+  overflow: hidden;
   pointer-events: none; /* 悬停统一由列接管 */
 }
 
-.stat-col:hover .stat-bar {
+.stat-seg {
+  width: 100%;
+  min-height: 1px;
+  transition: opacity 0.12s;
+  opacity: 0.85;
+}
+
+.stat-col:hover .stat-seg {
   opacity: 1;
 }
 
@@ -1335,6 +1383,47 @@ mark {
   white-space: nowrap;
   pointer-events: none;
   z-index: 5;
+}
+
+/* 按模型模式：tooltip 头部下方列出当日各模型明细
+   （单序列时不渲染，避免只重复一次总数） */
+.stat-tip-head {
+  font-weight: 600;
+}
+
+.stat-tip-list {
+  margin-top: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.stat-tip-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.stat-tip-row i {
+  display: block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.stat-tip-name {
+  flex: 1;
+  max-width: 170px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+.stat-tip-val {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
 }
 
 .stat-chart-labels {
@@ -1385,6 +1474,14 @@ mark {
   font-size: 11px;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
+}
+
+/* 模型分布行的色块：与趋势图堆叠段同色，充当图例（无需另设一块图例列表） */
+.stat-row-chip {
+  flex-shrink: 0;
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
 }
 
 .msg {

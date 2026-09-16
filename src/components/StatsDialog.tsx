@@ -20,11 +20,50 @@ type TrendBar = {
   messages: number;
 };
 
+/** 堆叠序列：一个上色模型一条；被折叠的模型共用最后一条「其他」 */
+type ModelSeries = {
+  model: string;
+  color: string;
+  /** true = 「其他」汇总条，model 字段是展示名而非真实模型名 */
+  isOther: boolean;
+  /** 与 bars 等长：每个趋势桶内该序列的 token */
+  buckets: number[];
+};
+
 const RANGE_LABELS: Array<[Range, string]> = [
   ["7d", "近 7 天"],
   ["30d", "近 30 天"],
   ["all", "全部"],
 ];
+
+/** 堆叠配色：引 styles.css 的 `--chart-1..9`（浅色/深色主题各一组，序号严格一一对应），
+ *  按**当前窗口**的用量排名分配——用量最大的模型恒定拿第一色（陶土，与 accent 同源）；
+ *  切范围会重排配色，但下方模型分布每行都带同色色块充当图例，不会读错。
+ *
+ *  **为什么走 var() 而不是写死色值**：图表段与行内色块都是内联 style，而**内联 style 完全
+ *  可以用 var()** —— 初版误以为取不到主题变量，只好写一组「同时兼容浅底 #fff 与深底
+ *  #292724」的固定值，饱和度被压到 31%、明度 47%，在浅色主题下发暗沉（用户已反馈）。
+ *  现在两套主题各给一组最优值（浅色 S45/L51、深色 S50/L62），这个折中不再需要。 */
+const MODEL_COLORS = [
+  "var(--chart-1)", // 陶土（与 --accent 同源，最强模型专用）
+  "var(--chart-2)", // 青
+  "var(--chart-3)", // 金
+  "var(--chart-4)", // 紫
+  "var(--chart-5)", // 绿
+  "var(--chart-6)", // 玫
+  "var(--chart-7)", // 蓝
+  "var(--chart-8)", // 棕
+  "var(--chart-9)", // 松
+];
+/** 「其他」折叠项（模型数超上色上限时合并而成）的中性色 */
+const OTHER_COLOR = "var(--chart-other)";
+/** 「未归属」段的中性色：当日总量里没有模型明细的部分（见 series 内的说明）。
+ *  取比 OTHER_COLOR 更浅的暖灰，读作「非模型归属」而非某个模型。 */
+const UNATTRIBUTED_COLOR = "var(--chart-unattributed)";
+/** 上色模型数上限：超出则只给前 N 名上色、其余并成一条「其他」。
+ *  实测本机单日并发最多 4 个模型、窗口内最多 12 个，9 色足够；
+ *  极端多模型中转场景由此优雅降级，不会出现同色相邻。 */
+const MAX_COLORED = MODEL_COLORS.length;
 
 /** token 缩写（与查看器 fmtTokens 同源）：1234 → 1.2K，3456789 → 3.5M */
 function fmtTokens(n: number): string {
@@ -88,7 +127,12 @@ function StatCard({ num, label, sub }: { num: string; label: string; sub?: strin
  *  会话数口径：汇总卡用每日 sessions（最后活跃日归属，跨天会话只计一次），
  *  窗口内累加 = 去重会话数，不会出现「全部 < 近30天」；趋势图 tooltip 用
  *  activeSessions（当日活跃，跨天会话每天都计）——否则跨天会话的前几天
- *  会显示「有 token 却 0 个会话」。 */
+ *  会显示「有 token 却 0 个会话」。
+ *
+ *  趋势图按模型堆叠：同一根柱按当日各模型用量分段，**柱高仍是当日总量**
+ *  （所以不需要「总量 / 按模型」双视图——单色柱是它的严格子集：同样高度、更少信息）。
+ *  后端 perModel 一直带着 perDay 明细（RankDayUsage），前端此前只拿它算窗口合计、
+ *  没上时间轴——故这是纯前端改动：零后端字段、零台账版本变更、零重扫。 */
 export default function StatsDialog({ onClose }: Props) {
   const [stats, setStats] = useState<UsageStats | null>(null);
   const [loading, setLoading] = useState(true);
@@ -241,10 +285,112 @@ export default function StatsDialog({ onClose }: Props) {
       .sort((a, b) => b.tokens - a.tokens);
   }, [stats, rangeStart]);
 
+  // 趋势桶映射：日视图桶键即 YYYY-MM-DD，全部视图是 YYYY-MM
+  // （与 bars 的键一一对应，模型明细因此能直接落到同一根柱上）
+  const bucketIndex = useMemo(() => {
+    const bucketOf = (date: string) => (range === "all" ? date.slice(0, 7) : date);
+    const index = new Map(bars.map((b, i) => [b.key, i]));
+    return { bucketOf, index };
+  }, [bars, range]);
+
+  // 每个模型在窗口内的**逐桶**用量（与 bars 等长），供趋势图堆叠分段
+  const modelBuckets = useMemo(() => {
+    const map = new Map<string, number[]>();
+    if (!stats) return map;
+    const { bucketOf, index } = bucketIndex;
+    for (const m of modelRows) {
+      const arr = new Array<number>(bars.length).fill(0);
+      for (const d of m.perDay) {
+        if (rangeStart !== null && d.date < rangeStart) continue;
+        const i = index.get(bucketOf(d.date));
+        if (i === undefined) continue;
+        arr[i] += d.tokens;
+      }
+      map.set(m.model, arr);
+    }
+    return map;
+  }, [stats, bars, modelRows, bucketIndex, rangeStart]);
+
+  // 配色与折叠：按窗口内用量排名分配色板；模型数超上限时只给前 MAX_COLORED 名
+  // 上色，其余并成一条中性色「其他」——保证任何分布下都不出现同色相邻
+  const modelRanking = useMemo(() => {
+    const ranked = modelRows.map((m) => m.model);
+    const coloredCount = Math.min(ranked.length, MAX_COLORED);
+    const color = new Map<string, string>();
+    const slot = new Map<string, number>();
+    ranked.forEach((m, i) => {
+      const isColored = i < coloredCount;
+      color.set(m, isColored ? MODEL_COLORS[i] : OTHER_COLOR);
+      slot.set(m, isColored ? i : coloredCount); // 折叠项全部落到「其他」槽
+    });
+    return {
+      ranked,
+      coloredCount,
+      hasOther: ranked.length > MAX_COLORED,
+      color,
+      slot,
+    };
+  }, [modelRows]);
+
+  // 堆叠序列：上色模型各一条（按用量倒序 → 堆叠顺序稳定，最强模型在最上方），
+  // 折叠项合成末尾的「其他」
+  const series = useMemo<ModelSeries[]>(() => {
+    const { ranked, coloredCount, hasOther, color, slot } = modelRanking;
+    const slots: ModelSeries[] = Array.from({ length: coloredCount }, (_, i) => ({
+      model: ranked[i],
+      color: color.get(ranked[i]) ?? OTHER_COLOR,
+      isOther: false,
+      buckets: new Array<number>(bars.length).fill(0),
+    }));
+    if (hasOther) {
+      slots.push({
+        model: "其他",
+        color: OTHER_COLOR,
+        isOther: true,
+        buckets: new Array<number>(bars.length).fill(0),
+      });
+    }
+    for (const m of modelRows) {
+      const target = slots[slot.get(m.model) ?? 0];
+      const arr = modelBuckets.get(m.model);
+      if (!target || !arr) continue;
+      for (let i = 0; i < arr.length; i++) target.buckets[i] += arr[i];
+    }
+
+    // 未归属段：当天总量里没有模型明细的差额。
+    // 来源是历史台账条目——会话文件在 per_day_model 字段引入前就被删除，
+    // 条目永久缺该字段（per_day 有量、per_day_model 为空；实测 53 天里 4 天、
+    // 占总量 0.2%）。不补这段的话：堆叠段之和小于柱高，flex-grow 归一化会
+    // 把各模型占比整体悄悄放大；极端情况下（某天只有这类条目）整根柱没有
+    // 可渲染的段、直接从图上消失。柱高一律取当日总量，故各视图高度一致。
+    // 图例里不出现（它不是模型），只在 tooltip 明细里说明。
+    const attributed = new Array<number>(bars.length).fill(0);
+    for (const s of slots) for (let i = 0; i < s.buckets.length; i++) attributed[i] += s.buckets[i];
+    const rest = bars.map((b, i) => Math.max(b.tokens - attributed[i], 0));
+    if (rest.some((v) => v > 0)) {
+      slots.push({
+        model: "未归属",
+        color: UNATTRIBUTED_COLOR,
+        isOther: true,
+        buckets: rest,
+      });
+    }
+    return slots;
+  }, [bars, modelBuckets, modelRanking, modelRows]);
+
   // `|| 1` 兜底：所选窗口内全为 0 用量时首行值是 0（不是 undefined），
   // `?? 1` 接不住，0 作分母会算出 width: NaN%
   const maxProjectVal = projectRows[0]?.[projSort] || 1;
   const maxModelTokens = modelRows[0]?.tokens || 1;
+
+  // 悬停柱的堆叠明细（只列当日真有量的序列，按用量倒序）
+  const hoverSegs = useMemo(() => {
+    if (hoverDay === null) return [];
+    return series
+      .map((s) => ({ ...s, value: s.buckets[hoverDay] ?? 0 }))
+      .filter((s) => s.value > 0)
+      .sort((a, b) => b.value - a.value);
+  }, [hoverDay, series]);
 
   return (
     <Modal title="使用统计" width={660} onClose={onClose}>
@@ -260,7 +406,9 @@ export default function StatsDialog({ onClose }: Props) {
             </button>
           ))}
         </div>
-        <span className="stats-range-note">汇总、趋势、排行与模型均按所选范围；已删会话仍计入</span>
+        <span className="stats-range-note">
+          汇总、趋势、排行与模型均按所选范围；已删会话仍计入
+        </span>
         <button
           className="btn"
           style={{ marginLeft: "auto" }}
@@ -298,8 +446,11 @@ export default function StatsDialog({ onClose }: Props) {
             />
           </div>
 
-          {/* ---- 趋势（日窗口按日 / 全部按月） ---- */}
-          <div className="stat-sec-title">{range === "all" ? "每月 token 用量" : "每日 token 用量"}</div>
+          {/* ---- 趋势（日窗口按日 / 全部按月，柱高为总量、按模型堆叠分段） ---- */}
+          <div className="stat-sec-title">
+            {range === "all" ? "每月 token 用量" : "每日 token 用量"}
+            <span className="stats-range-note">柱高 = 当日总量，分段 = 各模型</span>
+          </div>
           {bars.length === 0 || !windowHasData ? (
             <div className="stats-empty">范围内无数据</div>
           ) : (
@@ -315,10 +466,23 @@ export default function StatsDialog({ onClose }: Props) {
                     className="stat-col"
                     onMouseEnter={() => setHoverDay(i)}
                   >
+                    {/* 堆叠：column-reverse 让排名最高（数组首个）的模型贴底 */}
                     <div
-                      className="stat-bar"
+                      className="stat-stack"
                       style={{ height: `${Math.max((d.tokens / maxBarTokens) * 100, 2)}%` }}
-                    />
+                    >
+                      {series.map((s) => {
+                        const v = s.buckets[i] ?? 0;
+                        if (v <= 0) return null;
+                        return (
+                          <div
+                            key={s.model}
+                            className="stat-seg"
+                            style={{ flexGrow: v, background: s.color }}
+                          />
+                        );
+                      })}
+                    </div>
                   </div>
                 ))}
                 {hoverDay !== null && bars[hoverDay] && (
@@ -328,10 +492,27 @@ export default function StatsDialog({ onClose }: Props) {
                       left: `clamp(130px, ${((hoverDay + 0.5) / bars.length) * 100}%, calc(100% - 130px))`,
                     }}
                   >
-                    {bars[hoverDay].label} · {fmtTokens(bars[hoverDay].tokens)} token ·{" "}
-                    {/* 月柱取 sessions（最后活跃日归属，各月相加 = 去重会话总数）；
-                        activeSessions 逐日相加是「会话·天」，跨天会话重复计，虚高 */}
-                    {(range === "all" ? bars[hoverDay].sessions : bars[hoverDay].activeSessions)} 个会话
+                    <div className="stat-tip-head">
+                      {bars[hoverDay].label} · {fmtTokens(bars[hoverDay].tokens)} token ·{" "}
+                      {/* 月柱取 sessions（最后活跃日归属，各月相加 = 去重会话总数）；
+                          activeSessions 逐日相加是「会话·天」，跨天会话重复计，虚高 */}
+                      {(range === "all" ? bars[hoverDay].sessions : bars[hoverDay].activeSessions)} 个会话
+                    </div>
+                    {hoverSegs.length > 1 && (
+                      <div className="stat-tip-list">
+                        {hoverSegs.map((s) => (
+                          <div key={s.model} className="stat-tip-row">
+                            <i style={{ background: s.color }} />
+                            <span className="stat-tip-name">
+                              {/* isOther 的序列名字已经是展示名（「其他」/「未归属」），
+                                  真实模型才需要剥日期后缀 */}
+                              {s.isOther ? s.model : shortModel(s.model)}
+                            </span>
+                            <span className="stat-tip-val">{fmtTokens(s.value)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -376,12 +557,21 @@ export default function StatsDialog({ onClose }: Props) {
           ))}
 
           {/* ---- 模型分布 ---- */}
-          <div className="stat-sec-title">模型分布（按 token）</div>
+          {/* 色块 = 趋势图堆叠段的图例（不另设一块图例列表）；本区只给窗口合计，
+              逐日粒度统一由上方趋势图承担，避免同一份数据在两处重复呈现 */}
+          <div className="stat-sec-title">
+            模型分布（按 token）
+            <span className="stats-range-note">色块对应趋势图堆叠段</span>
+          </div>
           {modelRows.map((m) => (
             <div key={m.model} className="stat-row" title={m.model}>
               <div
                 className="stat-row-bar"
                 style={{ width: `${Math.max((m.tokens / maxModelTokens) * 100, 1)}%` }}
+              />
+              <span
+                className="stat-row-chip"
+                style={{ background: modelRanking.color.get(m.model) ?? OTHER_COLOR }}
               />
               <span className="stat-row-name">{shortModel(m.model)}</span>
               <span className="stat-row-val">{fmtTokens(m.tokens)}</span>
