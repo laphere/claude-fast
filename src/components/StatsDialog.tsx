@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/api";
 import type { UsageStats } from "../types";
 import Modal from "./Modal";
@@ -136,26 +136,46 @@ function StatCard({ num, label, sub }: { num: string; label: string; sub?: strin
 export default function StatsDialog({ onClose }: Props) {
   const [stats, setStats] = useState<UsageStats | null>(null);
   const [loading, setLoading] = useState(true);
+  /** 已有数据时的再统计（点「刷新」）：只禁用刷新按钮、保留旧数据渲染 */
+  const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
   const [range, setRange] = useState<Range>("7d");
   const [projSort, setProjSort] = useState<SortKey>("tokens");
   const [hoverDay, setHoverDay] = useState<number | null>(null);
 
+  /** 是否已成功拿到过一次数据：决定刷新是「整块占位」还是「原地刷新」。
+   *  用 ref 而非 state——它只在 effect 里读一次，不该触发重渲染。 */
+  const hasDataRef = useRef(false);
+
+  /** 刷新**不能**退回整块 loading 占位态：占位态只有一行「统计中…」，
+   *  而 modal 是 flex 垂直居中的定高内容盒，内容一塌，面板上下边界同时向中心收，
+   *  刷新按钮就从鼠标脚下移走——连点的第二下落到遮罩上（`.overlay` 的
+   *  onMouseDown = 关闭），整个统计面板被误关。故第二次起只标记 refreshing，
+   *  旧数据继续渲染（高度不变），按钮原地禁用并显示「刷新中…」，
+   *  连点期间鼠标始终落在面板内。 */
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
+    if (hasDataRef.current) {
+      setRefreshing(true);
+    } else {
+      setLoading(true);
+    }
     setLoadError(null);
     api
       .getUsageStats()
       .then((s) => {
-        if (!cancelled) setStats(s);
+        if (cancelled) return;
+        hasDataRef.current = true;
+        setStats(s);
       })
       .catch((e) => {
         if (!cancelled) setLoadError(String(e));
       })
       .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (cancelled) return;
+        setLoading(false);
+        setRefreshing(false);
       });
     return () => {
       cancelled = true;
@@ -413,20 +433,24 @@ export default function StatsDialog({ onClose }: Props) {
           className="btn"
           style={{ marginLeft: "auto" }}
           onClick={() => setReloadKey((k) => k + 1)}
+          disabled={refreshing}
           title="重新统计（仅重扫有变更的会话文件）"
         >
-          刷新
+          {refreshing ? "刷新中…" : "刷新"}
         </button>
       </div>
 
-      {loading ? (
+      {!stats && loading ? (
         <div className="stats-empty">统计中…（首次需扫描所有会话文件）</div>
-      ) : loadError ? (
+      ) : !stats && loadError ? (
         <div className="stats-empty">加载失败：{loadError}</div>
       ) : !stats || stats.sessions === 0 ? (
         <div className="stats-empty">暂无可统计的会话数据</div>
       ) : (
         <>
+          {/* 刷新失败：旧数据继续渲染（面板不塌缩），错误就近提示在内容顶部 */}
+          {loadError && <div className="stats-error">刷新失败：{loadError}</div>}
+
           {/* ---- 汇总卡 ---- */}
           <div className="stat-cards">
             <StatCard
