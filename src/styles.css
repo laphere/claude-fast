@@ -1243,6 +1243,19 @@ mark {
   font-size: 12.5px;
 }
 
+/* 刷新失败：旧数据继续渲染（面板高度不变，避免内容塌缩导致误关面板），
+   错误就近贴在内容顶部而非替换整块内容 */
+.stats-error {
+  margin-bottom: 12px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
 .stat-cards {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
