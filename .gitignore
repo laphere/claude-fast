@@ -25,6 +25,9 @@ Thumbs.db
 # codegraph 代码图谱索引（本地重建产物，不入库）
 .codegraph/
 
+# AI 助手工作目录（项目备忘 / 本地验证产物，不入库）
+.workbuddy/
+
 # Electron 版构建产物（claude-fast-electron 分支）
 dist-electron/
 release/
