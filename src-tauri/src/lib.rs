@@ -250,11 +250,49 @@ const MAX_SEARCH_HITS: usize = 200;
 
 // ---------------- 路径定位 ----------------
 
-/// 判断目录是否为数据根：新布局（config.json + scripts/ 子目录）或旧布局
-/// （根目录直接放 claude-claude-fast.<bat|sh>）
+/// 判断目录是否为数据根：目录下有 config.json（去脚本化后的便携标记——
+/// 新便携用户没有 scripts/ 目录，旧版「config.json + scripts/」双条件会让
+/// 便携布局静默失效、退到 %APPDATA% 安装模式），或旧布局标记
+/// claude-claude-fast.<bat|sh>（脚本时代遗留）。
+/// 无 scripts/ 时 config.json 须通过 looks_like_our_config 内容校验：
+/// 便携判定会向上扫到 exe 的 6 级祖先，若把其他工具的 config.json 误认成
+/// 数据根，首次保存配置会把它整文件覆写、原件降级 .bak
 fn is_root_dir(dir: &Path) -> bool {
-    (dir.join("config.json").is_file() && dir.join(SCRIPTS_DIR).is_dir())
+    (dir.join("config.json").is_file()
+        && (dir.join(SCRIPTS_DIR).is_dir() || looks_like_our_config(dir)))
         || dir.join(legacy_marker()).is_file()
+}
+
+/// config.json 是否像本程序的配置：须为 JSON 对象，且要么是空对象
+/// （`{}`——用户显式引导便携模式的正规姿势，外来工具的配置不会恰好是
+/// 空对象），要么含本程序任一已知字段（从旧数据目录/旧机器拷来的 config
+/// 必然满足其一）。键名含 serde alias（favorites）；给 Config 加字段时
+/// 记得同步 KNOWN_KEYS。
+fn looks_like_our_config(dir: &Path) -> bool {
+    let Ok(raw) = fs::read(dir.join("config.json")) else {
+        return false;
+    };
+    let Ok(v) = serde_json::from_slice::<serde_json::Value>(strip_bom(&raw)) else {
+        return false;
+    };
+    let Some(obj) = v.as_object() else {
+        return false;
+    };
+    if obj.is_empty() {
+        return true;
+    }
+    const KNOWN_KEYS: [&str; 9] = [
+        "order",
+        "favorites",
+        "projects",
+        "excluded",
+        "dark",
+        "closeAction",
+        "providers",
+        "currentProvider",
+        "pinnedSessions",
+    ];
+    KNOWN_KEYS.iter().any(|k| obj.contains_key(*k))
 }
 
 /// 安装模式数据根：%APPDATA%\claude-fast（Windows）/
@@ -274,10 +312,12 @@ fn app_data_root() -> PathBuf {
 
 /// 定位数据根目录（双模式）：
 /// 1. **便携模式**：exe 所在目录向上逐级查找首个根目录标记
-///    （config.json + scripts/，或旧标记 claude-claude-fast.bat）——
+///    （config.json，或旧标记 claude-claude-fast.bat）——
 ///    开发目录、整体移动的文件夹、绿色版均走此路径。
 /// 2. **安装模式**：找不到便携标记时回退到应用数据目录
-///    （%APPDATA%\claude-fast），首次运行自动创建 scripts/ 子目录。
+///    （%APPDATA%\claude-fast），首次运行自动创建该目录
+///    （scripts/ 是脚本时代遗留，去脚本化后不再创建；存量目录里的
+///    旧脚本保留在磁盘，仅供 ensure_projects_migrated 解析，不删）。
 ///
 /// 返回 (数据根, 是否安装模式)。模式判定必须在查找现场做：
 /// 便携根通常是 exe 的**祖先**目录，「root != exe_dir」恒真，判不出模式
@@ -293,9 +333,10 @@ fn resolve_root_with_mode() -> (PathBuf, bool) {
             None => break,
         }
     }
-    // 安装模式：应用数据目录（幂等创建 scripts/，保证「安装后自动生效」）
+    // 安装模式：现场创建数据根本身（旧版在此顺带创建 scripts/，是其副作用
+    // 保证了首次 save_config 有目录可写——去掉 scripts/ 后创建根目录必须保留）
     let app = app_data_root();
-    let _ = fs::create_dir_all(app.join(SCRIPTS_DIR));
+    let _ = fs::create_dir_all(&app);
     (app, true)
 }
 
@@ -3924,23 +3965,43 @@ mod tests {
 
     #[test]
     fn resolve_root_finds_project() {
-        let root = resolve_root_dir();
-        // 便携模式（开发目录）与安装模式（数据目录）的公共不变量：scripts/ 必在
-        // （安装模式幂等创建；config.json 只在首次保存配置后出现，全新环境无，不在此断言）
-        assert!(root.join(SCRIPTS_DIR).is_dir());
+        let (root, install) = resolve_root_with_mode();
+        if install {
+            // 安装模式：根即应用数据目录，且由 resolve 现场创建
+            assert_eq!(root, app_data_root());
+            assert!(root.is_dir());
+        } else {
+            // 便携模式：结果必须满足便携判定条件自身
+            assert!(is_root_dir(&root));
+        }
     }
 
     #[test]
     fn is_root_dir_detects_layouts() {
         let root = temp_root("root");
-        // 新布局
+        // 空目录：非根
+        assert!(!is_root_dir(&root));
+        // 去脚本化布局：config.json 即便携标记（新便携用户没有 scripts/ 目录；
+        // 旧版双条件会让这种布局静默退到 %APPDATA% 安装模式）
         fs::write(root.join("config.json"), "{}").unwrap();
+        assert!(is_root_dir(&root));
+        // 含本项目已知字段（从旧数据目录拷来的 config）：同样认定
+        fs::write(root.join("config.json"), r#"{"projects":["D:\\foo"],"order":[]}"#).unwrap();
+        assert!(is_root_dir(&root));
+        // 外来工具的 config.json：字段对不上 → 不是根
+        // （防误认成数据根后首次保存把它整文件覆写、原件降级 .bak）
+        fs::write(root.join("config.json"), r#"{"apiKey":"xxx","port":8080}"#).unwrap();
+        assert!(!is_root_dir(&root));
+        // 非 JSON（坏文件）：不是根
+        fs::write(root.join("config.json"), "not json at all").unwrap();
+        assert!(!is_root_dir(&root));
+        // 脚本时代布局（config.json + scripts/）：存量便携目录直接认定，免内容校验
+        fs::write(root.join("config.json"), r#"{"apiKey":"xxx"}"#).unwrap();
         fs::create_dir_all(root.join(SCRIPTS_DIR)).unwrap();
         assert!(is_root_dir(&root));
-        // 只有 config.json 没有 scripts 目录 → 不是根
+        // 旧布局：claude-claude-fast.<ext>（标记名随平台 bat/sh），无 config.json 也认
         fs::remove_dir_all(root.join(SCRIPTS_DIR)).unwrap();
-        assert!(!is_root_dir(&root));
-        // 旧布局：claude-claude-fast.<ext>（标记名随平台 bat/sh）
+        fs::remove_file(root.join("config.json")).unwrap();
         fs::write(root.join(legacy_marker()), "").unwrap();
         assert!(is_root_dir(&root));
         fs::remove_dir_all(&root).unwrap();

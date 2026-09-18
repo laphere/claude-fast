@@ -73,8 +73,8 @@
 
 `resolve_root_dir()` 自动区分：
 
-1. **便携模式**：exe 所在目录向上（最多 6 级）查找含 `config.json` + `scripts/` 的目录（或旧标记 `claude-claude-fast.bat`）——开发目录、整体移动的文件夹、绿色版走此路径。
-2. **安装模式**：找不到时回退 `%APPDATA%\claude-fast`（macOS `~/Library/Application Support/claude-fast`），首次运行自动创建 `scripts/`。
+1. **便携模式**：exe 所在目录向上（最多 6 级）查找含 `config.json` 的目录（或旧标记 `claude-claude-fast.bat`）——开发目录、整体移动的文件夹、绿色版走此路径。**去脚本化后 `config.json` 即便携标记**（旧版要求 config.json + scripts/ 双条件，会让没有 scripts/ 的新便携目录静默退到安装模式），但须过 `looks_like_our_config` **内容校验**（JSON 对象，且为空对象或含本项目任一已知字段 order/favorites/projects/excluded/dark/closeAction/providers/currentProvider/pinnedSessions——**给 Config 加字段必须同步 KNOWN_KEYS**；便携判定向上扫 6 级祖先，不校验会把其他工具的 config.json 误认成数据根、首次保存配置将其整文件覆写原件降级 .bak）；config.json + scripts/ 同在的存量目录免校验直接认定；存量 scripts/ 不删，仅供旧脚本迁移解析。
+2. **安装模式**：找不到时回退 `%APPDATA%\claude-fast`（macOS `~/Library/Application Support/claude-fast`），首次运行自动创建数据根本身（**不再创建 scripts/**；旧版创建 scripts/ 的副作用——顺带建出数据根、保证首次 save_config 有目录可写——已改为显式 `create_dir_all(app)` 保留）。
 
 ## 铁律
 
@@ -97,9 +97,9 @@
 ```bash
 npm install                  # 前端依赖
 npm run tauri dev            # 开发模式（热更新）
-cd src-tauri && cargo test   # 后端单元测试（146 个：路径解析/配置/扫描/根目录定位/会话管理/mangle/sh_quote/回收站/台账/供应商/模型拉取/版本升级）
+cd src-tauri && cargo test   # 后端单元测试（全平台共 154 个定义，Windows 实测 148 个：路径解析/配置/扫描/根目录定位/会话管理/mangle/sh_quote/回收站/台账/供应商/模型拉取/版本升级；差额为平台条件用例）
 npm run tauri build          # 生产构建
 # macOS 通吃包（Intel + Apple Silicon）：npm run tauri build -- --target universal-apple-darwin
 ```
 
-构建产物：Windows 为 NSIS 安装包（`src-tauri/target/release/bundle/nsis/Claude助手_<版本>_x64-setup.exe`，`installMode: perMachine`、安装界面中英双语、免管理员），安装到 `%LOCALAPPDATA%\Programs\Claude助手`；macOS 为 `bundle/macos/Claude助手.app` 与 `bundle/dmg/*.dmg`。便携 exe 从 `src-tauri/target/release/` 复制（须与 config.json/scripts 同层）。
+构建产物：Windows 为 NSIS 安装包（`src-tauri/target/release/bundle/nsis/Claude助手_<版本>_x64-setup.exe`，`installMode: perMachine`、安装界面中英双语、免管理员），安装到 `%LOCALAPPDATA%\Programs\Claude助手`；macOS 为 `bundle/macos/Claude助手.app` 与 `bundle/dmg/*.dmg`。便携 exe 从 `src-tauri/target/release/` 复制（须与 config.json 同层——放一个空对象 `{}` 或从旧数据目录拷来的 config.json 即被识别为便携模式，scripts/ 不再需要）。
