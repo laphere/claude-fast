@@ -227,7 +227,7 @@ export default function App() {
     api.checkClaude().then(setClaudeOk).catch(() => setClaudeOk(false));
     // 供应商清单（首次调用会把 live 配置收编为 default 供应商）；失败不阻塞主流程
     api.providerList().then(setProviderState).catch(() => {});
-    // 安装模式首次启动：提示数据目录位置（scripts/config 实际存储处）
+    // 安装模式首次启动：提示数据目录位置（config/台账/回收站实际存储处）
     api
       .getDataRoot()
       .then((info) => {
