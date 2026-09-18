@@ -119,6 +119,10 @@ export default function BatchAddDialog({ onClose, onDone, onRefresh }: Props) {
         ),
       );
       setResult(`已删除 ${n} 份失效项目的会话数据。`);
+      // 后端 purge_claude_project_data 会按路径 drop 掉失效项目的置顶条目
+      // （改的是磁盘 config），宿主必须重载，否则内存里的置顶清单真源过期、
+      // 下次 persistConfig 会把死条目写回
+      onRefresh?.();
     } catch (e) {
       setResult("删除失效数据失败：" + String(e));
     } finally {
