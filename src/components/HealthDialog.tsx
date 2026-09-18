@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import type { ClaudeUpdateStatus, Project } from "../types";
 import { api } from "../lib/api";
 import Modal from "./Modal";
+import { CheckIcon, XIcon } from "./Icons";
 
 interface Props {
   items: Project[];
@@ -67,7 +68,7 @@ export default function HealthDialog({ items, claudeOk, onClose, onDelete }: Pro
       if (next?.updateAvailable) {
         setUpgradeTip({ kind: "warn", text: "升级命令已执行，但版本未变化", log: msg });
       } else if (next?.currentVersion) {
-        setUpgradeTip({ kind: "ok", text: `✓ 已升级到 ${next.currentVersion}` });
+        setUpgradeTip({ kind: "ok", text: `已升级到 ${next.currentVersion}` });
       } else {
         setUpgradeTip({ kind: "warn", text: "升级命令已执行，但重新检查失败", log: msg });
       }
@@ -84,12 +85,26 @@ export default function HealthDialog({ items, claudeOk, onClose, onDelete }: Pro
   };
 
   const missing = (checked ?? []).filter((l) => l.healthy === false);
-  const summary =
+  const summary: ReactNode =
     checked === null
       ? "正在检查项目目录…"
       : missing.length === 0
-        ? "✓ 全部项目目录均存在"
-        : `✗ 以下 ${missing.length} 个项目目录已不存在`;
+        ? (
+            <>
+              <span className="inline-icon">
+                <CheckIcon size={11} />
+              </span>{" "}
+              全部项目目录均存在
+            </>
+          )
+        : (
+            <>
+              <span className="inline-icon">
+                <XIcon size={11} />
+              </span>{" "}
+              以下 {missing.length} 个项目目录已不存在
+            </>
+          );
 
   const badge = verStatus
     ? verStatus.updateAvailable
@@ -104,7 +119,24 @@ export default function HealthDialog({ items, claudeOk, onClose, onDelete }: Pro
       <div className="health">
         <div className="health-summary">
           <div>
-            claude 命令：{claudeOk === null ? "检查中…" : claudeOk ? "✓ 可用" : "✗ 未找到"}
+            claude 命令：
+            {claudeOk === null ? (
+              "检查中…"
+            ) : claudeOk ? (
+              <>
+                <span className="inline-icon">
+                  <CheckIcon size={11} />
+                </span>{" "}
+                可用
+              </>
+            ) : (
+              <>
+                <span className="inline-icon">
+                  <XIcon size={11} />
+                </span>{" "}
+                未找到
+              </>
+            )}
           </div>
           <div className={missing.length ? "text-danger" : ""}>{summary}</div>
         </div>

@@ -100,7 +100,7 @@ export default function ContextMenu({
               </button>
               <div className="context-sep" />
               <button className="context-item context-danger" onClick={() => { onRemove(project); onClose(); }}>
-                            {project.healthy === false ? "✗ 移除（目录已失效）" : "从列表移除"}
+                            {project.healthy === false ? "移除（目录已失效）" : "从列表移除"}
               </button>
               <div className="context-sep" />
             </>

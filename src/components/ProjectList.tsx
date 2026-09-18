@@ -2,6 +2,7 @@ import { useCallback, useState } from "react";
 import type { DragEvent } from "react";
 import type { Project, SessionInfo } from "../types";
 import SessionRow from "./SessionRow";
+import { FolderIcon, MoreIcon, PlusIcon } from "./Icons";
 
 interface Props {
   items: Project[];
@@ -99,7 +100,9 @@ export default function ProjectList({
     const searching = !dragEnabled;
     return (
       <div className="empty">
-        <div className="empty-icon">🗂</div>
+        <div className="empty-icon">
+          <FolderIcon size={34} />
+        </div>
         <div>{searching ? "没有找到匹配的项目" : "还没有项目"}</div>
         <div className="empty-sub">
           {searching
@@ -162,7 +165,7 @@ export default function ProjectList({
                       onContextMenu(e.clientX, e.clientY, l.key);
                     }}
                   >
-                    ⋯
+                    <MoreIcon size={15} />
                   </button>
                   <button
                     className="row-icon row-icon-add"
@@ -172,7 +175,7 @@ export default function ProjectList({
                       onLaunch(l.key);
                     }}
                   >
-                    +
+                    <PlusIcon size={15} />
                   </button>
                 </div>
               )}

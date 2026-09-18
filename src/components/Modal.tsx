@@ -1,4 +1,5 @@
 import { useEffect, useRef, type ReactNode } from "react";
+import { XIcon } from "./Icons";
 
 interface Props {
   title: string;
@@ -46,7 +47,7 @@ export default function Modal({ title, width = 520, onClose, children, footer }:
         <div className="modal-header">
           <span>{title}</span>
           <button className="modal-close" onClick={onClose} title="关闭">
-            ×
+            <XIcon size={14} />
           </button>
         </div>
         <div className="modal-body">{children}</div>
