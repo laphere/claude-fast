@@ -537,6 +537,48 @@ export default function App() {
     [items],
   );
 
+  // ---------- 窗口聚焦自动刷新 ----------
+
+  /** 刷新当前展开项目的会话列表 + 置顶区（回收站变更 / 窗口聚焦共用） */
+  const refreshVisibleLists = useCallback(() => {
+    if (expandedKey) refreshSessions(expandedKey);
+    void refreshPinned();
+  }, [expandedKey, refreshSessions, refreshPinned]);
+
+  // 终端里跑完 claude 回到 app：聚焦时刷新上面两处（新会话/新标题回来即见）。
+  // 查看器内容不自动重载——正在阅读的会话被追加内容会把滚动位置拽走，
+  // 保持过期优于打扰阅读（查看器自带刷新按钮）。
+  // 订阅一次、回调走 latest-ref：refreshSessions 随 items 变化，若放进 deps
+  // 会在每次清单/健康检查回填后重订阅（两次 IPC）且节流窗口被重置；
+  // 1.5s 节流防 alt-tab 抖动连刷；at 初值取订阅时刻，吞掉窗口创建期的
+  // 一次性 focus 事件，避免与挂载时的 load() 重复拉取。
+  const visibleListsRef = useRef({ refresh: refreshVisibleLists, at: 0 });
+  useEffect(() => {
+    visibleListsRef.current.refresh = refreshVisibleLists;
+  });
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+    visibleListsRef.current.at = Date.now();
+    getCurrentWindow()
+      .onFocusChanged(({ payload: focused }) => {
+        if (!focused) return;
+        const now = Date.now();
+        if (now - visibleListsRef.current.at < 1500) return;
+        visibleListsRef.current.at = now;
+        visibleListsRef.current.refresh();
+      })
+      .then((u) => {
+        if (disposed) u();
+        else unlisten = u;
+      })
+      .catch(() => {});
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
   const deleteSession = useCallback(
     async (key: string, session: SessionInfo) => {
       try {
@@ -934,12 +976,9 @@ export default function App() {
       {trashOpen && (
         <TrashDialog
           onClose={() => setTrashOpen(false)}
-          onChanged={() => {
-            // 回收站操作后刷新当前展开项目的会话列表
-            if (expandedKey) refreshSessions(expandedKey);
-            // 恢复的会话可能命中置顶条目（条目在删除时保留）→ 重拉置顶区
-            refreshPinned();
-          }}
+          // 回收站操作后：展开项目的会话列表 + 置顶区（恢复的会话可能命中
+          // 删除时保留的置顶条目）——与窗口聚焦刷新共用一个回调
+          onChanged={refreshVisibleLists}
           onToast={showToast}
         />
       )}
