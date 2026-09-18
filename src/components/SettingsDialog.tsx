@@ -113,12 +113,12 @@ export default function SettingsDialog({ closeAction, onClose, onSave }: Props) 
           </div>
         </label>
       ))}
-      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+      <div className="form-actions">
         <button className="btn" onClick={onClose}>
           取消
         </button>
         <button
-          className="btn primary"
+          className="btn btn-primary"
           disabled={saving}
           onClick={async () => {
             setSaving(true);

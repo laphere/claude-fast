@@ -17,7 +17,7 @@ export default function CloseChoiceDialog({ onClose, onChoose }: Props) {
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         <button
-          className="btn primary"
+          className="btn btn-primary"
           onClick={async () => {
             await onChoose("minimize", remember);
           }}

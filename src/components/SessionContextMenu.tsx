@@ -65,7 +65,7 @@ export default function SessionContextMenu({
           onClose();
         }}
       >
-        ▶ 在终端中继续对话
+        在终端中继续对话
       </button>
       <button
         className="context-item"

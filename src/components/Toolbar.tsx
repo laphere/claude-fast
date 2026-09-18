@@ -1,4 +1,4 @@
-import { BarChartIcon, SearchIcon, TrashIcon } from "./Icons";
+import { BarChartIcon, FolderPlusIcon, PlusIcon, SearchIcon, TrashIcon, XIcon } from "./Icons";
 
 interface Props {
   search: string;
@@ -26,15 +26,17 @@ export default function Toolbar(props: Props) {
         />
         {search && (
           <button className="search-clear" onClick={() => onSearch("")} title="清除">
-            ×
+            <XIcon size={12} />
           </button>
         )}
       </div>
       <div className="toolbar-actions">
         <button className="btn" onClick={onNew}>
-          新 建
+          <PlusIcon />
+          新建
         </button>
         <button className="btn" onClick={onBatch}>
+          <FolderPlusIcon />
           批量添加
         </button>
         <button className="btn" onClick={onTrash} title="删除的会话在这里，可恢复">

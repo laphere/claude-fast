@@ -4,12 +4,17 @@ import Modal from "./Modal";
 import ConfirmDialog from "./ConfirmDialog";
 import PresetPicker, { CATEGORY_LABEL } from "./PresetPicker";
 import {
+  ChevronDownIcon,
+  ChevronRightIcon,
+  ChevronUpIcon,
   CopyIcon,
+  ExternalLinkIcon,
   EyeIcon,
   EyeOffIcon,
   GripIcon,
   PencilIcon,
   PlayIcon,
+  RefreshIcon,
   TrashIcon,
 } from "./Icons";
 import { api } from "../lib/api";
@@ -952,7 +957,7 @@ export default function ProviderDialog({ state, onClose, onChanged, toast }: Pro
                   className="provider-link"
                   onClick={() => api.openUrl(presetApiKeyUrl).catch((e) => setFormError(String(e)))}
                 >
-                  获取 API Key ↗
+                  获取 API Key <ExternalLinkIcon size={11} />
                 </button>
               )}
             </label>
@@ -990,7 +995,8 @@ export default function ProviderDialog({ state, onClose, onChanged, toast }: Pro
               className="provider-adv-toggle"
               onClick={() => setAdvancedOpen((o) => !o)}
             >
-              {advancedOpen ? "▾" : "▸"} 高级选项（模型映射）
+              {advancedOpen ? <ChevronDownIcon size={11} /> : <ChevronRightIcon size={11} />}
+              高级选项（模型映射）
             </button>
             {advancedOpen && (
               <div className="provider-adv-body">
@@ -1267,7 +1273,7 @@ function ModelSelect({
         disabled={!hasList}
         onClick={() => setOpen((o) => !o)}
       >
-        {open ? "▴" : "▾"}
+        {open ? <ChevronUpIcon size={12} /> : <ChevronDownIcon size={12} />}
       </button>
       {open && (
         <div className="model-pop">
@@ -1336,7 +1342,7 @@ function UsageStrip({
       onClick={onRefresh}
       disabled={loading}
     >
-      ⟳
+      <RefreshIcon size={12} />
     </button>
   );
 

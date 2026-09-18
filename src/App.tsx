@@ -10,6 +10,7 @@ import type {
   SessionInfo,
 } from "./types";
 import Header from "./components/Header";
+import { MessageCircleIcon } from "./components/Icons";
 import Toolbar from "./components/Toolbar";
 import ProjectList from "./components/ProjectList";
 import PinnedSessions from "./components/PinnedSessions";
@@ -787,8 +788,10 @@ export default function App() {
           ))}
           {chats.length === 0 && (
             <div className="viewer-empty" style={{ flex: 1 }}>
-              <div className="empty-icon">💬</div>
-              <div>点击项目行 💬 新建对话，或点击会话直接继续</div>
+              <div className="empty-icon">
+                <MessageCircleIcon size={34} />
+              </div>
+              <div>点击项目行的对话图标新建对话，或点击会话直接继续</div>
               <div className="empty-sub">可同时打开多个对话，标签页切换</div>
             </div>
           )}

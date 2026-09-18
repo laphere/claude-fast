@@ -3,6 +3,7 @@ import {
   providerPresets,
   type ProviderCategory,
 } from "../config/claudeProviderPresets";
+import { ChevronDownIcon, ChevronRightIcon } from "./Icons";
 
 interface Props {
   /** 当前选中的预设名（"" = 自定义/空白） */
@@ -71,7 +72,9 @@ export default function PresetPicker({ value, onChange }: Props) {
         <span className={value ? "" : "preset-placeholder"}>
           {value || "选择预设模板（可搜索）"}
         </span>
-        <span className="preset-arrow">{open ? "▾" : "▸"}</span>
+        <span className="preset-arrow">
+          {open ? <ChevronDownIcon size={12} /> : <ChevronRightIcon size={12} />}
+        </span>
       </button>
 
       {open && (

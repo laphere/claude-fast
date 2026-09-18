@@ -6,6 +6,14 @@ import { useMemo, type ReactNode } from "react";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import type { ContentBlock } from "../types";
+import {
+  BrainIcon,
+  ChevronRightIcon,
+  FileDiffIcon,
+  FileTextIcon,
+  TriangleAlertIcon,
+  WrenchIcon,
+} from "./Icons";
 
 /** ISO 时间戳 → HH:MM */
 export function formatTime(iso: string | null | undefined): string {
@@ -188,7 +196,9 @@ export function CodeChangeCard({
     return (
       <details className="diff-card" open={false}>
         <summary className="diff-summary">
-          <span className="diff-icon">●</span>
+          <span className="diff-icon">
+            <FileDiffIcon size={12} />
+          </span>
           <span className="diff-title">Edit</span>
           <span className="diff-path">{filePath}</span>
         </summary>
@@ -210,7 +220,9 @@ export function CodeChangeCard({
     return (
       <details className="diff-card" open={false}>
         <summary className="diff-summary">
-          <span className="diff-icon">●</span>
+          <span className="diff-icon">
+            <FileDiffIcon size={12} />
+          </span>
           <span className="diff-title">Write</span>
           <span className="diff-path">{filePath}</span>
         </summary>
@@ -235,7 +247,9 @@ export function CodeChangeCard({
     return (
       <details className="diff-card" open={false}>
         <summary className="diff-summary">
-          <span className="diff-icon">●</span>
+          <span className="diff-icon">
+            <FileDiffIcon size={12} />
+          </span>
           <span className="diff-title">MultiEdit</span>
           <span className="diff-path">{filePath}</span>
         </summary>
@@ -294,7 +308,9 @@ export function ToolUseRow({
   return (
     <details className="tool-row" open={false}>
       <summary className="tool-summary">
-        <span className="tool-icon">🔧</span>
+        <span className="tool-icon">
+          <WrenchIcon size={12} />
+        </span>
         <span className="tool-name">{toolSummary(name, block.input)}</span>
         <span className={`tool-status ${isError ? "tool-error" : ""}`}>
           {isError ? "• 出错" : hasResult ? "• done" : ""}
@@ -323,7 +339,9 @@ export function ToolResultCard({
   return (
     <details className="tool-result" open={false}>
       <summary className="tool-summary">
-        <span className="tool-icon">{block.isError ? "⚠️" : "📄"}</span>
+        <span className="tool-icon">
+          {block.isError ? <TriangleAlertIcon size={12} /> : <FileTextIcon size={12} />}
+        </span>
         <span className="tool-name">
           {block.isError ? "工具执行出错" : `${toolName ?? "工具"} 结果`}
         </span>
@@ -337,7 +355,12 @@ export function ToolResultCard({
 export function ThinkingBlock({ text }: { text: string }) {
   return (
     <details className="thinking-block">
-      <summary>💭 思考过程</summary>
+      <summary>
+        <span className="tool-icon">
+          <BrainIcon size={12} />
+        </span>
+        思考过程
+      </summary>
       <div className="thinking-body">
         <MarkdownText text={text} />
       </div>
@@ -411,7 +434,9 @@ export function ActivityGroup({
   return (
     <details className="activity">
       <summary className="activity-summary">
-        <span className="activity-caret">▶</span>
+        <span className="activity-caret">
+          <ChevronRightIcon size={10} />
+        </span>
         <span className="activity-label">{summary}</span>
         {running && <span className="activity-running">…</span>}
       </summary>

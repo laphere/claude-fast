@@ -80,6 +80,24 @@
   padding: 0;
 }
 
+/* button 不继承 body 字体（UA 默认），未显式设 font-family 的按钮类会走浏览器默认；
+   统一继承。:focus-visible 只对键盘导航显示焦点环，鼠标点击不受影响 */
+button {
+  font-family: inherit;
+}
+
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* 行内小图标（状态文字里的 ✓/✗/⚠）：inline-flex + 下沉对齐文字基线 */
+.inline-icon {
+  display: inline-flex;
+  align-items: center;
+  vertical-align: -2px;
+}
+
 html,
 body,
 #root {
@@ -269,6 +287,10 @@ code {
   right: 6px;
   top: 50%;
   transform: translateY(-50%);
+  /* 字符 × 换 SVG 后靠 flex 居中（font-size 对 svg 失效） */
+  display: flex;
+  align-items: center;
+  justify-content: center;
   border: none;
   background: none;
   color: var(--dim);
@@ -765,12 +787,17 @@ code {
 
 .viewer-load-more {
   align-self: center;
+  /* 字符 ↑↓ 换 SVG：flex 居中 + 图标间距 */
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   font-size: 12px;
   color: var(--accent);
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 999px;
-  padding: 5px 14px;
+  /* 墨迹补偿，勿改对称（不设 line-height 即 normal，墨迹偏下 1px，上减下加） */
+  padding: 4px 14px 6px;
   cursor: pointer;
   transition: border-color 0.12s, color 0.12s;
 }
@@ -1708,6 +1735,11 @@ mark {
 
 .tool-icon {
   flex-shrink: 0;
+  /* emoji 换 SVG：inline-flex 兼容 flex 子项（tool-summary 行）与行内文本
+     （thinking summary）两种上下文；vertical-align 仅行内上下文生效 */
+  display: inline-flex;
+  align-items: center;
+  vertical-align: -2px;
 }
 
 .tool-name {
@@ -1769,6 +1801,9 @@ mark {
   color: var(--accent);
   font-weight: 700;
   flex-shrink: 0;
+  /* 字符 ● 换 SVG 后靠 flex 居中 */
+  display: flex;
+  align-items: center;
 }
 
 .diff-title {
@@ -1910,11 +1945,6 @@ mark {
   font-size: 12px;
 }
 
-.session-resume:hover {
-  color: var(--accent);
-  background: var(--accent-soft);
-}
-
 .trash-row {
   display: flex;
   align-items: center;
@@ -1927,13 +1957,15 @@ mark {
 
 .trash-restore {
   flex-shrink: 0;
-  padding: 5px 12px;
+  /* 墨迹补偿，勿改对称（字号 11.5px 与 .btn-sm 同档：line-height 1 墨迹偏上） */
+  padding: 6px 12px 4px;
   font-size: 11.5px;
 }
 
 .trash-purge {
   flex-shrink: 0;
-  padding: 5px 12px;
+  /* 墨迹补偿，勿改对称（同 .trash-restore） */
+  padding: 6px 12px 4px;
   font-size: 11.5px;
 }
 
@@ -1966,6 +1998,8 @@ mark {
 }
 
 .empty-icon {
+  /* emoji 换 SVG 后以 inline-flex 挂载（font-size 不作用于 svg） */
+  display: inline-flex;
   font-size: 34px;
   margin-bottom: 10px;
   opacity: 0.6;
@@ -2078,6 +2112,10 @@ mark {
 }
 
 .modal-close {
+  /* 字符 × 换 SVG 后靠 flex 居中 */
+  display: flex;
+  align-items: center;
+  justify-content: center;
   border: none;
   background: none;
   color: var(--muted);
@@ -2882,6 +2920,9 @@ mark {
 .activity-caret {
   flex-shrink: 0;
   font-size: 9px;
+  /* 字符 ▶ 换 SVG 后靠 flex 居中；rotate(90deg) 作用在本元素，展开动画不变 */
+  display: flex;
+  align-items: center;
   transition: transform 0.12s;
 }
 
@@ -3018,6 +3059,10 @@ mark {
 
 .chat-tab-close {
   flex-shrink: 0;
+  /* 字符 ✕ 换 SVG 后靠 flex 居中 */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border: none;
   background: none;
   color: var(--dim);
@@ -3358,6 +3403,10 @@ mark {
 }
 
 .provider-link {
+  /* 行内文字链接 + 尾部小图标（↗ 换 SVG） */
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
   border: none;
   background: none;
   color: var(--accent);
@@ -3403,6 +3452,9 @@ mark {
 .preset-arrow {
   opacity: 0.5;
   flex-shrink: 0;
+  /* 字符 ▾▸ 换 SVG 后靠 flex 居中 */
+  display: flex;
+  align-items: center;
 }
 
 .preset-panel {
@@ -3653,6 +3705,10 @@ mark {
 }
 
 .usage-refresh {
+  /* 字符 ⟳ 换 SVG 后靠 flex 居中；.loading 旋转动画作用在本元素不变 */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border: none;
   background: none;
   color: var(--text);

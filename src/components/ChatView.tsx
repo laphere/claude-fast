@@ -23,7 +23,18 @@ import {
   fmtTokens,
   formatTime,
 } from "./MessageParts";
-import { FileIcon, SearchIcon, StopIcon } from "./Icons";
+import {
+  ArrowDownIcon,
+  ArrowUpIcon,
+  ChevronDownIcon,
+  DownloadIcon,
+  FileIcon,
+  MessageCircleIcon,
+  RefreshIcon,
+  SearchIcon,
+  StopIcon,
+  XIcon,
+} from "./Icons";
 import {
   PlanChoices,
   PlanOptionList,
@@ -1286,7 +1297,7 @@ export default function ChatView({
     if (hasMore) {
       nodes.push(
         <button key="more" className="viewer-load-more" onClick={() => void loadMore()}>
-          ↑ 加载更早的消息（还剩 {histOffset} 条）
+          <ArrowUpIcon size={12} /> 加载更早的消息（还剩 {histOffset} 条）
         </button>,
       );
     } else if (histOffset > 0) {
@@ -1407,7 +1418,7 @@ export default function ChatView({
           className="viewer-load-more"
           onClick={() => void loadLater()}
         >
-          ↓ 加载更晚的消息（还剩 {total - histOffset - history.length} 条）
+          <ArrowDownIcon size={12} /> 加载更晚的消息（还剩 {total - histOffset - history.length} 条）
         </button>,
       );
     }
@@ -1470,7 +1481,9 @@ export default function ChatView({
                   }}
                   title="导出会话内容"
                 >
-                  导出 ▾
+                  <DownloadIcon />
+                  导出
+                  <ChevronDownIcon size={11} />
                 </button>
                 {exportMenuOpen && (
                   <>
@@ -1488,6 +1501,7 @@ export default function ChatView({
                 onClick={refreshHistory}
                 title="重新读取会话记录（清空本页实时区，以 jsonl 为准）"
               >
+                <RefreshIcon />
                 刷新
               </button>
             </>
@@ -1515,7 +1529,7 @@ export default function ChatView({
                 : ""}
           </span>
           <button className="btn" onClick={() => setSearchOpen(false)} title="关闭搜索">
-            ✕
+            <XIcon />
           </button>
           {searchKeyword.trim() && searchResults && searchResults.length > 0 && (
             <div className="search-results">
@@ -1582,7 +1596,9 @@ export default function ChatView({
             <div className="viewer-empty">加载历史消息…</div>
           ) : history.length === 0 && items.length === 0 ? (
             <div className="viewer-empty">
-              <div className="empty-icon">💬</div>
+              <div className="empty-icon">
+                <MessageCircleIcon size={34} />
+              </div>
               <div>{session ? "继续这个对话，输入第一条消息" : "输入消息，开始新对话"}</div>
               <div className="empty-sub">对话记录保存到 Claude Code 会话目录，终端里也能继续</div>
             </div>

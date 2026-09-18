@@ -6,6 +6,7 @@
  */
 import { useEffect, useRef, useState } from "react";
 import type { WheelEvent } from "react";
+import { XIcon } from "./Icons";
 
 interface Tab {
   id: string;
@@ -99,7 +100,7 @@ export default function ChatTabs({
                 onClose(t.id);
               }}
             >
-              ✕
+              <XIcon size={10} />
             </button>
           </div>
         );
