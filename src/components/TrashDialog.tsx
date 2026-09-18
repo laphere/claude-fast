@@ -64,6 +64,9 @@ export default function TrashDialog({ onClose, onChanged, onToast }: Props) {
     try {
       await api.purgeSession(item.file);
       onToast(`已永久删除会话「${item.title}」`);
+      // 彻底删除后后端会 prune 掉失效置顶条目（改的是磁盘 config），
+      // 宿主必须重新读盘同步置顶清单真源，否则下次保存会把死条目写回
+      onChanged();
       await load();
     } catch (e) {
       onToast("删除失败：" + String(e));
@@ -78,6 +81,7 @@ export default function TrashDialog({ onClose, onChanged, onToast }: Props) {
       const count = await api.purgeTrash();
       onToast(`已清空回收站（${count} 个会话已彻底删除）`);
       setConfirmPurgeAll(false);
+      onChanged(); // 同上：清空同样会 prune 失效置顶条目
       await load();
     } catch (e) {
       onToast("清空失败：" + String(e));

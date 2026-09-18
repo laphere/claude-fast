@@ -539,11 +539,35 @@ export default function App() {
 
   // ---------- 窗口聚焦自动刷新 ----------
 
-  /** 刷新当前展开项目的会话列表 + 置顶区（回收站变更 / 窗口聚焦共用） */
+  /** 刷新当前展开项目的会话列表 + 置顶区展示元数据（窗口聚焦 / 回收站变更的公共部分） */
   const refreshVisibleLists = useCallback(() => {
     if (expandedKey) refreshSessions(expandedKey);
     void refreshPinned();
   }, [expandedKey, refreshSessions, refreshPinned]);
+
+  /** 重新读盘同步**置顶清单真源**（config.pinnedSessions）。
+   *  必要性：彻底删除会话时后端 `prune_dead_pins` 直接改磁盘 config，而内存里的
+   *  `pinnedSessions` 是下次 `persistConfig` 的真源——不重新读盘，之后任意一次
+   *  保存（切主题/拖拽排序/置顶取消/保存设置）都会把已清掉的死条目写回
+   *  config.json，与后端 prune 形成「清了又回」。删除失效项目数据的路径同理
+   *  （后端 `drop_pins_for_projects`）。
+   *  注意 `refreshPinned` 只刷置顶区**展示元数据**（pinnedMeta），不碰真源清单，
+   *  两者不能互相替代。 */
+  const syncPinsFromConfig = useCallback(async () => {
+    try {
+      const cfg = await api.loadConfig();
+      setPinnedSessions(cfg.pinnedSessions ?? []);
+    } catch {
+      // 读盘失败就保持现有清单，不打断回收站/清理操作
+    }
+  }, []);
+
+  /** 回收站操作后的刷新：会话列表 + 置顶区 + 置顶清单真源（恢复会让被保留的
+   *  条目复活，彻底删除会让后端把死条目从磁盘清掉） */
+  const refreshAfterTrashChange = useCallback(() => {
+    refreshVisibleLists();
+    void syncPinsFromConfig();
+  }, [refreshVisibleLists, syncPinsFromConfig]);
 
   // 终端里跑完 claude 回到 app：聚焦时刷新上面两处（新会话/新标题回来即见）。
   // 查看器内容不自动重载——正在阅读的会话被追加内容会把滚动位置拽走，
@@ -979,9 +1003,9 @@ export default function App() {
       {trashOpen && (
         <TrashDialog
           onClose={() => setTrashOpen(false)}
-          // 回收站操作后：展开项目的会话列表 + 置顶区（恢复的会话可能命中
-          // 删除时保留的置顶条目）——与窗口聚焦刷新共用一个回调
-          onChanged={refreshVisibleLists}
+          // 恢复与彻底删除都要走这里：前者让被保留的置顶条目复活，后者要
+          // 重新读盘同步被后端 prune 掉的死条目（详见 refreshAfterTrashChange）
+          onChanged={refreshAfterTrashChange}
           onToast={showToast}
         />
       )}
