@@ -884,10 +884,6 @@ export default function App() {
           onOpenFolder={openFolder}
           onCopyPath={copyPath}
           onRemove={confirmRemove}
-          onHealth={() => {
-            setMenu(null);
-            setDialog("health");
-          }}
         />
       )}
 
