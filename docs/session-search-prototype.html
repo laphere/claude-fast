@@ -1,0 +1,874 @@
+<title>项目内会话搜索方案</title>
+<style>
+  /* ============ 外层页面（方案文档本身，双主题自适应宿主） ============ */
+  :root {
+    --page-bg: #f4f2ee;
+    --page-panel: #fbfaf8;
+    --ink: #292524;
+    --ink-muted: #78716c;
+    --ink-dim: #a8a29e;
+    --line: #e2ded4;
+    --accent: #c15f3c;
+    --accent-soft: rgba(193, 95, 60, 0.12);
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --page-bg: #20201d;
+      --page-panel: #262522;
+      --ink: #ece9e2;
+      --ink-muted: #a8a29e;
+      --ink-dim: #6f6a63;
+      --line: #383530;
+      --accent: #d97757;
+      --accent-soft: rgba(217, 119, 87, 0.16);
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --page-bg: #20201d;
+    --page-panel: #262522;
+    --ink: #ece9e2;
+    --ink-muted: #a8a29e;
+    --ink-dim: #6f6a63;
+    --line: #383530;
+    --accent: #d97757;
+    --accent-soft: rgba(217, 119, 87, 0.16);
+    color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  button { font-family: inherit; }
+  button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  [data-icon] { display: inline-flex; align-items: center; flex-shrink: 0; }
+
+  body {
+    font-family: "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+    font-size: 13px;
+    color: var(--ink);
+    background: var(--page-bg);
+    line-height: 1.6;
+  }
+
+  .page { max-width: 1100px; margin: 0 auto; padding: 30px 20px 48px; }
+
+  .page-head h1 { font-size: 20px; font-weight: 600; letter-spacing: 0.2px; }
+  .page-lead { color: var(--ink-muted); font-size: 13px; margin: 4px 0 18px; max-width: 72ch; }
+  .page-lead code { background: var(--page-panel); border: 1px solid var(--line); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+
+  /* ============ 演示帧 ============ */
+  .frame-note { font-size: 12px; color: var(--ink-dim); margin-bottom: 8px; }
+  .frame {
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    overflow: hidden;
+    box-shadow: 0 1px 2px rgba(0,0,0,.05), 0 18px 44px rgba(0,0,0,.10);
+    height: 640px;
+  }
+
+  /* ============ 演示 chips（本页演示控件，不是 app UI） ============ */
+  .try-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 14px 0 6px; }
+  .try-label { font-size: 12px; color: var(--ink-muted); }
+  .try-label strong { color: var(--ink); font-weight: 600; }
+  .chip {
+    display: inline-flex; align-items: center; justify-content: center; line-height: 1;
+    padding: 5px 12px; border-radius: 999px; border: 1px solid var(--line);
+    background: var(--page-panel); color: var(--ink-muted); font-size: 12px; cursor: pointer;
+    transition: border-color .12s, color .12s;
+  }
+  .chip:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* ============ 决策卡片 ============ */
+  .decisions { display: grid; grid-template-columns: repeat(auto-fill, minmax(316px, 1fr)); gap: 12px; margin-top: 18px; }
+  .decision { background: var(--page-panel); border: 1px solid var(--line); border-radius: 10px; padding: 13px 15px; }
+  .decision h3 { font-size: 12.5px; font-weight: 600; display: flex; align-items: center; gap: 7px; margin-bottom: 4px; }
+  .decision h3 [data-icon] { color: var(--accent); }
+  .decision p { font-size: 12px; color: var(--ink-muted); }
+  .decision p code { background: var(--page-bg); border: 1px solid var(--line); padding: 0 4px; border-radius: 3px; font-size: 11px; }
+
+  .footnote { margin-top: 16px; font-size: 11.5px; color: var(--ink-dim); border-top: 1px dashed var(--line); padding-top: 10px; max-width: 92ch; }
+  .footnote code { background: var(--page-panel); border: 1px solid var(--line); padding: 0 4px; border-radius: 3px; font-size: 11px; }
+
+  /* ================================================================
+     claude-fast app 本体的视觉语言（tokens / 结构照搬 styles.css）
+     作用域限定 #frame；app 自带浅/深两套主题，帧内右上角按钮切换
+     ================================================================ */
+  #frame {
+    --bg: #f9f8f5; --panel: #ffffff; --panel-2: #f1efe9; --border: #e5e2da;
+    --text: #292524; --muted: #78716c; --dim: #a8a29e;
+    --accent: #c15f3c; --accent-hover: #a84e2e; --accent-soft: rgba(193,95,60,.12);
+    --danger: #dc2626; --danger-soft: rgba(220,38,38,.1);
+    --radius: 10px;
+    --shadow: 0 1px 2px rgba(0,0,0,.05), 0 8px 24px rgba(0,0,0,.08);
+    color-scheme: light;
+  }
+  #frame[data-theme="dark"] {
+    --bg: #1f1e1b; --panel: #292724; --panel-2: #33302b; --border: #3d3a34;
+    --text: #f4f1ea; --muted: #a8a29e; --dim: #6f6a63;
+    --accent: #d97757; --accent-hover: #e08b6d; --accent-soft: rgba(217,119,87,.16);
+    --danger: #f87171; --danger-soft: rgba(248,113,113,.13);
+    --shadow: 0 1px 2px rgba(0,0,0,.45), 0 8px 24px rgba(0,0,0,.55);
+    color-scheme: dark;
+  }
+
+  #frame .app { display: flex; flex-direction: column; height: 100%; font-size: 13px; color: var(--text); background: var(--bg); user-select: none; }
+  #frame .app button { cursor: pointer; }
+  #frame mark { background: var(--accent-soft); color: var(--accent); font-weight: 600; border-radius: 3px; padding: 0 2px; }
+
+  /* ---- 顶栏（照搬 Header） ---- */
+  #frame .header { display: flex; align-items: center; justify-content: space-between; padding: 12px 18px; background: var(--panel); border-bottom: 1px solid var(--border); }
+  #frame .brand { display: flex; align-items: center; gap: 12px; }
+  #frame .brand-logo { width: 34px; height: 34px; border-radius: 9px; background: linear-gradient(135deg, #d97757, #c15f3c); display: grid; place-items: center; color: #fff; font-weight: 700; font-size: 15px; box-shadow: 0 2px 8px rgba(176,82,48,.35); }
+  #frame .brand h1 { font-size: 15px; font-weight: 600; }
+  #frame .brand-sub { font-size: 11px; color: var(--muted); margin-top: 1px; }
+  #frame .header-actions { display: flex; align-items: center; gap: 8px; }
+  #frame .pill { display: inline-flex; align-items: center; justify-content: center; line-height: 1; gap: 6px; padding: 7px 12px; border-radius: 999px; border: 1px solid var(--border); background: var(--panel); color: var(--muted); font-size: 12px; }
+  #frame .pill:hover { border-color: var(--dim); }
+  #frame .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); }
+  #frame .dot-ok { background: #22c55e; }
+  #frame .icon-btn { width: 30px; height: 30px; display: inline-flex; align-items: center; justify-content: center; line-height: 1; border-radius: 8px; border: 1px solid var(--border); background: var(--panel); color: var(--text); }
+  #frame .icon-btn:hover { background: var(--panel-2); }
+
+  /* ---- 工具栏（照搬 Toolbar） ---- */
+  #frame .toolbar { display: flex; align-items: center; gap: 10px; padding: 12px 18px; border-bottom: 1px solid var(--border); background: var(--bg); }
+  #frame .search-box { position: relative; flex: 1; max-width: 360px; }
+  #frame .search-icon { position: absolute; left: 10px; top: 50%; display: grid; place-items: center; line-height: 0; transform: translateY(-50%); color: var(--dim); pointer-events: none; }
+  #frame .search-input { width: 100%; padding: 7px 28px 7px 30px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); color: var(--text); font-size: 13px; outline: none; transition: border-color .15s, box-shadow .15s; }
+  #frame .search-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  #frame .search-clear { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); display: flex; align-items: center; justify-content: center; border: none; background: none; color: var(--dim); width: 20px; height: 20px; border-radius: 50%; }
+  #frame .search-clear:hover { color: var(--text); background: var(--panel-2); }
+  #frame .toolbar-actions { display: flex; gap: 8px; margin-left: auto; }
+  /* .btn：line-height 1 + inline-flex 居中，墨迹偏上补偿（10px 14px 8px，勿改对称） */
+  #frame .btn { display: inline-flex; align-items: center; gap: 6px; padding: 10px 14px 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel); color: var(--text); font-size: 12.5px; line-height: 1; transition: border-color .12s, background .12s; }
+  #frame .btn:hover { border-color: var(--dim); background: var(--panel-2); }
+
+  /* ---- 主体分栏 ---- */
+  #frame .main { flex: 1; display: flex; min-height: 0; }
+  #frame .main-left { flex: 0 0 360px; overflow-y: auto; padding: 10px 14px; border-right: 1px solid var(--border); min-height: 0; }
+  #frame .viewer { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
+
+  /* ---- 项目行（照搬 ProjectList） ---- */
+  #frame .list { display: flex; flex-direction: column; gap: 4px; }
+  #frame .row { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: var(--radius); border: 1px solid transparent; cursor: pointer; transition: background .12s, border-color .12s; }
+  #frame .row:hover { background: var(--panel); border-color: var(--border); }
+  #frame .row.selected { background: var(--accent-soft); border-color: var(--accent); }
+  #frame .row-body { flex: 1; min-width: 0; }
+  #frame .row-label { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #frame .row-path { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
+  #frame .row-actions { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
+  #frame .row-icon { flex-shrink: 0; width: 24px; height: 24px; display: grid; place-items: center; line-height: 0; border-radius: 6px; border: 1px solid transparent; background: none; color: var(--muted); }
+  #frame .row-icon:hover { color: var(--accent); background: var(--accent-soft); border-color: var(--border); }
+
+  /* ---- 会话块（照搬 .sessions） ---- */
+  #frame .sessions { margin: 2px 0 6px 10px; border-left: 2px solid var(--border); padding-left: 8px; display: flex; flex-direction: column; gap: 3px; }
+
+  /* ★ 新增：项目内会话搜索框（本方案核心元素） */
+  #frame .session-search { position: relative; margin: 1px 0 3px; }
+  #frame .session-search .search-icon { left: 8px; }
+  #frame .session-search-input { width: 100%; padding: 5px 24px 5px 27px; border: 1px solid var(--border); border-radius: 7px; background: var(--panel); color: var(--text); font-size: 12px; outline: none; transition: border-color .15s, box-shadow .15s; }
+  #frame .session-search-input::placeholder { color: var(--dim); }
+  #frame .session-search-input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+  #frame .session-search .search-clear { right: 4px; width: 18px; height: 18px; }
+
+  /* ★ 新增：状态行（搜索中 spinner / 完成后汇总） */
+  #frame .session-search-status { display: flex; align-items: center; gap: 6px; font-size: 10.5px; color: var(--dim); padding: 0 2px 3px; min-height: 16px; }
+  #frame .spinner { width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid var(--border); border-top-color: var(--accent); animation: spin .7s linear infinite; flex-shrink: 0; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ---- 会话行（照搬 SessionRow） ---- */
+  #frame .session-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 7px; border: 1px solid transparent; cursor: default; transition: background .12s, border-color .12s; }
+  #frame .session-row:hover { background: var(--panel); border-color: var(--border); }
+  #frame .session-row.active { background: var(--panel); border-color: var(--border); box-shadow: inset 3px 0 0 var(--accent); }
+  #frame .session-row.active .session-title { color: var(--accent); }
+  #frame .session-pin { flex-shrink: 0; display: grid; place-items: center; line-height: 0; border: none; background: none; color: var(--dim); cursor: pointer; padding: 3px 4px; border-radius: 5px; transition: color .12s, background .12s; }
+  #frame .session-pin:hover { color: var(--accent); background: var(--accent-soft); }
+  #frame .session-pin.pinned { color: var(--accent); }
+  #frame .session-body { flex: 1; min-width: 0; }
+  #frame .session-title { font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #frame .session-meta { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
+  #frame .session-empty { font-size: 11.5px; color: var(--dim); padding: 6px 10px; }
+  #frame .session-project { margin-right: 6px; padding: 1px 5px; font-size: 10.5px; font-weight: 500; color: var(--muted); background: var(--panel); border: 1px solid var(--border); border-radius: 4px; }
+
+  /* ★ 新增：命中行元素 —— 片段行 / 命中数 / 标题-only 徽标 */
+  #frame .session-snippet { font-size: 11px; color: var(--muted); line-height: 1.5; margin-top: 2px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  #frame .hit-count { font-size: 10px; color: var(--muted); background: var(--panel); border: 1px solid var(--border); border-radius: 999px; padding: 0 7px; line-height: 15px; flex-shrink: 0; white-space: nowrap; }
+  #frame .title-only { font-size: 10px; color: var(--dim); background: var(--panel-2); border-radius: 4px; padding: 1px 5px; flex-shrink: 0; white-space: nowrap; }
+
+  /* ---- 右键菜单（照搬 ContextMenu / .context-*） ---- */
+  #frame .context-menu { position: fixed; z-index: 1000; min-width: 190px; padding: 5px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); display: none; }
+  #frame .context-title { padding: 7px 10px; font-weight: 600; font-size: 12px; display: flex; align-items: center; gap: 8px; }
+  #frame .context-title-text { min-width: 0; max-width: 220px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  #frame .context-sep { height: 1px; background: var(--border); margin: 4px 6px; }
+  #frame .context-item { display: block; width: 100%; text-align: left; padding: 7px 10px; border: none; background: none; color: var(--text); font-size: 12.5px; border-radius: 6px; cursor: pointer; }
+  #frame .context-item:hover { background: var(--panel-2); }
+  #frame .context-danger { color: var(--danger); }
+
+  /* ---- 置顶会话聚合区（照搬 PinnedSessions） ---- */
+  #frame .pinned-block { margin-bottom: 8px; }
+  #frame .pinned-head { display: flex; align-items: center; gap: 6px; padding: 2px 4px 6px; color: var(--muted); }
+  #frame .pinned-title { font-size: 11.5px; font-weight: 600; color: var(--muted); letter-spacing: .4px; }
+  #frame .pinned-count { font-size: 10.5px; color: var(--dim); background: var(--panel); border: 1px solid var(--border); border-radius: 999px; padding: 0 6px; line-height: 16px; }
+  #frame .pinned-list { display: flex; flex-direction: column; gap: 3px; }
+  #frame .pinned-sep { margin-top: 8px; border-top: 1px solid var(--border); }
+
+  /* ---- 状态栏 ---- */
+  #frame .statusbar { display: flex; align-items: center; justify-content: space-between; padding: 5px 14px; border-top: 1px solid var(--border); background: var(--panel); font-size: 11px; color: var(--muted); }
+
+  /* ---- 右侧查看器（近似 SessionViewer） ---- */
+  #frame .viewer-head { display: flex; align-items: center; gap: 10px; padding: 10px 18px; border-bottom: 1px solid var(--border); background: var(--panel); }
+  #frame .viewer-head-body { flex: 1; min-width: 0; }
+  #frame .viewer-title { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #frame .viewer-meta { font-size: 11px; color: var(--muted); margin-top: 1px; }
+  #frame .viewer-actions { display: flex; gap: 6px; }
+  #frame .viewer-body { flex: 1; overflow-y: auto; padding: 18px 20px 26px; }
+  #frame .viewer-col { max-width: 680px; margin: 0 auto; }
+  #frame .msg { margin-bottom: 18px; }
+  #frame .msg-role { font-size: 11px; font-weight: 600; color: var(--muted); margin-bottom: 5px; display: flex; align-items: center; gap: 6px; }
+  #frame .msg.user .msg-role { color: var(--accent); }
+  #frame .msg-text { font-size: 13px; line-height: 1.75; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; }
+  #frame .activity { font-size: 12px; color: var(--muted); border: 1px dashed var(--border); border-radius: 8px; padding: 6px 12px; display: flex; gap: 8px; align-items: center; margin: 8px 0; }
+  #frame .jump-target { outline: 2px solid var(--accent); background: var(--accent-soft); }
+  #frame .jump-note { display: none; align-items: center; gap: 7px; font-size: 11.5px; color: var(--accent); background: var(--accent-soft); border: 1px solid var(--accent); border-radius: 8px; padding: 6px 12px; margin-bottom: 16px; }
+  #frame .jump-note.show { display: flex; }
+
+  @media (prefers-reduced-motion: reduce) {
+    #frame .spinner { animation: none; }
+    #frame * { transition: none !important; }
+  }
+
+  /* ---- 窄屏：查看器隐藏，侧栏撑满 ---- */
+  @media (max-width: 820px) {
+    .frame { height: 560px; }
+    #frame .viewer { display: none; }
+    #frame .main-left { flex: 1 1 auto; border-right: none; }
+  }
+</style>
+<div class="page">
+  <div class="page-head">
+    <h1>项目内会话搜索 · UI 方案</h1>
+  </div>
+  <p class="page-lead">
+    A1 缩小为<strong>项目内搜索</strong>后的交互原型（v2：入口收进菜单）：入口在<strong>项目右键菜单「搜索会话」</strong>（行尾 ⋯ 同源），点击后搜索框<strong>按需出现</strong>在会话块首行——不搜索时界面与现状完全一致。输入先按标题/摘要即时过滤，再异步全文搜索该项目会话内容，命中行带高亮片段，点击后在右侧查看器定位首个命中。下框为可交互演示（虚构数据），右上角可切换 app 深浅主题。
+  </p>
+
+  <div class="frame-note">演示数据为虚构（项目名取自真实工作区）。入口：<strong>右键项目行</strong>（或点行尾 ⋯）→「搜索会话」；Esc 先清关键词、再按一次收起搜索框；收起项目一并收起。顶部工具栏的搜索仍只过滤项目名，互不干涉。</div>
+  <div class="frame" id="frame" data-theme="light">
+    <div class="app">
+      <header class="header">
+        <div class="brand">
+          <div class="brand-logo">C</div>
+          <div>
+            <h1>Claude助手</h1>
+            <div class="brand-sub">一键在你的项目目录中启动 Claude Code</div>
+          </div>
+        </div>
+        <div class="header-actions">
+          <button class="pill" title="供应商切换"><span class="dot dot-ok"></span>智谱 GLM</button>
+          <button class="pill" title="健康检查"><span class="dot dot-ok"></span>claude 可用</button>
+          <button class="icon-btn" title="设置" id="settings-btn"></button>
+          <button class="icon-btn" title="切换主题" id="theme-btn"></button>
+        </div>
+      </header>
+
+      <div class="toolbar">
+        <div class="search-box">
+          <span class="search-icon" data-icon="search" data-size="15"></span>
+          <input class="search-input" id="toolbar-search-input" placeholder="搜索项目名或路径…" spellcheck="false" />
+        </div>
+        <div class="toolbar-actions">
+          <button class="btn"><span data-icon="plus"></span>新建</button>
+          <button class="btn"><span data-icon="folderPlus"></span>批量添加</button>
+          <button class="btn"><span data-icon="trash"></span>回收站</button>
+          <button class="btn"><span data-icon="chart"></span>统计</button>
+        </div>
+      </div>
+
+      <div class="main">
+        <aside class="main-left">
+          <div class="pinned-block">
+            <div class="pinned-head">
+              <span data-icon="pin" data-size="12"></span>
+              <span class="pinned-title">置顶会话</span>
+              <span class="pinned-count">2</span>
+            </div>
+            <div class="pinned-list" id="pinned-list"></div>
+            <div class="pinned-sep"></div>
+          </div>
+          <div class="list" id="project-list"></div>
+        </aside>
+
+        <section class="viewer">
+          <div class="viewer-head">
+            <div class="viewer-head-body">
+              <div class="viewer-title" id="viewer-title"></div>
+              <div class="viewer-meta" id="viewer-meta"></div>
+            </div>
+            <div class="viewer-actions">
+              <button class="icon-btn" title="搜索本会话"><span data-icon="search" data-size="14"></span></button>
+              <button class="icon-btn" title="导出"><span data-icon="download" data-size="14"></span></button>
+            </div>
+          </div>
+          <div class="viewer-body">
+            <div class="viewer-col">
+              <div class="jump-note" id="jump-note"><span data-icon="chevron" data-size="12"></span><span>从搜索跳转：已加载命中消息所在分页并展开对应活动组</span></div>
+              <div id="viewer-messages"></div>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <div class="statusbar">
+        <span id="statusbar-left"></span>
+        <span>claude 可用 · 智谱 GLM</span>
+      </div>
+      <div class="context-menu" id="context-menu"></div>
+    </div>
+  </div>
+
+  <div class="try-row" id="try-row">
+    <span class="try-label"><strong>试一试</strong>（点击自动唤出并填入；也可右键项目行 → 搜索会话，再自己输入）：</span>
+  </div>
+
+  <div class="decisions">
+    <div class="decision">
+      <h3><span data-icon="search"></span>入口与作用域</h3>
+      <p>入口收在项目右键菜单「搜索会话」（与行尾 ⋯ 同源），搜索框按需出现在会话块首行——不搜索时零常驻元素，与「会话行操作收进右键菜单」同一决策路线。行内第三颗常驻图标的备选方案未采用（挤占标题区）。收起项目即清空并收起，Esc 两次 = 清词 → 收框。</p>
+    </div>
+    <div class="decision">
+      <h3><span data-icon="chevron"></span>两段式体验</h3>
+      <p>输入瞬间按标题/摘要过滤已加载列表（前端、零延迟、列表不空白）；300ms 防抖后异步全文搜索本项目全部 jsonl，结果原地合并。仅标题命中的行带「标题」小徽标区分。</p>
+    </div>
+    <div class="decision">
+      <h3><span data-icon="fileText"></span>命中行形态</h3>
+      <p>复用 <code>SessionRow</code>：标题（关键词高亮）+ 片段行（约 60 字符截断）+ 右缘命中数。顺序保持 mtime 倒序不变——与正常列表同一心智模型，不按命中数重排。</p>
+    </div>
+    <div class="decision">
+      <h3><span data-icon="pin"></span>已置顶会话参与搜索</h3>
+      <p>正常列表里置顶会话被滤到顶部聚合区，但搜索时必须召回——否则它们在内容层面永远找不到。命中行图钉呈已置顶态（accent 色），提示它同时在置顶区（试「拖拽」）。</p>
+    </div>
+    <div class="decision">
+      <h3><span data-icon="chart"></span>状态与空态</h3>
+      <p>搜索中：spinner +「正在搜索会话内容…」（标题过滤已先行生效）；完成：「N 个会话 · M 处命中 · 0.6s」；无命中：块内一行空态。搜索失败就近贴状态行，不弹窗、不丢已过滤列表。</p>
+    </div>
+    <div class="decision">
+      <h3><span data-icon="wrench"></span>点击命中 → 跳转</h3>
+      <p>打开右侧查看器并定位首个命中：自动加载所在分页、展开对应活动组——完全复用现有 <code>jumpTo</code> 跨分页跳转链路，零新增跳转机制。Esc / 清除按钮还原列表。</p>
+    </div>
+  </div>
+
+  <p class="footnote">
+    实现约束：图标全部沿用 <code>Icons.tsx</code> 既有 SVG（本方案零新增图标）；不新增按钮类——清除按钮复用 <code>.search-clear</code> 形态，无墨迹居中新债；命中高亮 <code>&lt;mark&gt;</code> 取 <code>--accent-soft / --accent</code> 主题变量，深浅两套自动适配。上限沿用单文件 <code>MAX_SEARCH_HITS=200</code>，跨会话最多展示 50 会话、每会话 1 条片段，超出折叠为「还有 N 个会话」一行。
+  </p>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  /* ---------- 图标（逐字取自 Icons.tsx 的 Lucide 线性组件） ---------- */
+  var SVG = function (inner, size) {
+    return '<svg width="' + size + '" height="' + size + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + inner + "</svg>";
+  };
+  var ICONS = {
+    search: function (s) { return SVG('<circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>', s); },
+    x: function (s) { return SVG('<path d="M18 6 6 18"/><path d="m6 6 12 12"/>', s); },
+    plus: function (s) { return SVG('<path d="M5 12h14"/><path d="M12 5v14"/>', s); },
+    folderPlus: function (s) { return SVG('<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/><path d="M12 10v6"/><path d="M9 13h6"/>', s); },
+    trash: function (s) { return SVG('<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M10 11v6"/><path d="M14 11v6"/>', s); },
+    chart: function (s) { return SVG('<path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/>', s); },
+    pin: function (s) { return SVG('<path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/>', s); },
+    more: function (s) { return SVG('<circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/>', s); },
+    sun: function (s) { return SVG('<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>', s); },
+    moon: function (s) { return SVG('<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>', s); },
+    settings: function (s) { return SVG('<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>', s); },
+    download: function (s) { return SVG('<path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/>', s); },
+    brain: function (s) { return SVG('<path d="M12 18V5"/><path d="M15 13a4.17 4.17 0 0 1-3-4 4.17 4.17 0 0 1-3 4"/><path d="M17.598 6.5A3 3 0 1 0 12 5a3 3 0 1 0-5.598 1.5"/><path d="M17.997 5.125a4 4 0 0 1 2.526 5.77"/><path d="M18 18a4 4 0 0 0 2-7.464"/><path d="M19.967 17.483A4 4 0 1 1 12 18a4 4 0 1 1-7.967-.517"/><path d="M6 18a4 4 0 0 1-2-7.464"/><path d="M6.003 5.125a4 4 0 0 0-2.526 5.77"/>', s); },
+    wrench: function (s) { return SVG('<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.106-3.105c.32-.322.863-.22.983.218a6 6 0 0 1-8.259 7.057l-7.91 7.91a1 1 0 0 1-2.999-3l7.91-7.91a6 6 0 0 1 7.057-8.259c.438.12.54.662.219.984z"/>', s); },
+    chevron: function (s) { return SVG('<path d="m9 18 6-6-6-6"/>', s); },
+    fileText: function (s) { return SVG('<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/>', s); }
+  };
+
+  /* ---------- 演示数据（虚构；项目名取自真实工作区） ---------- */
+  var PROJECTS = [
+    {
+      key: "claude-fast", name: "claude-fast", path: "D:\\MyWorkspaces\\myProject\\claude-fast",
+      sessions: [
+        { id: "s1", title: "统计刷新塌缩修复", time: "2 小时前", summary: "12 条消息",
+          prompt: "统计弹窗点刷新会整块塌缩，第二下点太快还把面板误关了，修一下。",
+          corpus: "刷新改为原地保留旧数据、只置 refreshing；台账条目按 mtime+size 命中跳过重扫，面板高度纹丝不动。失败时旧数据保留，错误就近贴在内容顶部。" },
+        { id: "s2", title: "趋势图按模型堆叠", time: "昨天", summary: "31 条消息",
+          prompt: "趋势图想看每个模型每天各用了多少，单色柱信息不够。",
+          corpus: "同一根柱按当日各模型用量分段、柱高仍是当日总量；台账 per_day_model 只有 499 个单元格，纯前端改动、零重扫。配色改主题变量，深浅两套各一组。" },
+        { id: "s3", title: "供应商保存同步写 live", time: "09-16 20:14", summary: "8 条消息",
+          prompt: "保存当前供应商后，模型映射过两天又自己变回去了，查一下。",
+          corpus: "切换前的回填会把旧 settings.json 整文件灌回清单，刚保存的模型映射被静默回滚；保存 current 时先原子写 live 再落磁盘。" },
+        { id: "s4", title: "会话查看器分页竞态", time: "09-15 11:02", summary: "19 条消息",
+          prompt: "跳转搜索命中后向上翻页，内容出现重复乱序。",
+          corpus: "跳转与向上翻页的回包竞态造成重复乱序：加窗口世代号作废迟到回包，[start,end) 边界校验防前插错页，另补向后分页。" },
+        { id: "s5", title: "去脚本化路径模型迁移", time: "09-12 09:40", summary: "27 条消息",
+          prompt: "启动脚本这条路不要了，改成直接存项目路径。",
+          corpus: "order 直接存项目绝对路径，旧 favorites 经 serde alias 无损承接；不再生成 scripts 启动脚本，首次启动自动解析迁移。" },
+        { id: "s6", title: "拖拽排序与置顶聚合区", time: "09-10 16:26", summary: "22 条消息", pinned: true,
+          prompt: "收藏太弱了，改成拖拽排序 + 跨项目置顶会话。",
+          corpus: "项目行整行可拖拽调序、搜索过滤期间禁用；置顶条目跨项目聚合、带项目名徽标，会话文件绝对路径作稳定锚点。" },
+        { id: "s7", title: "resume 防注入命令行", time: "09-08 21:11", summary: "6 条消息",
+          prompt: "resume 拼命令行走 Windows，把注入风险过一遍。",
+          corpus: "Windows 拒引号内仍有效的 % 和 !，其余符号在双引号内均为字面量；macOS 经 sh_quote 进 cd 双引号后仅拒控制字符。" }
+      ]
+    },
+    {
+      key: "cc-switch", name: "cc-switch", path: "D:\\MyWorkspaces\\myProject\\cc-switch",
+      sessions: [
+        { id: "p1", title: "供应商切换回填指纹守卫", time: "09-13 14:20", summary: "7 条消息", pinned: true,
+          prompt: "外部工具改写 settings.json 后，回填把别家配置整份灌进离任条目了。",
+          corpus: "current 标记与磁盘脱节时，指纹守卫跳过回填并告警 backfill_skipped；清单加载时重锚定 current 标记，以磁盘为准修正。" },
+        { id: "c1", title: "供应商卡片拖拽排序", time: "09-14 10:05", summary: "9 条消息",
+          prompt: "供应商卡片也支持拖拽排序吧，顺序要持久化。",
+          corpus: "实体拖拽排序持久化，moveProvider 拖拽基准对齐 providersRef，避免 state 闭包拿到过期列表。" },
+        { id: "c2", title: "模型拉取候选探测", time: "09-06 15:48", summary: "11 条消息",
+          prompt: "/v1/models 有的厂商挂在别的路径下，拉不到。",
+          corpus: "base 以版本段结尾先拼 models，命中兼容后缀再追加剥后缀的探测地址；404/405 换下一候选，Bearer 认证。" }
+      ]
+    },
+    {
+      key: "my-blog", name: "my-blog", path: "D:\\MyWorkspaces\\myProject\\my-blog",
+      sessions: [
+        { id: "b1", title: "主题样式微调", time: "09-02 20:33", summary: "4 条消息",
+          prompt: "正文字号和行距对齐一下正文页。",
+          corpus: "正文行距 1.75、段落间距约空一行，列表保持紧凑；标题上下留白加大。" }
+      ]
+    }
+  ];
+  var PINNED = [
+    { sessionId: "p1" },
+    { sessionId: "s6" }
+  ];
+
+  /* ---------- 状态 ---------- */
+  var state = {
+    expanded: "claude-fast",
+    selected: "claude-fast",
+    kw: "",
+    searchVisible: false,   /* 搜索框按需显示：右键菜单「搜索会话」唤出，默认不渲染 */
+    phase: "idle",          /* idle | searching | done */
+    hits: {},               /* sessionId -> { snippet, count } */
+    took: 0,
+    toolbarKw: "",
+    viewer: { sessionId: "s1", jumpKw: null },
+    activeRow: "s1",
+    token: 0,
+    debounceT: null
+  };
+
+  /* ---------- 工具 ---------- */
+  function esc(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
+  function escAttr(s) { return esc(s); }
+  function findSession(id) {
+    for (var p = 0; p < PROJECTS.length; p++) {
+      var proj = PROJECTS[p];
+      for (var s = 0; s < proj.sessions.length; s++) {
+        if (proj.sessions[s].id === id) return { proj: proj, session: proj.sessions[s] };
+      }
+    }
+    return null;
+  }
+  function findProjectOf(id) {
+    for (var p = 0; p < PROJECTS.length; p++) {
+      if (PROJECTS[p].sessions.some(function (s) { return s.id === id; })) return PROJECTS[p];
+    }
+    return null;
+  }
+  function highlight(text, kw) {
+    var safe = esc(text);
+    if (!kw) return safe;
+    var k = kw.toLowerCase();
+    var low = safe.toLowerCase();
+    var parts = [], i = 0, idx;
+    while ((idx = low.indexOf(k, i)) !== -1) {
+      parts.push(safe.slice(i, idx), "<mark>" + safe.slice(idx, idx + k.length) + "</mark>");
+      i = idx + k.length;
+    }
+    parts.push(safe.slice(i));
+    return parts.join("");
+  }
+  function buildSnippet(corpus, kw) {
+    var low = corpus.toLowerCase(), k = kw.toLowerCase();
+    var first = low.indexOf(k);
+    if (first === -1) return null;
+    var count = 0, pos = first;
+    while (pos !== -1) { count++; pos = low.indexOf(k, pos + k.length); }
+    var start = Math.max(0, first - 18);
+    var end = Math.min(corpus.length, first + k.length + 42);
+    var snippet = (start > 0 ? "…" : "") + corpus.slice(start, end) + (end < corpus.length ? "…" : "");
+    return { snippet: snippet, count: count };
+  }
+
+  /* ---------- 渲染：置顶区 ---------- */
+  function renderPinned() {
+    var el = document.getElementById("pinned-list");
+    el.innerHTML = PINNED.map(function (p) {
+      var found = findSession(p.sessionId);
+      if (!found) return "";
+      return '<div class="session-row" data-open="' + p.sessionId + '">' +
+        '<button class="session-pin pinned" title="取消置顶">' + ICONS.pin(13) + "</button>" +
+        '<div class="session-body"><div class="session-title"><span class="session-project">' + esc(found.proj.name) + "</span>" + esc(found.session.title) + '</div>' +
+        '<div class="session-meta">' + esc(found.session.time) + "</div></div></div>";
+    }).join("");
+  }
+
+  /* ---------- 渲染：项目列表 ---------- */
+  function renderProjects() {
+    var el = document.getElementById("project-list");
+    var tb = state.toolbarKw.trim().toLowerCase();
+    var visible = PROJECTS.filter(function (p) {
+      if (!tb) return true;
+      return p.name.toLowerCase().indexOf(tb) !== -1 || p.path.toLowerCase().indexOf(tb) !== -1;
+    });
+    if (!visible.length) {
+      el.innerHTML = '<div class="session-empty">没有找到匹配的项目</div>';
+      return;
+    }
+    el.innerHTML = visible.map(function (p) {
+      var isExpanded = p.key === state.expanded;
+      var h = '<div class="row-wrap">' +
+        '<div class="row' + (p.key === state.selected ? " selected" : "") + '" data-proj="' + escAttr(p.key) + '">' +
+        '<div class="row-body"><div class="row-label">' + esc(p.name) + "</div>" +
+        '<div class="row-path">' + esc(p.path) + "</div></div>" +
+        '<div class="row-actions">' +
+        '<button class="row-icon row-icon-more" title="更多操作（与右键菜单相同）">' + ICONS.more(15) + "</button>" +
+        '<button class="row-icon" title="启动 Claude Code（新建会话）">' + ICONS.plus(15) + "</button>" +
+        "</div></div>" +
+        (isExpanded ? renderSessionsBlock(p) : "") +
+        "</div>";
+      return h;
+    }).join("");
+  }
+
+  /* ---------- 渲染：会话块（含 ★ 搜索框 —— 本方案核心） ---------- */
+  function renderSessionsBlock(proj) {
+    var kw = state.kw.trim();
+    var h = '<div class="sessions">';
+    /* 搜索框按需显示：未经「搜索会话」唤出时，会话块与现状完全一致 */
+    if (state.searchVisible) {
+      h += '<div class="session-search">' +
+        '<span class="search-icon">' + ICONS.search(12) + "</span>" +
+        '<input class="session-search-input" id="session-search-input" placeholder="搜索本项目会话（标题与内容全文）…" spellcheck="false" value="' + escAttr(state.kw) + '" />' +
+        (state.kw ? '<button class="search-clear" id="session-search-clear" title="清除">' + ICONS.x(11) + "</button>" : "") +
+        "</div>";
+    }
+
+    if (state.searchVisible && state.phase === "searching") {
+      h += '<div class="session-search-status"><span class="spinner"></span><span>正在搜索会话内容…（标题过滤已生效）</span></div>';
+    } else if (state.searchVisible && state.phase === "done") {
+      var sessN = 0, hitsN = 0;
+      var low = kw.toLowerCase();
+      proj.sessions.forEach(function (s) {
+        var inT1 = s.title.toLowerCase().indexOf(low) !== -1 || (s.summary || "").toLowerCase().indexOf(low) !== -1;
+        if (inT1 || state.hits[s.id]) sessN++;
+        if (state.hits[s.id]) hitsN += state.hits[s.id].count;
+      });
+      h += '<div class="session-search-status"><span>' + sessN + " 个会话 · " + hitsN + " 处命中 · " + state.took.toFixed(1) + 's</span></div>';
+    }
+
+    if (!kw) {
+      var vis = proj.sessions.filter(function (s) { return !s.pinned; });
+      h += vis.map(function (s) { return sessionRow(s, null, false); }).join("");
+      if (!vis.length) h += '<div class="session-empty">会话已全部置顶（见顶部置顶会话）</div>';
+    } else {
+      var lkw = kw.toLowerCase();
+      var rows = [], any = false;
+      proj.sessions.forEach(function (s) {
+        var hit = state.hits[s.id];
+        var inT1 = s.title.toLowerCase().indexOf(lkw) !== -1 || (s.summary || "").toLowerCase().indexOf(lkw) !== -1;
+        if (state.phase === "searching" && !inT1) return;        /* 即时层：只显示标题命中 */
+        if (state.phase === "done" && !hit && !inT1) return;     /* 合并层：内容命中 ∪ 标题命中 */
+        any = true;
+        rows.push(sessionRow(s, hit || null, inT1));
+      });
+      h += rows.join("");
+      if (!any) h += '<div class="session-empty">未找到包含「' + esc(kw) + "」的会话</div>";
+    }
+    h += "</div>";
+    return h;
+  }
+
+  function sessionRow(s, hit, titleMatch) {
+    var kw = state.kw.trim();
+    var active = s.id === state.activeRow;
+    var right = "", subline = "";
+    if (kw && state.phase === "done") {
+      if (hit) {
+        subline = '<div class="session-snippet">' + highlight(hit.snippet, kw) + "</div>";
+        right = '<span class="hit-count">' + hit.count + " 处</span>";
+      } else if (titleMatch) {
+        right = '<span class="title-only">标题</span>';
+      }
+    } else {
+      subline = '<div class="session-meta">' + esc(s.time) + (s.summary ? " · " + esc(s.summary) : "") + "</div>";
+    }
+    return '<div class="session-row' + (active ? " active" : "") + '" data-open="' + s.id + '">' +
+      '<button class="session-pin' + (s.pinned ? " pinned" : "") + '" title="' + (s.pinned ? "已置顶（同时显示在顶部聚合区）" : "置顶（在顶部聚合区常驻显示）") + '">' + ICONS.pin(13) + "</button>" +
+      '<div class="session-body"><div class="session-title">' + highlight(s.title, kw) + "</div>" + subline + "</div>" +
+      right + "</div>";
+  }
+
+  /* ---------- 渲染：查看器 ---------- */
+  function renderViewer() {
+    var v = state.viewer;
+    var found = findSession(v.sessionId);
+    var titleEl = document.getElementById("viewer-title");
+    var metaEl = document.getElementById("viewer-meta");
+    var msgEl = document.getElementById("viewer-messages");
+    var noteEl = document.getElementById("jump-note");
+    if (!found) { titleEl.textContent = ""; metaEl.textContent = ""; msgEl.innerHTML = ""; noteEl.classList.remove("show"); return; }
+    var s = found.session;
+    titleEl.innerHTML = highlight(s.title, v.jumpKw || "");
+    metaEl.textContent = s.time + " · " + found.proj.name + " · 42 条消息 · 21.3M tokens";
+    var kw = v.jumpKw;
+    var jumpAttr = kw ? ' data-jump="1"' : "";
+    var html =
+      '<div class="msg user"><div class="msg-role">你</div><div class="msg-text"' + jumpAttr + ">" + highlight(s.prompt, kw) + "</div></div>" +
+      '<div class="activity">' + ICONS.brain(13) + ICONS.wrench(13) + "<span>思考 · 读取 2 个文件 · 编辑 1 个文件</span>" + ICONS.chevron(12) + "</div>" +
+      '<div class="msg"><div class="msg-role">Claude</div><div class="msg-text"' + jumpAttr + ">" + highlight(s.corpus, kw) + "</div></div>" +
+      '<div class="msg user"><div class="msg-role">你</div><div class="msg-text">好，按这个思路改，测试补上。</div></div>';
+    msgEl.innerHTML = html;
+    noteEl.classList.toggle("show", !!kw);
+    if (kw) {
+      var targets = msgEl.querySelectorAll('[data-jump="1"]');
+      targets.forEach(function (t) { t.classList.add("jump-target"); });
+      if (targets.length) targets[0].scrollIntoView({ block: "center" });
+    }
+  }
+
+  function renderStatusbar() {
+    var total = 0;
+    PROJECTS.forEach(function (p) { total += p.sessions.length; });
+    document.getElementById("statusbar-left").textContent = PROJECTS.length + " 个项目 · " + total + " 个会话（演示数据）";
+  }
+
+  /* 重渲染会替换 input 节点：只要有关键词（正在输入）就恢复焦点与光标到末尾 */
+  function refocusSessionInput() {
+    var input = document.getElementById("session-search-input");
+    if (input && state.kw) {
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    }
+  }
+
+  /* ---------- 搜索流程（两段式） ---------- */
+  function computeTier2() {
+    var proj = PROJECTS.find(function (p) { return p.key === state.expanded; });
+    state.hits = {};
+    if (!proj || !state.kw.trim()) return;
+    var kw = state.kw.trim();
+    proj.sessions.forEach(function (s) {
+      var h = buildSnippet(s.corpus, kw);
+      if (h) state.hits[s.id] = h;
+    });
+    state.took = 0.45 + Math.random() * 0.35;   /* 模拟后端耗时 */
+  }
+
+  function onSessionSearch(value) {
+    state.kw = value;
+    var myTok = ++state.token;
+    if (!value.trim()) {
+      state.phase = "idle";
+      state.hits = {};
+      renderProjects();
+      return;
+    }
+    state.phase = "searching";
+    renderProjects();
+    refocusSessionInput();
+    clearTimeout(state.debounceT);
+    state.debounceT = setTimeout(function () {
+      setTimeout(function () {
+        if (myTok !== state.token) return;   /* 作废迟到回包（与查看器分页世代号同一思路） */
+        computeTier2();
+        state.phase = "done";
+        renderProjects();
+        refocusSessionInput();
+      }, 480);
+    }, 300);
+  }
+
+  /* ---------- 事件 ---------- */
+  document.addEventListener("input", function (e) {
+    if (e.target.id === "session-search-input") {
+      onSessionSearch(e.target.value);
+    } else if (e.target.id === "toolbar-search-input") {
+      state.toolbarKw = e.target.value;
+      renderProjects();
+      var t = document.getElementById("toolbar-search-input");
+      t.focus();
+      t.setSelectionRange(t.value.length, t.value.length);
+    }
+  });
+
+  document.addEventListener("keydown", function (e) {
+    if (e.key !== "Escape") return;
+    closeMenu();
+    if (e.target.id === "session-search-input") {
+      if (state.kw) { onSessionSearch(""); }              /* 第一次 Esc：清关键词 */
+      else { state.searchVisible = false; renderProjects(); }  /* 第二次 Esc：收起搜索框 */
+    } else if (e.target.id === "toolbar-search-input") {
+      e.target.value = "";
+      state.toolbarKw = "";
+      renderProjects();
+    }
+  });
+
+  document.addEventListener("click", function (e) {
+    if (e.target.closest("#session-search-clear")) { onSessionSearch(""); return; }
+    if (e.target.closest(".session-pin")) return;                 /* 演示中置顶操作不响应 */
+
+    var moreBtn = e.target.closest(".row-icon-more");             /* ⋯ 与右键菜单同源（真实现一致） */
+    if (moreBtn) {
+      var projKey2 = moreBtn.closest(".row[data-proj]").getAttribute("data-proj");
+      var p2 = PROJECTS.find(function (x) { return x.key === projKey2; });
+      var br = moreBtn.getBoundingClientRect();
+      if (p2) openMenu(projectMenuHtml(p2), br.left, br.bottom + 4);
+      return;
+    }
+    if (e.target.closest(".row-icon")) return;                    /* 其余行内按钮不触发展开（真实现里是 stopPropagation） */
+
+    var open = e.target.closest("[data-open]");
+    if (open) {
+      var id = open.getAttribute("data-open");
+      var hit = state.phase === "done" && state.hits[id];
+      state.activeRow = id;
+      state.viewer = { sessionId: id, jumpKw: hit ? state.kw.trim() : null };
+      renderProjects();
+      refocusSessionInput();
+      renderViewer();
+      return;
+    }
+
+    var projRow = e.target.closest(".row[data-proj]");
+    if (projRow) {
+      var key = projRow.getAttribute("data-proj");
+      state.selected = key;
+      /* 收起 = 清空该项目搜索；切换项目 = 新作用域，关键词不跨项目保留 */
+      state.expanded = state.expanded === key ? null : key;
+      state.kw = ""; state.phase = "idle"; state.hits = {}; state.searchVisible = false; ++state.token;
+      renderProjects();
+      return;
+    }
+  });
+
+  /* chips（外层页演示控件）：填入关键词并触发搜索 */
+  document.getElementById("try-row").addEventListener("click", function (e) {
+    var chip = e.target.closest(".chip");
+    if (!chip) return;
+    var kw = chip.getAttribute("data-kw");
+    if (state.expanded !== "claude-fast") {
+      state.expanded = "claude-fast";
+      state.selected = "claude-fast";
+    }
+    state.searchVisible = true;
+    onSessionSearch(kw);
+    document.getElementById("frame").scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+
+  /* ---------- 右键菜单（照搬 ContextMenu；「搜索会话」为本方案新增项） ---------- */
+  var menuEl = document.getElementById("context-menu");
+  function closeMenu() { menuEl.style.display = "none"; }
+  function openMenu(html, x, y) {
+    menuEl.innerHTML = html;
+    menuEl.style.display = "block";
+    /* 防止菜单超出窗口右/下边缘（与真实现同一钳制思路） */
+    menuEl.style.left = Math.min(x, window.innerWidth - 215) + "px";
+    menuEl.style.top = Math.min(y, window.innerHeight - 270) + "px";
+  }
+  function projectMenuHtml(proj) {
+    return '<div class="context-title"><span class="context-title-text">' + esc(proj.name) + "</span></div>" +
+      '<div class="context-sep"></div>' +
+      '<button class="context-item" data-close="1">移到最前</button>' +
+      '<button class="context-item" data-close="1">打开所在文件夹</button>' +
+      '<button class="context-item" data-close="1">复制路径</button>' +
+      '<button class="context-item" data-search="' + escAttr(proj.key) + '">搜索会话</button>' +
+      '<div class="context-sep"></div>' +
+      '<button class="context-item context-danger" data-close="1">从列表移除</button>' +
+      '<div class="context-sep"></div>' +
+      '<button class="context-item" data-close="1">健康检查</button>';
+  }
+  function sessionMenuHtml(s) {
+    return '<div class="context-title"><span class="context-title-text">' + esc(s.title) + "</span></div>" +
+      '<div class="context-sep"></div>' +
+      '<button class="context-item" data-close="1">继续对话（resume）</button>' +
+      '<button class="context-item" data-close="1">重命名</button>' +
+      '<button class="context-item" data-close="1">' + (s.pinned ? "取消置顶" : "置顶（顶部聚合区常驻）") + "</button>" +
+      '<div class="context-sep"></div>' +
+      '<button class="context-item context-danger" data-close="1">删除（移入回收站）</button>';
+  }
+  function invokeSearch(key) {
+    if (state.expanded !== key) { state.expanded = key; state.selected = key; }
+    state.searchVisible = true;
+    renderProjects();
+    var input = document.getElementById("session-search-input");
+    if (input) input.focus();
+  }
+
+  document.addEventListener("contextmenu", function (e) {
+    var sessRow = e.target.closest("[data-open]");
+    if (sessRow) {
+      e.preventDefault();
+      var f = findSession(sessRow.getAttribute("data-open"));
+      if (f) openMenu(sessionMenuHtml(f.session), e.clientX, e.clientY);
+      return;
+    }
+    var projRow = e.target.closest(".row[data-proj]");
+    if (projRow) {
+      e.preventDefault();
+      var p = PROJECTS.find(function (x) { return x.key === projRow.getAttribute("data-proj"); });
+      if (p) openMenu(projectMenuHtml(p), e.clientX, e.clientY);
+    }
+  });
+  document.addEventListener("mousedown", function (e) {
+    if (menuEl.style.display === "block" && !menuEl.contains(e.target)) closeMenu();
+  });
+  menuEl.addEventListener("click", function (e) {
+    var item = e.target.closest(".context-item");
+    if (!item) return;
+    var searchKey = item.getAttribute("data-search");
+    closeMenu();
+    if (searchKey) invokeSearch(searchKey);   /* 其余菜单项演示中无操作 */
+  });
+
+  /* 主题切换（app 自带浅/深两套 tokens） */
+  var themeBtn = document.getElementById("theme-btn");
+  function setTheme(dark) {
+    document.getElementById("frame").setAttribute("data-theme", dark ? "dark" : "light");
+    themeBtn.innerHTML = dark ? ICONS.sun(15) : ICONS.moon(15);
+    themeBtn.title = dark ? "切换到浅色" : "切换到深色";
+  }
+  themeBtn.addEventListener("click", function () {
+    setTheme(document.getElementById("frame").getAttribute("data-theme") !== "dark");
+  });
+
+  /* ---------- 初始化 ---------- */
+  document.querySelectorAll("[data-icon]").forEach(function (el) {
+    el.innerHTML = ICONS[el.getAttribute("data-icon")](parseInt(el.getAttribute("data-size") || "13", 10));
+  });
+  document.getElementById("settings-btn").innerHTML = ICONS.settings(15);
+
+  /* chips 由 try-label 文案改为真实按钮（保证语义与键盘可达） */
+  (function () {
+    var row = document.getElementById("try-row");
+    ["台账", "供应商", "拖拽", "回填"].forEach(function (kw) {
+      var b = document.createElement("button");
+      b.className = "chip";
+      b.type = "button";
+      b.setAttribute("data-kw", kw);
+      b.textContent = kw;
+      row.appendChild(b);
+    });
+  })();
+
+  setTheme(false);
+  renderPinned();
+  renderProjects();
+  renderViewer();
+  renderStatusbar();
+})();
+</script>
