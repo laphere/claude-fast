@@ -67,7 +67,7 @@ npm run tauri build -- --target universal-apple-darwin
 
 ### 架构要点
 
-- **数据目录定位（双模式）**：exe 从自身所在目录向上逐级查找首个含 `config.json` 的目录（兼容旧的 `claude-claude-fast.bat` 标记；去脚本化后 config.json 即便携标记，不再要求 scripts/ 子目录，但须通过内容校验——空对象或含本项目字段，防止把其他工具的同名文件误认成数据根；config.json + scripts/ 同在的存量目录直接认定）——**便携模式**（开发目录/绿色版/整个文件夹移动）。找不到标记时回退到 **安装模式**：`%APPDATA%\claude-fast`（macOS 为 `~/Library/Application Support/claude-fast`），首次运行自动创建该数据目录。因此：绿色版把 exe 与一个 config.json（空对象即可）放同层就行；安装版装到 Program Files（只读）也能正常读写用户数据。
+- **数据目录定位（双模式）**：exe 从自身所在目录向上最多 6 级查找首个数据根标记——**便携模式**（开发目录/绿色版/整个文件夹移动）。标记有三类：`config.json` + `scripts/` 同在的存量目录直接认定；去脚本化后 `config.json`（或其 `.bak`）即便携标记，但须过内容校验（空对象 `{}`，或命中 **≥2 个**本项目字段——只撞 1 个通用键不认，防止把其他工具的同名文件误认成数据根后覆写掉）；旧标记 `claude-claude-fast.bat`。找不到标记时回退到 **安装模式**：`%APPDATA%\claude-fast`（macOS 为 `~/Library/Application Support/claude-fast`），首次运行自动创建该数据目录。解析结果在进程内缓存一次。因此：绿色版把 exe 与一个 config.json（空对象即可）放同层就行；安装版装到 Program Files（只读）也能正常读写用户数据。
 - **项目清单（去脚本化模型）**：主列表 = Claude 会话目录扫描（`unmangle_candidates` 反向解析 mangled 目录名并验证存在性，Windows 盘符格式与 macOS `/` 格式各有实现）∪ `config.projects` 手动清单，按路径去重；`excluded` 排除清单保证「从列表移除」的项目不被扫描自动加回；路径不存在的项目标红失效、不可启动。启动**不经过任何脚本文件**（存量 `scripts/` 目录仅作旧版迁移来源保留，不再是数据根标记）。
 - **启动方式**：Windows 用 `ShellExecuteW` 新开 cmd 运行 `cmd /k cd /d "<项目>" && claude`（shell 层启动会正常分配新控制台，`/k` 让 claude 退出后窗口保留）；继续对话为 `claude --resume <session-id>`；macOS 写临时 .sh 后 `open -a Terminal`。
 - **config.json 保护**：`save_config` 采用「写临时文件 → 备份旧文件到 `.bak` → 原子替换」三步；`load_config` 读取失败时自动从 `.bak` 回退。**绝不删除 `config.json` / `.bak`**，否则用户的项目清单、排序与置顶会话丢失。

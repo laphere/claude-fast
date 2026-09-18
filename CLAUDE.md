@@ -72,7 +72,11 @@
 
 `resolve_root_dir()` 自动区分：
 
-1. **便携模式**：exe 所在目录向上（最多 6 级）查找含 `config.json` 的目录（或旧标记 `claude-claude-fast.bat`）——开发目录、整体移动的文件夹、绿色版走此路径。**去脚本化后 `config.json` 即便携标记**（旧版要求 config.json + scripts/ 双条件，会让没有 scripts/ 的新便携目录静默退到安装模式），但须过 `looks_like_our_config` **内容校验**（JSON 对象，且为空对象或含本项目任一已知字段 order/favorites/projects/excluded/dark/closeAction/providers/currentProvider/pinnedSessions——**给 Config 加字段必须同步 KNOWN_KEYS**；便携判定向上扫 6 级祖先，不校验会把其他工具的 config.json 误认成数据根、首次保存配置将其整文件覆写原件降级 .bak）；config.json + scripts/ 同在的存量目录免校验直接认定；存量 scripts/ 不删，仅供旧脚本迁移解析。
+1. **便携模式**：exe 所在目录向上（最多 6 级）查找首个数据根标记——开发目录、整体移动的文件夹、绿色版走此路径。三支候选（`is_root_dir`）：
+   - **存量布局**（`config.json` + `scripts/` 同在）：**免内容校验**无条件认定。这些是脚本时代就存在的便携目录，给它们的 config 也加校验会让「原本能用」变成「config 一损坏就找不到数据根」，是实打实的回归。存量 scripts/ 不删，仅供旧脚本迁移解析。
+   - **去脚本化布局**（`config.json` 或 `config.json.bak`）：须过 `looks_like_our_config` **内容校验**——JSON 对象，且**空对象**（`{}` 是用户显式引导便携模式的正规姿势）**或命中 ≥2 个**已知字段（order/favorites/projects/excluded/dark/closeAction/providers/currentProvider/pinnedSessions——**给 Config 加字段必须同步 KNOWN_KEYS**）。**必须 ≥2 而非 ≥1**：`projects`/`dark`/`order` 全是通用词，而便携判定向上扫 6 级祖先（安装模式下第 5/6 级正是用户主目录与 `C:\Users`），只撞 1 个键就会把别的工具的 config.json 认成数据根，且 setup 的 `ensure_projects_migrated` 会在**首次启动**就把它整份覆写（原件降级 .bak）。≥2 不误杀自家配置：无 scripts/ 的目录只可能由去脚本化之后的版本写出，而那时的序列化器没有 `skip_serializing_if`，永远写全 9 个键。**`.bak` 支是必需的**：主文件损坏/被删正是 .bak 兜底存在的意义，根判定若先一步放弃该目录，会静默换根、用户看到空清单而数据其实都在原地。
+   - **旧标记** `claude-claude-fast.<bat|sh>`。
+   - **解析结果进程内缓存**（`ROOT_CACHE: OnceLock`，`resolve_root_with_mode` 走它、纯查找逻辑抽在 `resolve_root_from` 便于单测）：根在进程生命周期内不变，缓存同时消掉两个隐患——判定已从 stat 级升到 read+parse 级后，单次瞬态读失败（杀软保存后独占扫描/云盘占位未水合/网络盘瞬断）会让同一会话内不同命令落到**不同的根**（load 读到空清单、save 写进另一个目录，表现为「清单自己清空又自己回来」），以及每条命令都重扫一遍祖先目录。
 2. **安装模式**：找不到时回退 `%APPDATA%\claude-fast`（macOS `~/Library/Application Support/claude-fast`），首次运行自动创建数据根本身（**不再创建 scripts/**；旧版创建 scripts/ 的副作用——顺带建出数据根、保证首次 save_config 有目录可写——已改为显式 `create_dir_all(app)` 保留）。
 
 ## 铁律
@@ -97,7 +101,7 @@
 ```bash
 npm install                  # 前端依赖
 npm run tauri dev            # 开发模式（热更新）
-cd src-tauri && cargo test   # 后端单元测试（175 个：路径解析/配置/扫描/根目录定位/会话管理/mangle/sh_quote/回收站/台账/供应商/模型拉取/版本升级/对话翻译层）
+cd src-tauri && cargo test   # 后端单元测试（全平台共 185 个定义，Windows 实测 179 个：路径解析/配置/扫描/根目录定位/会话管理/mangle/sh_quote/回收站/台账/供应商/模型拉取/版本升级/对话翻译层/方案结构化；差额为平台条件用例）
 npm run tauri build          # 生产构建
 # macOS 通吃包（Intel + Apple Silicon）：npm run tauri build -- --target universal-apple-darwin
 ```

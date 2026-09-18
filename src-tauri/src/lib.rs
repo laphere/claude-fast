@@ -260,26 +260,42 @@ const MAX_SEARCH_HITS: usize = 200;
 
 // ---------------- 路径定位 ----------------
 
-/// 判断目录是否为数据根：目录下有 config.json（去脚本化后的便携标记——
-/// 新便携用户没有 scripts/ 目录，旧版「config.json + scripts/」双条件会让
-/// 便携布局静默失效、退到 %APPDATA% 安装模式），或旧布局标记
-/// claude-claude-fast.<bat|sh>（脚本时代遗留）。
-/// 无 scripts/ 时 config.json 须通过 looks_like_our_config 内容校验：
-/// 便携判定会向上扫到 exe 的 6 级祖先，若把其他工具的 config.json 误认成
-/// 数据根，首次保存配置会把它整文件覆写、原件降级 .bak
+/// 判断目录是否为数据根：三支候选——存量布局（`config.json` + `scripts/`
+/// 同在）、去脚本化布局（`config.json` 或 `config.json.bak` 过内容校验）、
+/// 旧布局标记 `claude-claude-fast.<bat|sh>`。
+///
+/// 存量布局做**无条件**短路，不走内容校验：这些是脚本时代就存在的便携目录，
+/// 给它们的 config 也加校验会让「原本能用」变「config 一损坏就找不到数据根」，
+/// 那是实打实的回归。
+///
+/// 后两支必须校验内容：便携判定向上扫 exe 的 6 级祖先，安装模式下第 5/6 级
+/// 正是用户主目录与 `C:\Users`，只凭文件名认领会把其他工具的 config.json
+/// 当作数据根，而 setup 里的 `ensure_projects_migrated` 在**首次启动**就会
+/// 把它整份覆写（原件降级 .bak）。`.bak` 那支是必需的：主文件损坏/被删正是
+/// .bak 兜底存在的意义，根判定不能先一步放弃该目录（否则静默换根、
+/// 用户看到空清单，而数据与 .bak 都还在原地）。
 fn is_root_dir(dir: &Path) -> bool {
-    (dir.join("config.json").is_file()
-        && (dir.join(SCRIPTS_DIR).is_dir() || looks_like_our_config(dir)))
+    if dir.join("config.json").is_file() && dir.join(SCRIPTS_DIR).is_dir() {
+        return true;
+    }
+    looks_like_our_config(&dir.join("config.json"))
+        || looks_like_our_config(&dir.join("config.json.bak"))
         || dir.join(legacy_marker()).is_file()
 }
 
-/// config.json 是否像本程序的配置：须为 JSON 对象，且要么是空对象
-/// （`{}`——用户显式引导便携模式的正规姿势，外来工具的配置不会恰好是
-/// 空对象），要么含本程序任一已知字段（从旧数据目录/旧机器拷来的 config
-/// 必然满足其一）。键名含 serde alias（favorites）；给 Config 加字段时
-/// 记得同步 KNOWN_KEYS。
-fn looks_like_our_config(dir: &Path) -> bool {
-    let Ok(raw) = fs::read(dir.join("config.json")) else {
+/// 配置文件是否像本程序的配置：须为 JSON 对象，且要么是空对象（`{}`——
+/// 用户显式引导便携模式的正规姿势，外来工具的配置不会恰好是空对象），
+/// 要么命中 **≥2 个**已知字段。
+///
+/// 为什么是「≥2」而不是「≥1」：`projects` / `dark` / `order` / `excluded`
+/// 都是通用词，只要求撞上 1 个键就会把别的工具（乃至手写的
+/// `{"dark":true}`）认成数据根，代价是把它覆写掉。≥2 且不误杀自家配置——
+/// 无 `scripts/` 的目录只可能由去脚本化之后的版本写出，而那时的序列化器
+/// 没有 `skip_serializing_if`，永远写全 9 个键。
+///
+/// 键名含 serde alias（`favorites`）；给 `Config` 加字段时记得同步 KNOWN_KEYS。
+fn looks_like_our_config(path: &Path) -> bool {
+    let Ok(raw) = fs::read(path) else {
         return false;
     };
     let Ok(v) = serde_json::from_slice::<serde_json::Value>(strip_bom(&raw)) else {
@@ -302,7 +318,16 @@ fn looks_like_our_config(dir: &Path) -> bool {
         "currentProvider",
         "pinnedSessions",
     ];
-    KNOWN_KEYS.iter().any(|k| obj.contains_key(*k))
+    let mut hits = 0;
+    for k in KNOWN_KEYS {
+        if obj.contains_key(k) {
+            hits += 1;
+            if hits >= 2 {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// 安装模式数据根：%APPDATA%\claude-fast（Windows）/
@@ -320,10 +345,35 @@ fn app_data_root() -> PathBuf {
     PathBuf::from(base).join("claude-fast")
 }
 
+/// 便携根查找：从 start 起向上最多 6 级，返回首个满足 `is_root_dir` 的目录。
+/// 抽成独立函数是为了可测——`resolve_root_uncached` 的起点是 exe 所在目录，
+/// 单测控制不了，而这个循环的**深度**与「首个命中即返回」语义恰恰最该被测。
+fn resolve_root_from(start: &Path) -> Option<PathBuf> {
+    let mut dir = start.to_path_buf();
+    for _ in 0..6 {
+        if is_root_dir(&dir) {
+            return Some(dir);
+        }
+        match dir.parent() {
+            Some(p) => dir = p.to_path_buf(),
+            None => break,
+        }
+    }
+    None
+}
+
+/// 数据根解析结果**进程内缓存**。根在进程生命周期内不变（exe 位置固定），
+/// 缓存有两个必要理由：
+/// ① 判定已从 stat 级（is_file/is_dir）升到 read+parse 级，单次瞬态读失败
+///    （杀软保存后独占扫描、云盘占位文件未水合、网络盘瞬断）会让同一会话内
+///    不同命令落到**不同的根**——load 读到一份空清单、save 写进另一个目录，
+///    表现为「清单自己清空又自己回来」；
+/// ② 避免每条命令（十余处调用点）都向上扫祖先目录并读文件。
+static ROOT_CACHE: std::sync::OnceLock<(PathBuf, bool)> = std::sync::OnceLock::new();
+
 /// 定位数据根目录（双模式）：
-/// 1. **便携模式**：exe 所在目录向上逐级查找首个根目录标记
-///    （config.json，或旧标记 claude-claude-fast.bat）——
-///    开发目录、整体移动的文件夹、绿色版均走此路径。
+/// 1. **便携模式**：exe 所在目录向上（最多 6 级）查找首个根目录标记
+///    （见 `is_root_dir`）——开发目录、整体移动的文件夹、绿色版走此路径。
 /// 2. **安装模式**：找不到便携标记时回退到应用数据目录
 ///    （%APPDATA%\claude-fast），首次运行自动创建该目录
 ///    （scripts/ 是脚本时代遗留，去脚本化后不再创建；存量目录里的
@@ -332,16 +382,14 @@ fn app_data_root() -> PathBuf {
 /// 返回 (数据根, 是否安装模式)。模式判定必须在查找现场做：
 /// 便携根通常是 exe 的**祖先**目录，「root != exe_dir」恒真，判不出模式
 fn resolve_root_with_mode() -> (PathBuf, bool) {
+    ROOT_CACHE.get_or_init(resolve_root_uncached).clone()
+}
+
+fn resolve_root_uncached() -> (PathBuf, bool) {
     let exe = std::env::current_exe().unwrap_or_default();
-    let mut dir = exe.parent().map(Path::to_path_buf).unwrap_or_default();
-    for _ in 0..6 {
-        if is_root_dir(&dir) {
-            return (dir, false);
-        }
-        match dir.parent() {
-            Some(p) => dir = p.to_path_buf(),
-            None => break,
-        }
+    let start = exe.parent().map(Path::to_path_buf).unwrap_or_default();
+    if let Some(root) = resolve_root_from(&start) {
+        return (root, false);
     }
     // 安装模式：现场创建数据根本身（旧版在此顺带创建 scripts/，是其副作用
     // 保证了首次 save_config 有目录可写——去掉 scripts/ 后创建根目录必须保留）
@@ -4003,16 +4051,82 @@ mod tests {
     }
 
     #[test]
-    fn resolve_root_finds_project() {
+    fn resolve_root_with_mode_matches_ancestor_scan() {
+        // 独立复算一遍「exe 向上 6 级的首个便携标记」，与 resolve 的结果对照。
+        // 旧版这里只断言 root.is_dir()——本机恒真，等于没测；现在两个分支的
+        // 期望值都由扫描推出，搜索深度写错或谓词漏判都会让它失败
         let (root, install) = resolve_root_with_mode();
-        if install {
-            // 安装模式：根即应用数据目录，且由 resolve 现场创建
-            assert_eq!(root, app_data_root());
-            assert!(root.is_dir());
-        } else {
-            // 便携模式：结果必须满足便携判定条件自身
-            assert!(is_root_dir(&root));
+        let exe = std::env::current_exe().unwrap_or_default();
+        let mut dir = exe.parent().map(Path::to_path_buf).unwrap_or_default();
+        let mut portable: Option<PathBuf> = None;
+        for _ in 0..6 {
+            if is_root_dir(&dir) {
+                portable = Some(dir.clone());
+                break;
+            }
+            match dir.parent() {
+                Some(p) => dir = p.to_path_buf(),
+                None => break,
+            }
         }
+        match portable {
+            Some(expect) => {
+                assert!(!install, "祖先存在便携根 {} 却判为安装模式", expect.display());
+                assert_eq!(root, expect);
+            }
+            None => {
+                assert!(install, "无便携标记却判为便携模式（根 {}）", root.display());
+                assert_eq!(root, app_data_root());
+                assert!(root.is_dir(), "安装模式根应由 resolve 现场创建");
+            }
+        }
+    }
+
+    #[test]
+    fn resolve_root_from_walks_up_and_prefers_nearest() {
+        // 外层与内层都有标记 → 取最近的（首个命中即返回）
+        let outer = temp_root("walk-outer");
+        fs::write(outer.join("config.json"), "{}").unwrap();
+        let inner = outer.join("inner");
+        fs::create_dir_all(&inner).unwrap();
+        fs::write(inner.join("config.json"), "{}").unwrap();
+        assert_eq!(resolve_root_from(&inner).as_deref(), Some(inner.as_path()));
+        // 从更深子目录出发找到祖先根（绿色版 exe 放在子目录里的情形），
+        // 同时覆盖「层级深度」：deep → a → inner → outer 共 4 级
+        let deep = inner.join("a").join("b");
+        fs::create_dir_all(&deep).unwrap();
+        fs::remove_file(inner.join("config.json")).unwrap();
+        assert_eq!(resolve_root_from(&deep).as_deref(), Some(outer.as_path()));
+        // 起点自身即根
+        assert_eq!(resolve_root_from(&outer).as_deref(), Some(outer.as_path()));
+        fs::remove_dir_all(&outer).unwrap();
+    }
+
+    #[test]
+    fn resolve_root_from_returns_none_without_marker() {
+        // 无任何标记 → None，调用方据此回退安装模式。
+        // 仅在「6 级祖先里确实没有标记」时才断言：系统 temp 位于
+        // <home>/AppData/Local 之下，向上第 5~6 级会扫到用户主目录，
+        // 若某人主目录恰好有合规 config.json，本测试不该为此背锅
+        let bare = temp_root("walk-bare");
+        let deep = bare.join("x").join("y");
+        fs::create_dir_all(&deep).unwrap();
+        let mut dir = deep.clone();
+        let mut ancestor_has_marker = false;
+        for _ in 0..6 {
+            if is_root_dir(&dir) {
+                ancestor_has_marker = true;
+                break;
+            }
+            match dir.parent() {
+                Some(p) => dir = p.to_path_buf(),
+                None => break,
+            }
+        }
+        if !ancestor_has_marker {
+            assert!(resolve_root_from(&deep).is_none());
+        }
+        fs::remove_dir_all(&bare).unwrap();
     }
 
     #[test]
@@ -4020,21 +4134,40 @@ mod tests {
         let root = temp_root("root");
         // 空目录：非根
         assert!(!is_root_dir(&root));
-        // 去脚本化布局：config.json 即便携标记（新便携用户没有 scripts/ 目录；
-        // 旧版双条件会让这种布局静默退到 %APPDATA% 安装模式）
+        // 去脚本化布局：空对象 config.json 即认（用户显式引导便携模式的正规姿势）
         fs::write(root.join("config.json"), "{}").unwrap();
         assert!(is_root_dir(&root));
-        // 含本项目已知字段（从旧数据目录拷来的 config）：同样认定
+        // 含 ≥2 个本项目已知字段（从旧数据目录/旧机器拷来的 config）：认定
         fs::write(root.join("config.json"), r#"{"projects":["D:\\foo"],"order":[]}"#).unwrap();
         assert!(is_root_dir(&root));
-        // 外来工具的 config.json：字段对不上 → 不是根
-        // （防误认成数据根后首次保存把它整文件覆写、原件降级 .bak）
+        // 只撞上 1 个通用键：**不认**——便携判定向上扫 6 级祖先，安装模式会扫到
+        // 用户主目录与 C:\Users，`{"dark":true}` 这类别的工具的配置若被认领，
+        // setup 的 ensure_projects_migrated 会在首次启动把它整份覆写
+        fs::write(root.join("config.json"), r#"{"dark":true}"#).unwrap();
+        assert!(!is_root_dir(&root));
+        // 键完全对不上的外来 config.json：不认
         fs::write(root.join("config.json"), r#"{"apiKey":"xxx","port":8080}"#).unwrap();
         assert!(!is_root_dir(&root));
-        // 非 JSON（坏文件）：不是根
+        // 非 JSON（坏文件）：不认
         fs::write(root.join("config.json"), "not json at all").unwrap();
         assert!(!is_root_dir(&root));
-        // 脚本时代布局（config.json + scripts/）：存量便携目录直接认定，免内容校验
+        // 非对象 JSON（数组 / 字符串 / 数字）：不认
+        fs::write(root.join("config.json"), "[1,2,3]").unwrap();
+        assert!(!is_root_dir(&root));
+        // 0 字节（云同步半写、杀软隔离的典型形态）：不认
+        fs::write(root.join("config.json"), "").unwrap();
+        assert!(!is_root_dir(&root));
+        // 但 .bak 是好的 → **仍认**：.bak 兜底正是为这种场景存在的，根判定若
+        // 先一步放弃该目录，用户会看到空清单，而数据与 .bak 其实都在原地
+        fs::write(root.join("config.json.bak"), r#"{"projects":[],"order":[]}"#).unwrap();
+        assert!(is_root_dir(&root));
+        // 只有 .bak、config.json 被删：同样认
+        fs::remove_file(root.join("config.json")).unwrap();
+        assert!(is_root_dir(&root));
+        fs::remove_file(root.join("config.json.bak")).unwrap();
+        // 脚本时代布局（config.json + scripts/）：存量目录**免内容校验**直接认定
+        // ——给存量便携用户的 config 也加校验会让「原本能用」变「config 一坏就
+        // 找不到数据根」，那是实打实的回归
         fs::write(root.join("config.json"), r#"{"apiKey":"xxx"}"#).unwrap();
         fs::create_dir_all(root.join(SCRIPTS_DIR)).unwrap();
         assert!(is_root_dir(&root));

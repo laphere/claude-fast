@@ -550,8 +550,11 @@ export default function App() {
   // 保持过期优于打扰阅读（查看器自带刷新按钮）。
   // 订阅一次、回调走 latest-ref：refreshSessions 随 items 变化，若放进 deps
   // 会在每次清单/健康检查回填后重订阅（两次 IPC）且节流窗口被重置；
-  // 1.5s 节流防 alt-tab 抖动连刷；at 初值取订阅时刻，吞掉窗口创建期的
-  // 一次性 focus 事件，避免与挂载时的 load() 重复拉取。
+  // 1.5s 节流防 alt-tab 抖动连刷。at 初值取订阅时刻，挡掉挂载后 1.5s 内到达的
+  // 聚焦事件——注意 onFocusChanged 订阅时**不会**用当前焦点状态回调一次
+  // （@tauri-apps/api 只是注册 FOCUS/BLUR 两个监听），所以这里挡的是启动后
+  // 紧接着的真实聚焦；此时 expandedKey 恒为 null，唯一可能重复的只有挂载
+  // effect 已拉过一次的 refreshPinned()，无实际损失。
   const visibleListsRef = useRef({ refresh: refreshVisibleLists, at: 0 });
   useEffect(() => {
     visibleListsRef.current.refresh = refreshVisibleLists;
