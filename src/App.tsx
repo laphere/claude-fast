@@ -175,7 +175,7 @@ export default function App() {
 
   // ---------- 数据加载 ----------
 
-  /** load 竞态守卫：健康检查等异步回包可能晚于下一次 load，过期结果不得覆盖新状态 */
+  /** load 竞态守卫：上一次 load 的回包可能晚于本次，过期结果不得覆盖新状态 */
   const loadSeqRef = useRef(0);
 
   const load = useCallback(async () => {
@@ -192,20 +192,6 @@ export default function App() {
       setCloseAction(cfg.closeAction ?? null);
       // 选中项可能已被删除，清理
       setSelectedKey((k) => (k && list.some((l) => l.key === k) ? k : null));
-      // 健康检查在后台异步执行（不阻塞列表渲染）；
-      // 路径不存在的结果回来后自动标记失效。
-      // 按路径映射回填而非按下标：两次 load 并发时列表可能已变，
-      // 下标回填会让「失效」标记整体错位；path 是稳定锚点
-      const paths = list.map((l) => l.path);
-      api
-        .checkProjects(paths)
-        .then((results) => {
-          const byPath = new Map(paths.map((p, i) => [p, results[i] ?? false]));
-          setItems((prev) =>
-            prev.map((l) => (byPath.has(l.path) ? { ...l, healthy: byPath.get(l.path)! } : l)),
-          );
-        })
-        .catch(() => {});
     } catch (e) {
       showToast("加载失败：" + String(e));
     }

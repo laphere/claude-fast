@@ -5,8 +5,8 @@ export interface Project {
   name: string;
   /** 项目绝对路径 */
   path: string;
-  /** undefined = 尚未检查（列表先渲染，后台异步检查后回填）；false = 路径已不存在 */
-  healthy?: boolean;
+  /** false = 路径已不存在（后端 list_projects 扫描时随 missing 判定；健康检查弹窗复查后本地更新） */
+  healthy: boolean;
 }
 
 export type CloseAction = "quit" | "minimize" | null;

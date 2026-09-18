@@ -79,8 +79,8 @@ pub struct ProjectItem {
     path: String,
     /// true = 路径当前不存在（标红、不可启动）
     missing: bool,
-    // healthy 不在 list_projects 中计算（避免启动时阻塞在目录检查上），
-    // 由前端调用 check_projects 异步获取后回填。
+    // missing 在扫描/合并时顺带判定（list_projects 整体跑在 spawn_blocking，
+    // 不卡 UI），前端直接映射为 healthy；check_projects 命令仅供健康检查弹窗手动复查。
 }
 
 /// 置顶会话条目
@@ -1327,7 +1327,8 @@ async fn check_claude() -> bool {
 }
 
 /// 健康检查：并行检查各项目路径是否存在（在阻塞线程池中执行，
-/// 不阻塞主线程/UI；某个路径卡住时其余结果不受影响）
+/// 不阻塞主线程/UI；某个路径卡住时其余结果不受影响）。
+/// 仅供健康检查弹窗手动复查——启动时的自动失效判定由 list_projects 的 missing 承担。
 #[tauri::command]
 async fn check_projects(paths: Vec<String>) -> Vec<bool> {
     let mut tasks = Vec::with_capacity(paths.len());

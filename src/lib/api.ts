@@ -12,7 +12,6 @@ import type {
   ClaudeUpdateStatus,
   Config,
   FetchedModel,
-  Project,
   ProviderImportOutcome,
   ProviderInfo,
   ProviderListState,
@@ -32,7 +31,11 @@ import type {
 /** Tauri 后端命令封装（去脚本化：项目清单为路径模型） */
 export const api = {
   // ---------- 项目清单 ----------
-  listProjects: () => invoke<Project[]>("list_projects"),
+  /** 项目清单：后端扫描时顺带判定的 missing 直接映射为 healthy，启动时不再重复检查 */
+  listProjects: () =>
+    invoke<{ key: string; name: string; path: string; missing: boolean }[]>("list_projects").then(
+      (list) => list.map(({ key, name, path, missing }) => ({ key, name, path, healthy: !missing })),
+    ),
   loadConfig: () => invoke<Config>("load_config"),
   saveConfig: (
     order: string[],
@@ -59,6 +62,7 @@ export const api = {
   claudeUpdateStatus: () => invoke<ClaudeUpdateStatus>("claude_update_status"),
   /** Claude Code 一键升级：claude update 失败兜底 npm 全局安装，返回输出尾部 */
   claudeRunUpgrade: () => invoke<string>("claude_run_upgrade"),
+  /** 手动健康检查弹窗复查用（打开时现场重查所有目录） */
   checkProjects: (paths: string[]) => invoke<boolean[]>("check_projects", { paths }),
   // ---------- 批量添加 ----------
   scanClaudeProjects: () => invoke<ClaudeProject[]>("scan_claude_projects"),
