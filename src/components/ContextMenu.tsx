@@ -15,7 +15,6 @@ interface Props {
   onOpenFolder: (l: Project) => void;
   onCopyPath: (l: Project) => void;
   onRemove: (l: Project) => void;
-  onHealth: () => void;
   onResumeSession: (s: SessionInfo) => void;
   onRenameSession: (s: SessionInfo) => void;
   onTogglePinSession: (s: SessionInfo) => void;
@@ -29,7 +28,6 @@ export default function ContextMenu({
   onOpenFolder,
   onCopyPath,
   onRemove,
-  onHealth,
   onResumeSession,
   onRenameSession,
   onTogglePinSession,
@@ -102,12 +100,8 @@ export default function ContextMenu({
               <button className="context-item context-danger" onClick={() => { onRemove(project); onClose(); }}>
                             {project.healthy === false ? "移除（目录已失效）" : "从列表移除"}
               </button>
-              <div className="context-sep" />
             </>
           )}
-          <button className="context-item" onClick={() => { onHealth(); onClose(); }}>
-            健康检查
-          </button>
         </>
       )}
     </div>

@@ -717,10 +717,6 @@ export default function App() {
           onOpenFolder={openFolder}
           onCopyPath={copyPath}
           onRemove={confirmRemove}
-          onHealth={() => {
-            setMenu(null);
-            setDialog("health");
-          }}
           onResumeSession={(s) => resumeSession(menu.key, s)}
           onRenameSession={(s) => setRenameTarget({ session: s, key: menu.key })}
           onTogglePinSession={(s) => togglePin(menu.key, s)}
