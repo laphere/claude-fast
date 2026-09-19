@@ -713,9 +713,12 @@ export default function SessionViewer({
       setHasMore(data.hasMore);
       setTotal(data.total);
       setStats(data.stats);
-      // 新增内容在顶部：滚动偏移补偿，保持当前阅读位置
+      // 新增内容在顶部：滚动偏移补偿，保持当前阅读位置（回调执行时再校验
+      // 会话未切换，否则补偿会写到新会话的滚动容器上、拽走阅读位置）
       requestAnimationFrame(() => {
-        if (body) body.scrollTop = prevTop + (body.scrollHeight - prevHeight);
+        if (body && sessionFileRef.current === myFile) {
+          body.scrollTop = prevTop + (body.scrollHeight - prevHeight);
+        }
       });
     } catch (e) {
       onToast("加载更早消息失败：" + String(e));
@@ -744,7 +747,7 @@ export default function SessionViewer({
       onToast("加载更晚消息失败：" + String(e));
     }
     setLoadingMore(false);
-  }, [session, loadingMore, total, onToast]);
+  }, [session, loading, loadingMore, total, onToast]);
 
   // 进度条高亮跟随滚动：视口顶部附近最近的那条用户发言
   const updateActivePrompt = useCallback(() => {
@@ -825,7 +828,7 @@ export default function SessionViewer({
 
   // ---------- 搜索 ----------
 
-  // 防抖 300ms 调后端全文搜索（结果按消息序号返回）
+  // 防抖 300ms 调后端全文搜索（结果按消息序号返回；点「刷新」重载后同关键词重查）
   useEffect(() => {
     if (!session || !searchKeyword.trim()) {
       setSearchResults(null);
@@ -852,7 +855,7 @@ export default function SessionViewer({
       cancelled = true;
       window.clearTimeout(t);
     };
-  }, [session, searchKeyword, onToast]);
+  }, [session, searchKeyword, reloadKey, onToast]);
 
   // 关键词高亮：作用于消息区与搜索结果片段（关键词清空/消息增减时重建）
   useEffect(() => {

@@ -117,24 +117,6 @@ export default function App() {
     };
   }, []);
 
-  const handleCloseChoice = useCallback(
-    async (action: "quit" | "minimize", remember: boolean) => {
-      setCloseChoiceOpen(false);
-      if (remember) {
-        setCloseAction(action);
-        await api
-          .saveConfig(order, pinnedSessions, projectDirs, excludedDirs, dark, action)
-          .catch(() => {});
-      }
-      if (action === "minimize") {
-        await getCurrentWindow().hide();
-      } else {
-        await api.quitApp();
-      }
-    },
-    [order, pinnedSessions, projectDirs, excludedDirs, dark],
-  );
-
   // ---------- Toast ----------
 
   const toastTimerRef = useRef<number | null>(null);
@@ -147,6 +129,25 @@ export default function App() {
       setToast(null);
     }, duration);
   }, []);
+
+  const handleCloseChoice = useCallback(
+    async (action: "quit" | "minimize", remember: boolean) => {
+      setCloseChoiceOpen(false);
+      if (remember) {
+        setCloseAction(action);
+        // 落盘失败不拦住关窗动作，但要提示（否则重启后静默回退为每次询问）
+        await api
+          .saveConfig(order, pinnedSessions, projectDirs, excludedDirs, dark, action)
+          .catch((e) => showToast("保存关闭行为失败：" + String(e)));
+      }
+      if (action === "minimize") {
+        await getCurrentWindow().hide();
+      } else {
+        await api.quitApp();
+      }
+    },
+    [order, pinnedSessions, projectDirs, excludedDirs, dark, showToast],
+  );
 
   // ---------- 数据加载 ----------
 
@@ -456,6 +457,12 @@ export default function App() {
       const { session, key } = renameTarget;
       await api.renameSession(session.file, newTitle); // 失败时向上抛给对话框显示
       setRenameTarget(null);
+      // 右侧查看器正显示该会话时同步其标题，否则头部停留在旧标题
+      setActiveSession((cur) =>
+        cur && cur.session.file === session.file
+          ? { ...cur, session: { ...cur.session, title: newTitle } }
+          : cur,
+      );
       // 重命名后刷新该项目会话列表（若仍处于展开状态）
       if (expandedKey === key) {
         const l = items.find((x) => x.key === key);
@@ -629,7 +636,11 @@ export default function App() {
           setProviderOpen(true);
           // 打开时重新拉取：live 可能已被外部工具（CC Switch 等）改写，
           // 后端 provider_list 顺带做标记重锚定，保证「当前」徽标是磁盘实况
-          api.providerList().then(setProviderState).catch(() => {});
+          api.providerList().then(setProviderState).catch((e) => {
+            // 从未加载成功过时弹窗无内容可渲染，收回打开态并提示
+            if (!providerState) setProviderOpen(false);
+            showToast("供应商清单加载失败：" + String(e));
+          });
         }}
       />
 

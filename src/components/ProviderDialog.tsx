@@ -345,6 +345,14 @@ export default function ProviderDialog({ state, onClose, onChanged, toast }: Pro
     setBusy(true);
     try {
       const list = await api.providerDelete(p.id);
+      // 清掉该供应商的用量缓存（模块级 + 本组件状态），同 id 供应商复用时
+      // 不会显示上一家的过期结果
+      delete usageCache[p.id];
+      setUsageState((prev) => {
+        const next = { ...prev };
+        delete next[p.id];
+        return next;
+      });
       onChanged(list);
       toast(`已删除「${p.name}」`);
     } catch (e) {

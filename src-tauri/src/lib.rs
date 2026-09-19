@@ -300,6 +300,14 @@ fn app_data_root() -> PathBuf {
         .unwrap_or_default();
     #[cfg(not(any(windows, target_os = "macos")))]
     let base = std::env::var("HOME").unwrap_or_default();
+    if base.is_empty() {
+        // 环境变量缺失时退回 exe 所在目录，避免数据根退化成相对路径
+        // （相对进程 CWD，随启动位置漂移）
+        return std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(Path::to_path_buf))
+            .unwrap_or_default();
+    }
     PathBuf::from(base).join("claude-fast")
 }
 
@@ -591,9 +599,9 @@ fn save_config_file(root: &Path, cfg: &Config) -> Result<(), String> {
 #[tauri::command]
 fn launch_project(path: String) -> Result<(), String> {
     let dir = path.trim().to_string();
-    if !Path::new(&dir).is_dir() {
-        return Err("项目路径不存在".to_string());
-    }
+    // 路径与 resume 拼进同款 `cd /d "..."` 双引号内，注入面一致，
+    // 共用同一校验（存在性检查 + 各平台禁字符规则）
+    validate_resume_path(&dir)?;
     #[cfg(windows)]
     {
         use windows_sys::Win32::UI::Shell::ShellExecuteW;
@@ -1123,9 +1131,24 @@ fn session_meta_from_lite(
     })
 }
 
+/// 循环读到缓冲满或 EOF：单次 read 允许短读（网络盘/云占位文件），
+/// 短读会让 head/tail 缺字节、首尾行被截断
+fn read_full(f: &mut fs::File, buf: &mut [u8]) -> std::io::Result<usize> {
+    use std::io::Read;
+    let mut filled = 0;
+    while filled < buf.len() {
+        let n = f.read(&mut buf[filled..])?;
+        if n == 0 {
+            break;
+        }
+        filled += n;
+    }
+    Ok(filled)
+}
+
 /// 读取会话 jsonl 的 head/tail（单 fd 两次 read），返回原始文本
 fn read_head_tail(path: &Path) -> Option<(String, String, i64)> {
-    use std::io::{Read, Seek, SeekFrom};
+    use std::io::{Seek, SeekFrom};
     let mut f = fs::File::open(path).ok()?;
     let meta = f.metadata().ok()?;
     let size = meta.len();
@@ -1133,13 +1156,13 @@ fn read_head_tail(path: &Path) -> Option<(String, String, i64)> {
         return None;
     }
     let mut buf = vec![0u8; LITE_READ_BUF_SIZE];
-    let head_n = f.read(&mut buf).ok()?;
+    let head_n = read_full(&mut f, &mut buf).ok()?;
     let head = String::from_utf8_lossy(&buf[..head_n]).to_string();
     let mut tail = head.clone();
     if size > LITE_READ_BUF_SIZE as u64 {
         f.seek(SeekFrom::Start(size - LITE_READ_BUF_SIZE as u64))
             .ok()?;
-        let tail_n = f.read(&mut buf).ok()?;
+        let tail_n = read_full(&mut f, &mut buf).ok()?;
         tail = String::from_utf8_lossy(&buf[..tail_n]).to_string();
     }
     let mtime = meta
@@ -5098,7 +5121,8 @@ mod tests {
     }
 
     #[test]
-    fn parse_session_messages_merges_same_msg_id() {        let jsonl = format!(
+    fn parse_session_messages_merges_same_msg_id() {
+        let jsonl = format!(
             "{}\n{}\n{}\n{}\n{}\n",
             r#"{"type":"user","message":{"role":"user","content":"你好"},"timestamp":"t1"}"#,
             // 同一响应的三行（text / tool_use / text）→ 合并为一条消息
