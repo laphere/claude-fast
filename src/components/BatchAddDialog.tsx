@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../lib/api";
 import type { ClaudeProject } from "../types";
 import Modal from "./Modal";
@@ -22,6 +22,13 @@ export default function BatchAddDialog({ onClose, onDone, onRefresh }: Props) {
   // 「删除失效数据」两段式确认：第一次点击进入待确认态，3 秒内再点才执行
   const [purging, setPurging] = useState(false);
   const [purgeArm, setPurgeArm] = useState(false);
+  const purgeArmTimerRef = useRef<number | null>(null);
+  useEffect(() => {
+    // 卸载时清掉待确认态的计时器
+    return () => {
+      if (purgeArmTimerRef.current !== null) window.clearTimeout(purgeArmTimerRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     let disposed = false;
@@ -99,7 +106,7 @@ export default function BatchAddDialog({ onClose, onDone, onRefresh }: Props) {
     if (!projects || purging) return;
     if (!purgeArm) {
       setPurgeArm(true);
-      window.setTimeout(() => setPurgeArm(false), 3000);
+      purgeArmTimerRef.current = window.setTimeout(() => setPurgeArm(false), 3000);
       return;
     }
     setPurgeArm(false);

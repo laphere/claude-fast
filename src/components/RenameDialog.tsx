@@ -20,6 +20,7 @@ export default function RenameDialog({ sessionTitle, onClose, onRenamed }: Props
   }, []);
 
   const submit = async () => {
+    if (busy) return; // Enter 键直调 submit，不经按钮的 disabled
     const title = value.trim();
     if (!title) {
       setError("标题不能为空。");

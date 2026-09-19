@@ -544,8 +544,12 @@ export default function ChatView({
       setHasMore(data.hasMore);
       setTotal(data.total);
       setStats(data.stats);
+      // 新增内容在顶部：滚动偏移补偿，保持当前阅读位置（回调执行时再校验
+      // 会话未切换，否则补偿会写到新会话的滚动容器上、拽走阅读位置）
       requestAnimationFrame(() => {
-        if (body) body.scrollTop = prevTop + (body.scrollHeight - prevHeight);
+        if (body && sessionFileRef.current === myFile) {
+          body.scrollTop = prevTop + (body.scrollHeight - prevHeight);
+        }
       });
     } catch (e) {
       onToast("加载更早消息失败：" + String(e));

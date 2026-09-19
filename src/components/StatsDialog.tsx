@@ -420,7 +420,10 @@ export default function StatsDialog({ onClose }: Props) {
             <button
               key={r}
               className={range === r ? "on" : ""}
-              onClick={() => setRange(r)}
+              onClick={() => {
+                setRange(r);
+                setHoverDay(null); // 柱体随范围重建，旧悬停索引会指错柱
+              }}
             >
               {label}
             </button>
