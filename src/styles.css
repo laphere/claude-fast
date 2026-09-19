@@ -131,37 +131,52 @@ code {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 14px 18px;
-  background: var(--panel);
+  /* 底色与全窗统一用 --bg（原 --panel 的白条与内容区有割裂感），
+     仅靠底边发丝线分隔；按钮/pill 本就是 --panel 描边芯片，浮起更清晰 */
+  padding: 8px 18px;
+  background: var(--bg);
   border-bottom: 1px solid var(--border);
 }
 
-.brand {
+/* 顶栏左侧：仅侧栏开关（品牌区已移除） */
+.header-left {
   display: flex;
   align-items: center;
-  gap: 12px;
-}
-
-.brand-logo {
-  width: 38px;
-  height: 38px;
-  border-radius: 9px;
-  object-fit: contain;
-  box-shadow: 0 2px 8px rgba(176, 82, 48, 0.35);
-}
-
-.brand h1 {
-  font-size: 15px;
-  font-weight: 600;
-}
-
-.brand-sub {
-  font-size: 11px;
-  color: var(--muted);
-  margin-top: 1px;
+  gap: 8px;
 }
 
 .header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  /* 按钮组不参与压缩。品牌区已移除，左侧只剩 32px 侧栏开关，
+     minWidth=800 下左右两簇恒不相接（32+8+550+36 << 800） */
+  flex: none;
+}
+
+/* 搜索展开时顶栏「搜索」按钮的高亮态 */
+.icon-btn-on {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent-hover);
+}
+
+/* 供应商名超长时省略号截断（封顶 130px），否则长名字会把单行顶栏挤爆 */
+.pill-provider {
+  max-width: 130px;
+}
+
+.pill-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 原工具栏按钮组上移到顶栏（设置按钮之前），纯图标 .icon-btn（自带居中），
+ * 不加竖线分隔——与设置/主题按钮就是一排等距图标 */
+.header-tools {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -236,16 +251,19 @@ code {
   background: var(--panel-2);
 }
 
-/* ============ 工具栏 ============ */
-.toolbar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 12px 18px;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg);
+/* 查看器「继续对话」按钮的纯图标版：保持原 btn-primary 的 accent 底色 */
+.icon-btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
 }
 
+.icon-btn-primary:hover {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+/* ============ 搜索框（左栏，入口在顶栏「搜索」按钮） ============ */
 .search-box {
   position: relative;
   flex: 1;
@@ -305,12 +323,6 @@ code {
 .search-clear:hover {
   color: var(--text);
   background: var(--panel-2);
-}
-
-.toolbar-actions {
-  display: flex;
-  gap: 8px;
-  margin-left: auto;
 }
 
 /* ============ 按钮 ============ */
@@ -683,10 +695,30 @@ code {
 
 .main-left {
   flex: 0 0 360px;
-  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
   padding: 10px 14px;
   border-right: 1px solid var(--border);
   min-height: 0;
+  overflow: hidden;
+}
+
+/* 搜索框常驻左栏顶部，列表区独立滚动（搜索框不被滚走） */
+.left-search {
+  flex: none;
+  max-width: none;
+}
+
+.left-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* 顶栏「收起项目列表」后的状态：整栏隐藏，内容区占满全宽 */
+.main-left-collapsed {
+  display: none;
 }
 
 .viewer {
@@ -712,8 +744,9 @@ code {
 .viewer-head {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 10px 16px;
+  gap: 10px;
+  /* 上下留白收紧（10→7）：路径行已撤，标题+统计两行足够呼吸 */
+  padding: 7px 12px;
   border-bottom: 1px solid var(--border);
 }
 
@@ -728,15 +761,6 @@ code {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.viewer-meta {
-  font-size: 11px;
-  color: var(--muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  margin-top: 2px;
 }
 
 .viewer-actions {
@@ -813,10 +837,11 @@ code {
 
 /* ============ 会话域增强（统计 / 搜索 / 文件面板 / 导出） ============ */
 
+/* 标题下的唯一 meta 线：消息数（并入进来，不再独立占行）+ token 统计 */
 .viewer-stats {
   font-size: 11px;
   color: var(--accent);
-  margin-top: 3px;
+  margin-top: 1px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

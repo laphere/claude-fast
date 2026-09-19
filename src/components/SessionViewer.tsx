@@ -7,7 +7,6 @@ import {
   ArrowDownIcon,
   ArrowUpIcon,
   BrainIcon,
-  ChevronDownIcon,
   ChevronRightIcon,
   DownloadIcon,
   FileDiffIcon,
@@ -33,8 +32,6 @@ import type {
 
 interface Props {
   session: SessionInfo | null;
-  /** 会话所属项目真实路径（resume 用） */
-  projectPath: string | null;
   onResume: () => void;
   onToast: (msg: string) => void;
 }
@@ -570,7 +567,6 @@ interface ChangedFile {
  *  会话域增强：消息搜索、token/成本统计、导出、变更文件导航。 */
 export default function SessionViewer({
   session,
-  projectPath,
   onResume,
   onToast,
 }: Props) {
@@ -1127,50 +1123,47 @@ export default function SessionViewer({
       <div className="viewer-head">
         <div className="viewer-head-body">
           <div className="viewer-title">{session.title}</div>
-          <div className="viewer-meta">
-            {projectPath ?? session.file}
-            {total > 0 ? ` · 共 ${total} 条消息` : ""}
-          </div>
-          {stats && stats.messageCount > 0 && (
+          {(total > 0 || (stats && stats.messageCount > 0)) && (
             <div className="viewer-stats">
-              总计 {fmtTokens(stats.totalTokens)} · 输入 {fmtTokens(stats.inputTokens)} · 输出{" "}
-              {fmtTokens(stats.outputTokens)}
-              {stats.cacheReadTokens > 0 && ` · 缓存读取 ${fmtTokens(stats.cacheReadTokens)}`}
+              {total > 0 ? `${total} 条消息` : ""}
+              {stats && stats.messageCount > 0 && (
+                <>
+                  {total > 0 ? " · " : ""}总计 {fmtTokens(stats.totalTokens)} · 输入{" "}
+                  {fmtTokens(stats.inputTokens)} · 输出 {fmtTokens(stats.outputTokens)}
+                  {stats.cacheReadTokens > 0 && ` · 缓存读取 ${fmtTokens(stats.cacheReadTokens)}`}
+                </>
+              )}
             </div>
           )}
         </div>
         <div className="viewer-actions">
           <button
-            className="btn"
+            className={`icon-btn ${searchOpen ? "icon-btn-on" : ""}`}
             onClick={() => {
               setSearchOpen((v) => !v);
               setExportMenuOpen(false);
             }}
             title="搜索消息内容与工具调用"
           >
-            <SearchIcon />
-            搜索
+            <SearchIcon size={15} />
           </button>
           <button
-            className="btn"
+            className={`icon-btn ${filesOpen ? "icon-btn-on" : ""}`}
             onClick={() => setFilesOpen((v) => !v)}
-            title="本会话变更的文件列表"
+            title={`变更文件列表${changedFiles.length > 0 ? `（${changedFiles.length} 个）` : ""}`}
           >
-            <FileIcon />
-            文件{changedFiles.length > 0 ? ` (${changedFiles.length})` : ""}
+            <FileIcon size={15} />
           </button>
           <div className="export-wrap">
             <button
-              className="btn"
+              className="icon-btn"
               onClick={() => {
                 setExportMenuOpen((v) => !v);
                 setSearchOpen(false);
               }}
-              title="导出会话内容"
+              title="导出会话（Markdown / JSONL）"
             >
-              <DownloadIcon />
-              导出
-              <ChevronDownIcon size={11} />
+              <DownloadIcon size={15} />
             </button>
             {exportMenuOpen && (
               <>
@@ -1183,16 +1176,14 @@ export default function SessionViewer({
             )}
           </div>
           <button
-            className="btn"
+            className="icon-btn"
             onClick={() => setReloadKey((k) => k + 1)}
             title="重新读取会话内容"
           >
-            <RefreshIcon />
-            刷新
+            <RefreshIcon size={15} />
           </button>
-          <button className="btn btn-primary" onClick={onResume} title="新开窗口继续这个对话">
-            <PlayIcon />
-            继续
+          <button className="icon-btn icon-btn-primary" onClick={onResume} title="新开窗口继续这个对话">
+            <PlayIcon size={15} />
           </button>
         </div>
       </div>
