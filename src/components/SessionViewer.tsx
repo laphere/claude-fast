@@ -836,7 +836,8 @@ export default function SessionViewer({
   // ---------- 搜索 ----------
 
   // 防抖 300ms 调后端全文搜索（结果按消息序号返回）。内容重载（切换会话或点「刷新」）
-  // 会清空关键词，搜索随之复位
+  // 会清空关键词，搜索随之复位；依赖与初始加载同一键控口径（session?.file）——
+  // 重命名只换对象身份，不重发同文件同关键词的冗余查询
   useEffect(() => {
     if (!session || !searchKeyword.trim()) {
       setSearchResults(null);
@@ -863,7 +864,7 @@ export default function SessionViewer({
       cancelled = true;
       window.clearTimeout(t);
     };
-  }, [session, searchKeyword, onToast]);
+  }, [session?.file, searchKeyword, onToast]);
 
   // 关键词高亮：作用于消息区与搜索结果片段（关键词清空/消息增减时重建）
   useEffect(() => {
