@@ -6,7 +6,7 @@ interface Props {
   y: number;
   project: Project | null;
   onClose: () => void;
-  /** 把项目移到列表最前（替代已下线的收藏置顶） */
+  /** 把项目移到列表最前 */
   onMoveTop: (l: Project) => void;
   /** 在终端中启动 Claude Code（原项目行「+」按钮收进菜单） */
   onLaunch: (l: Project) => void;

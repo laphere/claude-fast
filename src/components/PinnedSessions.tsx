@@ -14,7 +14,7 @@ interface Props {
   /** 点击 = 在 app 内继续该会话（打开/激活对话 tab） */
   onOpenSession: (projectPath: string, session: SessionInfo) => void;
   onTogglePin: (projectPath: string, session: SessionInfo) => void;
-  /** 会话行右键菜单（终端继续/重命名/取消置顶/删除收进菜单，行上不再放按钮挤占标题宽度） */
+  /** 会话行右键菜单（终端继续/重命名/取消置顶/删除收进菜单，行上不放按钮挤占标题宽度） */
   onSessionContextMenu: (x: number, y: number, projectPath: string, session: SessionInfo) => void;
 }
 

@@ -1,7 +1,7 @@
 import type { TemplateValueConfig } from "../config/claudeProviderPresets";
 
 /**
- * 模板变量替换（移植自 cc-switch applyTemplateValues）：
+ * 模板变量替换：
  * 把配置里所有字符串中的 `${KEY}` 占位符替换为输入值（editorValue 优先，
  * 其次 defaultValue，最后空串），递归处理对象与数组。
  */

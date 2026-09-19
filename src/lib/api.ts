@@ -28,10 +28,10 @@ import type {
   UsageStats,
 } from "../types";
 
-/** Tauri 后端命令封装（去脚本化：项目清单为路径模型） */
+/** Tauri 后端命令封装（项目清单为路径模型） */
 export const api = {
   // ---------- 项目清单 ----------
-  /** 项目清单：后端扫描时顺带判定的 missing 直接映射为 healthy，启动时不再重复检查 */
+  /** 项目清单：后端扫描时顺带判定的 missing 直接映射为 healthy，启动时不重复检查 */
   listProjects: () =>
     invoke<{ key: string; name: string; path: string; missing: boolean }[]>("list_projects").then(
       (list) => list.map(({ key, name, path, missing }) => ({ key, name, path, healthy: !missing })),

@@ -11,7 +11,7 @@ interface Props {
   projectName?: string;
   onOpen: () => void;
   onTogglePin: () => void;
-  /** 会话行右键菜单（终端继续/重命名/置顶/删除收进菜单，行上不再放按钮挤占标题宽度） */
+  /** 会话行右键菜单（终端继续/重命名/置顶/删除收进菜单，行上不放按钮挤占标题宽度） */
   onContextMenu: (x: number, y: number) => void;
 }
 

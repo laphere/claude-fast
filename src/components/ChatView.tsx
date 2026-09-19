@@ -212,7 +212,7 @@ export default function ChatView({
   /** 侧信道结构化请求进行中 */
   const [planStructuring, setPlanStructuring] = useState(false);
 
-  // ---------- 历史 jsonl（原查看页数据源） ----------
+  // ---------- 历史 jsonl ----------
   const [history, setHistory] = useState<SessionMessage[]>([]);
   const [histOffset, setHistOffset] = useState(0);
   const [hasMore, setHasMore] = useState(false);
@@ -221,7 +221,7 @@ export default function ChatView({
   const [historyLoading, setHistoryLoading] = useState(!!session);
   const [reloadKey, setReloadKey] = useState(0);
 
-  // ---------- 搜索 / 变更文件 / 导出（原查看页面板） ----------
+  // ---------- 搜索 / 变更文件 / 导出 ----------
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchKeyword, setSearchKeyword] = useState("");
   const [searching, setSearching] = useState(false);
@@ -229,7 +229,7 @@ export default function ChatView({
   const [filesOpen, setFilesOpen] = useState(false);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
 
-  // ---------- 对话进度条（左侧用户发言导航轨，自 v1.0.0 查看页移植） ----------
+  // ---------- 对话进度条（左侧用户发言导航轨） ----------
   /** 全量用户发言（后端 get_session_user_prompts 提取，index = 历史消息全局序号） */
   const [prompts, setPrompts] = useState<SessionUserPrompt[]>([]);
   /** 视口当前所在的导航轨条目 key（高亮跟随滚动） */
@@ -448,7 +448,7 @@ export default function ChatView({
     }
   }, [onToast]);
 
-  // ---------- 历史 jsonl 加载（原查看页逻辑） ----------
+  // ---------- 历史 jsonl 加载 ----------
 
   /** 读取 settings.json 解析出的默认模式（项目 local > 项目 > 用户级），
    *  作为下拉初始选中项——与终端打开时默认所处模式一致 */
@@ -520,7 +520,7 @@ export default function ChatView({
     };
   }, [session, reloadKey, onToast]);
 
-  /** 加载更早的一页（插入顶部并保持滚动位置，原查看页逻辑） */
+  /** 加载更早的一页（插入顶部并保持滚动位置） */
   const loadMore = useCallback(async () => {
     if (!session || historyLoading || !hasMore) return;
     const myFile = session.file;
@@ -759,7 +759,7 @@ export default function ChatView({
     [onToast],
   );
 
-  // ---------- 搜索（原查看页：防抖全文搜索 + 跳转定位） ----------
+  // ---------- 搜索（防抖全文搜索 + 跳转定位） ----------
 
   useEffect(() => {
     if (!session || !searchKeyword.trim()) {
@@ -789,7 +789,7 @@ export default function ChatView({
     };
   }, [session, searchKeyword, onToast]);
 
-  /** 跳转到某条历史消息（全局序号）：未加载的分页先加载对应页再定位（原查看页逻辑） */
+  /** 跳转到某条历史消息（全局序号）：未加载的分页先加载对应页再定位 */
   const jumpTo = useCallback(
     async (globalIndex: number, blockIndex?: number) => {
       const body = bodyRef.current;
@@ -819,7 +819,7 @@ export default function ChatView({
         }
       }
       const locate = () => {
-        if (sessionFileRef.current !== myFile) return; // 已切换会话，不再定位
+        if (sessionFileRef.current !== myFile) return; // 已切换会话，不定位
         if (seq !== winSeqRef.current) return; // 已有更新的跳转接管定位
         const el = body.querySelector(`[data-msg-index="${globalIndex}"]`);
         if (!el) return;
@@ -843,7 +843,7 @@ export default function ChatView({
     [session, histOffset, history.length, onToast],
   );
 
-  // ---------- 对话进度条（导航轨高亮/悬停，自 v1.0.0 查看页移植） ----------
+  // ---------- 对话进度条（导航轨高亮/悬停） ----------
 
   /** 本次 sitting 的用户发言（实时导航轨）：过滤口径与后端 user_prompts_impl
    *  一致（无文本的不算，纯图片消息后端清洗后同样为空）；liveId = 实时气泡
@@ -963,7 +963,7 @@ export default function ChatView({
     setRailTip({ item, top });
   }, []);
 
-  // ---------- 变更文件聚合（历史 + 实时，原查看页逻辑扩展） ----------
+  // ---------- 变更文件聚合（历史 + 实时） ----------
 
   const changedFiles = useMemo(() => {
     const byPath = new Map<string, ChangedFile>();
@@ -1011,7 +1011,7 @@ export default function ChatView({
     return [...groups.entries()] as Array<[string, ChangedFile[]]>;
   }, [changedFiles]);
 
-  // ---------- 导出（原查看页逻辑） ----------
+  // ---------- 导出 ----------
 
   const doExport = useCallback(
     async (format: "markdown" | "jsonl") => {
@@ -1066,7 +1066,7 @@ export default function ChatView({
 
   // ---------- 派生渲染数据 ----------
 
-  /** 历史消息的 tool 关联（状态标记 + 展开看结果，原查看页逻辑） */
+  /** 历史消息的 tool 关联（状态标记 + 展开看结果） */
   const { resultMapPre, resultBlocksPre, toolNames } = useMemo(() => {
     const resultMapPre = new Map<string, boolean>();
     const resultBlocksPre = new Map<string, ContentBlock>();

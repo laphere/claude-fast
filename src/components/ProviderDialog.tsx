@@ -41,9 +41,9 @@ interface Props {
 
 type ApiKeyField = "ANTHROPIC_AUTH_TOKEN" | "ANTHROPIC_API_KEY";
 
-// ---------------- 模型映射行（移植 cc-switch ClaudeFormFields 行定义） ----------------
+// ---------------- 模型映射行 ----------------
 
-/** `[1M]` 字面后缀 = 声明该模型支持 1M 上下文（cc-switch CLAUDE_ONE_M_MARKER 同款） */
+/** `[1M]` 字面后缀 = 声明该模型支持 1M 上下文 */
 const ONE_M_MARKER = "[1M]";
 
 function has1M(model: string): boolean {
@@ -63,7 +63,7 @@ function set1M(model: string, enabled: boolean): string {
 }
 
 /** 模型映射行：envKey 写入键；nameKey 为显示名配套键（_NAME，随模型同步）；
- *  Haiku 不支持 1M 声明（与上游一致）；上游废弃的 ANTHROPIC_SMALL_FAST_MODEL 在写入时清理 */
+ *  Haiku 不支持 1M 声明；已废弃键 ANTHROPIC_SMALL_FAST_MODEL 在写入时清理 */
 const MODEL_ROWS = [
   { key: "model", envKey: "ANTHROPIC_MODEL", nameKey: null, label: "默认模型", hint: "兜底模型 ANTHROPIC_MODEL", supportsOneM: true },
   { key: "sonnet", envKey: "ANTHROPIC_DEFAULT_SONNET_MODEL", nameKey: "ANTHROPIC_DEFAULT_SONNET_MODEL_NAME", label: "Sonnet", hint: undefined, supportsOneM: true },
@@ -223,10 +223,9 @@ interface UsageState {
 }
 
 /** 模块级缓存：对话框关闭重开后 useState 直接以它初始化，第二次打开起秒显
- *  上次结果。cc-switch 同为内存缓存（react-query + usage_cache），重启后
- *  双方的首次打开都会重新查询。 */
+ *  上次结果。仅内存缓存，重启后首次打开重新查询。 */
 let usageCache: Record<string, UsageState> = {};
-/** 缓存新鲜期（同 cc-switch 默认 autoQueryInterval=5 分钟） */
+/** 缓存新鲜期（5 分钟） */
 const USAGE_FRESH_MS = 5 * 60_000;
 
 /** 相对时间（「N分钟前查询」标注） */
@@ -240,7 +239,7 @@ function fmtAgo(ts: number): string {
   return `${Math.floor(h / 24)}天前`;
 }
 
-/** 重置倒计时（cc-switch 风格：纯 d/h/m 单位，取前两个非零档位，
+/** 重置倒计时（纯 d/h/m 单位，取前两个非零档位，
  *  如 `2d 13h` / `5h 21m` / `45m`；过去时间/非法值返回空串不展示） */
 function fmtCountdown(iso?: string | null): string {
   if (!iso) return "";
@@ -259,7 +258,7 @@ function fmtCountdown(iso?: string | null): string {
   return parts.join(" ") || "<1m";
 }
 
-/** 利用率分档与色值对齐 cc-switch utilizationColor：<70 绿 / <90 橙 / 其余红 */
+/** 利用率分档与色值：<70 绿 / <90 橙 / 其余红（Tailwind green-600 / orange-500 / red-500） */
 function usageLevel(pct: number): string {
   return pct < 70 ? "ok" : pct < 90 ? "warn" : "bad";
 }
@@ -362,7 +361,7 @@ export default function ProviderDialog({ state, onClose, onChanged, toast }: Pro
     }
   };
 
-  // ---------- 拖拽排序（CC Switch 式实体拖动：原卡跟手，其余卡片 FLIP 滑位） ----------
+  // ---------- 拖拽排序（实体拖动：原卡跟手，其余卡片 FLIP 滑位） ----------
   // 拖拽中的乐观顺序（null = 跟随 props）：松手后调用 providerReorder 持久化，
   // 新清单经 onChanged 回流（providers 变化）后由 effect 清掉覆盖；失败回弹原序
   const [dragList, setDragList] = useState<ProviderInfo[] | null>(null);
@@ -477,7 +476,7 @@ export default function ProviderDialog({ state, onClose, onChanged, toast }: Pro
   };
 
   // window 级拖拽监听：进入拖拽态才挂载；pointerup/pointercancel/blur 三路兜底，
-  // 即使指针飞出窗口或事件流异常，拖拽也必然收尾（不再卡死）
+  // 即使指针飞出窗口或事件流异常，拖拽也必然收尾（不会卡死）
   useEffect(() => {
     if (!draggingId) return;
 
@@ -642,8 +641,8 @@ export default function ProviderDialog({ state, onClose, onChanged, toast }: Pro
     patchJson((cfg) => setEnvKey(cfg, envKey, value), extra);
   };
 
-  /** 模型行变更（移植 cc-switch handleRoleModelChange）：Haiku 剥离 1M 标记；
-   *  同步 _NAME 显示名键；清理上游废弃的 ANTHROPIC_SMALL_FAST_MODEL */
+  /** 模型行变更：Haiku 剥离 1M 标记；
+   *  同步 _NAME 显示名键；清理已废弃的 ANTHROPIC_SMALL_FAST_MODEL */
   const changeModelRow = (rowKey: ModelRowKey, rawValue: string) => {
     if (!form) return;
     const row = MODEL_ROWS.find((r) => r.key === rowKey)!;
@@ -652,7 +651,7 @@ export default function ProviderDialog({ state, onClose, onChanged, toast }: Pro
       (cfg) => {
         setEnvKey(cfg, row.envKey, value);
         const env = cfg.env as Record<string, unknown>;
-        delete env.ANTHROPIC_SMALL_FAST_MODEL; // 上游废弃键，避免覆盖 Haiku 回退
+        delete env.ANTHROPIC_SMALL_FAST_MODEL; // 已废弃键，避免覆盖 Haiku 回退
         if (row.nameKey) {
           const base = strip1M(value).trim();
           setEnvKey(cfg, row.nameKey, base);
@@ -834,7 +833,7 @@ export default function ProviderDialog({ state, onClose, onChanged, toast }: Pro
     }
   };
 
-  // ---------- 用量查询：会话级缓存 + stale-while-revalidate（对齐 cc-switch 显示逻辑） ----------
+  // ---------- 用量查询：会话级缓存 + stale-while-revalidate ----------
   // 打开弹窗立即显示缓存的上次结果（含「N分钟前查询」标注），仅当缓存缺失
   // 或超过新鲜期才后台重查、原地更新；骨架只出现在「从未查过」的供应商上
   // （每个供应商每次应用会话最多一次）。
@@ -849,7 +848,7 @@ export default function ProviderDialog({ state, onClose, onChanged, toast }: Pro
     });
   };
 
-  /** 查询指定供应商用量；非 force 且缓存仍新鲜（<5 分钟，同上游 staleTime）时跳过 */
+  /** 查询指定供应商用量；非 force 且缓存仍新鲜（<5 分钟）时跳过 */
   const refreshUsage = (targets: ProviderInfo[], force = false) => {
     for (const p of targets) {
       const cached = usageCache[p.id];
@@ -1107,7 +1106,7 @@ export default function ProviderDialog({ state, onClose, onChanged, toast }: Pro
                         {baseUrl || "官方默认端点"}
                       </div>
                     </div>
-                    {/* 用量列（cc-switch 式右侧信息区：查询行 + 分档行），夹在信息与操作按钮之间 */}
+                    {/* 用量列（右侧信息区：查询行 + 分档行），夹在信息与操作按钮之间 */}
                     {detectUsageVendor(baseUrl) && (
                       <UsageStrip
                         state={u}
@@ -1224,7 +1223,7 @@ function ModelRow({
   );
 }
 
-/** cc-switch 式模型选择：文本框可手输；点击箭头弹出搜索 + 按 ownedBy 分组的列表（缺失归 Other） */
+/** 模型选择：文本框可手输；点击箭头弹出搜索 + 按 ownedBy 分组的列表（缺失归 Other） */
 function ModelSelect({
   value,
   models,
@@ -1326,7 +1325,7 @@ function ModelSelect({
 }
 
 /**
- * 卡片右侧用量列（cc-switch 式）：首行「N分钟前查询 + 刷新」，下方每档一行
+ * 卡片右侧用量列：首行「N分钟前查询 + 刷新」，下方每档一行
  * `5小时 37% · 2h 13m`——名称/倒计时弱化，百分比着色作为视觉锚点，
  * USD 金额与原始重置时刻收进悬停提示以降低密度。
  * 渲染条件由调用方保证：仅当 base_url 探测命中厂商时挂载——

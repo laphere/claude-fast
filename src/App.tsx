@@ -63,10 +63,10 @@ export default function App() {
   const [closeChoiceOpen, setCloseChoiceOpen] = useState(false);
   const [trashOpen, setTrashOpen] = useState(false);
   const [statsOpen, setStatsOpen] = useState(false);
-  // ---------- 供应商切换（移植自 cc-switch） ----------
+  // ---------- 供应商切换 ----------
   const [providerState, setProviderState] = useState<ProviderListState | null>(null);
   const [providerOpen, setProviderOpen] = useState(false);
-  // ---------- 会话管理（v2.0.0 阶段一） ----------
+  // ---------- 会话管理 ----------
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
   const [sessionsByKey, setSessionsByKey] = useState<
     Record<string, SessionInfo[] | null | undefined>
@@ -265,7 +265,7 @@ export default function App() {
   // ---------- 列表派生数据 ----------
 
   /** 当前整条项目序列：order 收录项 + 其余按名称追加在后。
-   *  这样「拖一次」之后所有项目都有显式顺序，之后的排序不再受名称影响。 */
+   *  这样「拖一次」之后所有项目都有显式顺序，之后的排序不受名称影响。 */
   const fullOrder = useCallback(() => {
     const known = new Set(order);
     return [
@@ -468,7 +468,7 @@ export default function App() {
     [removeProject],
   );
 
-  // ---------- 会话管理（v2.0.0 阶段一） ----------
+  // ---------- 会话管理 ----------
 
   const toggleExpand = useCallback(
     async (key: string) => {

@@ -21,7 +21,7 @@ interface Props {
   /** 是否启用拖拽排序（搜索过滤期间禁用） */
   dragEnabled: boolean;
   onToggleExpand: (key: string) => void;
-  /** 会话行右键菜单（终端继续/重命名/置顶/删除收进菜单，行上不再放按钮挤占标题宽度） */
+  /** 会话行右键菜单（终端继续/重命名/置顶/删除收进菜单，行上不放按钮挤占标题宽度） */
   onSessionContextMenu: (x: number, y: number, key: string, session: SessionInfo) => void;
   /** app 内新开对话 */
   onChatProject: (key: string) => void;
