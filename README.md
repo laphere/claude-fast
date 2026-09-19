@@ -60,18 +60,17 @@ npm run tauri build -- --target universal-apple-darwin
 > 首次在 macOS 上构建前，建议先跑 `cd src-tauri && cargo test`——它会编译全部 mac 分支代码并执行 mac 专属测试（如 resume 脚本生成），是最快的验证方式。
 
 构建产物（Windows）：`src-tauri/target/release/bundle/nsis/CC Desktop_<版本>_x64-setup.exe`（安装包，可选择安装目录、免管理员）
-和 `src-tauri/target/release/claude-fast.exe`（便携版，需与 config.json 同层放置，无需 scripts/ 目录）。
+和 `src-tauri/target/release/claude-fast.exe`（便携版，需与 config.json 同层放置，空对象 `{}` 即可）。
 
 构建产物（macOS）：`src-tauri/target/release/bundle/macos/CC Desktop.app`（拖入「应用程序」即可）
 和 `src-tauri/target/release/bundle/dmg/CC Desktop_<版本>_<架构>.dmg`（安装镜像；<架构> 为 aarch64 / x86_64 / universal，取决于构建目标）。
 
 ### 架构要点
 
-- **数据目录定位（双模式）**：exe 从自身所在目录向上最多 6 级查找首个数据根标记——**便携模式**（开发目录/绿色版/整个文件夹移动）。标记有三类：`config.json` + `scripts/` 同在的存量目录直接认定；去脚本化后 `config.json`（或其 `.bak`）即便携标记，但须过内容校验（空对象 `{}`，或命中 **≥2 个**本项目字段——只撞 1 个通用键不认，防止把其他工具的同名文件误认成数据根后覆写掉）；旧标记 `claude-claude-fast.bat`。找不到标记时回退到 **安装模式**：`%APPDATA%\claude-fast`（macOS 为 `~/Library/Application Support/claude-fast`），首次运行自动创建该数据目录。解析结果在进程内缓存一次。因此：绿色版把 exe 与一个 config.json（空对象即可）放同层就行；安装版装到 Program Files（只读）也能正常读写用户数据。
-- **项目清单（去脚本化模型）**：主列表 = Claude 会话目录扫描（`unmangle_candidates` 反向解析 mangled 目录名并验证存在性，Windows 盘符格式与 macOS `/` 格式各有实现）∪ `config.projects` 手动清单，按路径去重；`excluded` 排除清单保证「从列表移除」的项目不被扫描自动加回；路径不存在的项目标红失效、不可启动。启动**不经过任何脚本文件**（存量 `scripts/` 目录仅作旧版迁移来源保留，不再是数据根标记）。
+- **数据目录定位（双模式）**：exe 从自身所在目录向上最多 6 级查找首个数据根标记——**便携模式**（开发目录/绿色版/整个文件夹移动）。标记唯一：`config.json`（或其 `.bak`）过内容校验（空对象 `{}`，或命中 **≥2 个**本项目字段——只撞 1 个通用键不认，防止把其他工具的同名文件误认成数据根后覆写掉）。找不到标记时回退到 **安装模式**：`%APPDATA%\claude-fast`（macOS 为 `~/Library/Application Support/claude-fast`），首次运行自动创建该数据目录。解析结果在进程内缓存一次。因此：绿色版把 exe 与一个 config.json（空对象即可）放同层就行；安装版装到 Program Files（只读）也能正常读写用户数据。
+- **项目清单（路径模型）**：主列表 = Claude 会话目录扫描（`unmangle_candidates` 反向解析 mangled 目录名并验证存在性，Windows 盘符格式与 macOS `/` 格式各有实现）∪ `config.projects` 手动清单，按路径去重；`excluded` 排除清单保证「从列表移除」的项目不被扫描自动加回；路径不存在的项目标红失效、不可启动。启动直接在终端执行命令，不经过任何脚本文件。
 - **启动方式**：Windows 用 `ShellExecuteW` 新开 cmd 运行 `cmd /k cd /d "<项目>" && claude`（shell 层启动会正常分配新控制台，`/k` 让 claude 退出后窗口保留）；继续对话为 `claude --resume <session-id>`；macOS 写临时 .sh 后 `open -a Terminal`。
 - **config.json 保护**：`save_config` 采用「写临时文件 → 备份旧文件到 `.bak` → 原子替换」三步；`load_config` 读取失败时自动从 `.bak` 回退。**绝不删除 `config.json` / `.bak`**，否则用户的项目清单、排序与置顶会话丢失。
-- **旧启动脚本迁移（一次性）**：去脚本化前的版本把项目存在 `scripts/` 下的启动脚本里。旧 config（无 `projects` 字段）首次被新版加载时，解析旧脚本的 `cd` 路径（兼容 bat 的 `cd /d "..."` 与 sh 的 `cd "/path"`）自动迁移为项目清单与排序（旧「收藏」即置顶语义，承接为排序最前几项）；脚本文件保留在磁盘不删，可自行清理。
 - **打包目标**：`bundle.targets = ["nsis", "app", "dmg"]`（`tauri.conf.json`）——各平台构建时自动过滤：Windows 只打 NSIS 安装包，macOS 只打 .app + .dmg；不要删掉该字段（Tauri 在 Windows 上的默认目标是 MSI/WiX，会导致打包失败）。
 - **前端**（`src/`）：`App.tsx` 状态管理 + 组件化 UI（项目列表 / 置顶会话区 / 搜索 / 右键菜单 / 各对话框），`src/lib/api.ts` 封装 Tauri invoke 调用。
 

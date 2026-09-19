@@ -28,9 +28,6 @@ use std::time::{Duration, Instant};
 #[cfg(windows)]
 pub(crate) const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-/// 启动脚本专用目录（相对数据根目录）
-const SCRIPTS_DIR: &str = "scripts";
-
 /// config.json 全程无内存态，每次读改写都是「load → 改 → save」三段式；Tauri 命令
 /// 在多线程上并发执行，不加锁时后写者会拿自己读到的旧快照覆盖对方的修改
 /// （拖拽排序撞上 purge 丢置顶、并发加项目丢清单等）。所有 config 读改写入口必须持有此锁，
@@ -47,23 +44,6 @@ static LEDGER_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn ledger_lock() -> std::sync::MutexGuard<'static, ()> {
     LEDGER_LOCK.lock().unwrap_or_else(|e| e.into_inner())
-}
-
-/// 当前平台的启动脚本扩展名：Windows 用 .bat，macOS 用 .sh
-fn script_ext() -> &'static str {
-    #[cfg(windows)]
-    {
-        "bat"
-    }
-    #[cfg(not(windows))]
-    {
-        "sh"
-    }
-}
-
-/// 旧版便携模式数据根标记文件名（Windows 为 claude-claude-fast.bat）
-fn legacy_marker() -> String {
-    format!("claude-claude-fast.{}", script_ext())
 }
 
 // ---------------- 数据模型 ----------------
@@ -98,9 +78,8 @@ pub struct PinnedSession {
 #[derive(Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Config {
-    /// 用户手动排序的项目绝对路径（全局拖拽排序真源；未收录项按名称追加在后）。
-    /// 旧版 favorites 键经 serde alias 承接为初始排序，写回后键名变为 order
-    #[serde(default, alias = "favorites")]
+    /// 用户手动排序的项目绝对路径（全局拖拽排序真源；未收录项按名称追加在后）
+    #[serde(default)]
     order: Vec<String>,
     /// 手动添加的项目路径清单（Claude 会话扫描之外的补充）
     #[serde(default)]
@@ -260,27 +239,18 @@ const MAX_SEARCH_HITS: usize = 200;
 
 // ---------------- 路径定位 ----------------
 
-/// 判断目录是否为数据根：三支候选——存量布局（`config.json` + `scripts/`
-/// 同在）、去脚本化布局（`config.json` 或 `config.json.bak` 过内容校验）、
-/// 旧布局标记 `claude-claude-fast.<bat|sh>`。
+/// 判断目录是否为数据根：`config.json` 或 `config.json.bak` 过内容校验
+/// （见 `looks_like_our_config`）。
 ///
-/// 存量布局做**无条件**短路，不走内容校验：这些是脚本时代就存在的便携目录，
-/// 给它们的 config 也加校验会让「原本能用」变「config 一损坏就找不到数据根」，
-/// 那是实打实的回归。
-///
-/// 后两支必须校验内容：便携判定向上扫 exe 的 6 级祖先，安装模式下第 5/6 级
-/// 正是用户主目录与 `C:\Users`，只凭文件名认领会把其他工具的 config.json
-/// 当作数据根，而 setup 里的 `ensure_projects_migrated` 在**首次启动**就会
-/// 把它整份覆写（原件降级 .bak）。`.bak` 那支是必需的：主文件损坏/被删正是
-/// .bak 兜底存在的意义，根判定不能先一步放弃该目录（否则静默换根、
-/// 用户看到空清单，而数据与 .bak 都还在原地）。
+/// 必须校验内容：便携判定向上扫 exe 的 6 级祖先，安装模式下第 5/6 级正是
+/// 用户主目录与 `C:\Users`，只凭文件名认领会把其他工具的 config.json 当作
+/// 数据根，认领后任意一次保存都会把它整份覆写（原件降级 .bak）。
+/// `.bak` 支是必需的：主文件损坏/被删正是 .bak 兜底存在的意义，根判定
+/// 不能先一步放弃该目录（否则静默换根、用户看到空清单，而数据与 .bak
+/// 都还在原地）。
 fn is_root_dir(dir: &Path) -> bool {
-    if dir.join("config.json").is_file() && dir.join(SCRIPTS_DIR).is_dir() {
-        return true;
-    }
     looks_like_our_config(&dir.join("config.json"))
         || looks_like_our_config(&dir.join("config.json.bak"))
-        || dir.join(legacy_marker()).is_file()
 }
 
 /// 配置文件是否像本程序的配置：须为 JSON 对象，且要么是空对象（`{}`——
@@ -290,10 +260,9 @@ fn is_root_dir(dir: &Path) -> bool {
 /// 为什么是「≥2」而不是「≥1」：`projects` / `dark` / `order` / `excluded`
 /// 都是通用词，只要求撞上 1 个键就会把别的工具（乃至手写的
 /// `{"dark":true}`）认成数据根，代价是把它覆写掉。≥2 且不误杀自家配置——
-/// 无 `scripts/` 的目录只可能由去脚本化之后的版本写出，而那时的序列化器
-/// 没有 `skip_serializing_if`，永远写全 9 个键。
+/// 序列化器没有 `skip_serializing_if`，落盘永远写全 8 个键。
 ///
-/// 键名含 serde alias（`favorites`）；给 `Config` 加字段时记得同步 KNOWN_KEYS。
+/// 给 `Config` 加字段时记得同步 KNOWN_KEYS。
 fn looks_like_our_config(path: &Path) -> bool {
     let Ok(raw) = fs::read(path) else {
         return false;
@@ -307,9 +276,8 @@ fn looks_like_our_config(path: &Path) -> bool {
     if obj.is_empty() {
         return true;
     }
-    const KNOWN_KEYS: [&str; 9] = [
+    const KNOWN_KEYS: [&str; 8] = [
         "order",
-        "favorites",
         "projects",
         "excluded",
         "dark",
@@ -375,9 +343,7 @@ static ROOT_CACHE: std::sync::OnceLock<(PathBuf, bool)> = std::sync::OnceLock::n
 /// 1. **便携模式**：exe 所在目录向上（最多 6 级）查找首个根目录标记
 ///    （见 `is_root_dir`）——开发目录、整体移动的文件夹、绿色版走此路径。
 /// 2. **安装模式**：找不到便携标记时回退到应用数据目录
-///    （%APPDATA%\claude-fast），首次运行自动创建该目录
-///    （scripts/ 是脚本时代遗留，去脚本化后不再创建；存量目录里的
-///    旧脚本保留在磁盘，仅供 ensure_projects_migrated 解析，不删）。
+///    （%APPDATA%\claude-fast），首次运行自动创建该目录。
 ///
 /// 返回 (数据根, 是否安装模式)。模式判定必须在查找现场做：
 /// 便携根通常是 exe 的**祖先**目录，「root != exe_dir」恒真，判不出模式
@@ -391,8 +357,7 @@ fn resolve_root_uncached() -> (PathBuf, bool) {
     if let Some(root) = resolve_root_from(&start) {
         return (root, false);
     }
-    // 安装模式：现场创建数据根本身（旧版在此顺带创建 scripts/，是其副作用
-    // 保证了首次 save_config 有目录可写——去掉 scripts/ 后创建根目录必须保留）
+    // 安装模式：现场创建数据根本身，保证首次 save_config 有目录可写
     let app = app_data_root();
     let _ = fs::create_dir_all(&app);
     (app, true)
@@ -415,38 +380,9 @@ fn read_config_file(path: &Path) -> Option<Config> {
     serde_json::from_slice(strip_bom(&raw)).ok()
 }
 
-/// 从启动脚本内容解析 `cd` 行中的目录路径。兼容 bat 的 `cd /d "..."` 与
-/// sh 的 `cd "/path"` / `cd /path`（带引号/不带引号均可）。
-fn parse_cd_path(content: &str) -> Option<String> {
-    for line in content.lines() {
-        let t = line.trim();
-        let lower = t.to_ascii_lowercase();
-        // bat: `cd /d "path"`；sh: `cd "/path"` / `cd /path`（前缀长度固定）
-        let rest = if lower.starts_with("cd /d") {
-            &t[5..]
-        } else if lower.starts_with("cd ") {
-            &t[3..]
-        } else {
-            continue;
-        };
-        let rest = rest.trim();
-        if let Some(stripped) = rest.strip_prefix('"') {
-            if let Some(end) = stripped.find('"') {
-                return Some(stripped[..end].to_string());
-            }
-        } else {
-            let p = rest.split_whitespace().next().unwrap_or("");
-            if !p.is_empty() {
-                return Some(p.to_string());
-            }
-        }
-    }
-    None
-}
-
 // ---------------- commands ----------------
 
-// ---------------- 项目清单（去脚本化） ----------------
+// ---------------- 项目清单 ----------------
 
 fn stat_is_dir(p: &str) -> bool {
     Path::new(p).is_dir()
@@ -519,95 +455,9 @@ fn add_project_to(manual: &mut Vec<String>, dir: &str) {
     }
 }
 
-/// 从手动清单移除项目路径（收藏同步移除由调用方处理）
+/// 从手动清单移除项目路径（order 的同步移除由调用方处理）
 fn remove_project_from(manual: &mut Vec<String>, dir: &str) {
     manual.retain(|p| !p.eq_ignore_ascii_case(dir));
-}
-
-/// 解析数据根 scripts/ 下旧启动脚本（Tauri 版遗留）→ 脚本 stem → cd 路径。
-/// 用于去脚本化的一次性迁移；脚本文件本身保留不动。
-fn legacy_script_paths(scripts: &Path) -> std::collections::HashMap<String, String> {
-    let mut map = std::collections::HashMap::new();
-    let Ok(entries) = fs::read_dir(scripts) else {
-        return map;
-    };
-    for e in entries.flatten() {
-        let p = e.path();
-        if !p.is_file() {
-            continue;
-        }
-        let Some(stem) = p.file_stem().and_then(|s| s.to_str()) else {
-            continue;
-        };
-        if !stem.to_lowercase().starts_with("claude-") {
-            continue;
-        }
-        let ext = p
-            .extension()
-            .and_then(|x| x.to_str())
-            .unwrap_or("")
-            .to_lowercase();
-        if ext != script_ext() {
-            continue;
-        }
-        if let Some(cd) = parse_cd_path(&fs::read_to_string(&p).unwrap_or_default()) {
-            map.insert(stem.to_string(), cd);
-        }
-    }
-    map
-}
-
-/// 旧脚本清单一次性迁移（去脚本化）：解析旧脚本的 cd 路径完成 key → 项目路径映射：
-///   projects = 全部脚本指向的项目路径
-///   order    = 旧收藏 key 映射后的项目路径（找不到的丢弃）——旧「收藏」语义就是置顶，
-///              故承接为排序最前的几项，用户的置顶意图不丢
-/// 判定：config.json 原始内容含 "projects" 字段（或无 config 文件）即视为已迁移。
-fn ensure_projects_migrated() {
-    ensure_projects_migrated_in(&resolve_root_dir());
-}
-
-fn ensure_projects_migrated_in(root: &Path) {
-    let cfg_path = root.join("config.json");
-    let Ok(text) = fs::read_to_string(&cfg_path) else {
-        return; // 无 config（全新安装）
-    };
-    let Ok(raw) = serde_json::from_str::<serde_json::Value>(&text) else {
-        return;
-    };
-    if raw.get("projects").is_some() {
-        return; // 已迁移
-    }
-    let key_to_path = legacy_script_paths(&root.join(SCRIPTS_DIR));
-    let legacy_favs: Vec<String> = raw
-        .get("favorites")
-        .and_then(|v| v.as_array())
-        .map(|a| {
-            a.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
-    let _guard = config_lock();
-    let cfg = load_config_from(root);
-    let mut projects: Vec<String> = Vec::new();
-    for p in key_to_path.values() {
-        if !projects.iter().any(|x| x.eq_ignore_ascii_case(p)) {
-            projects.push(p.clone());
-        }
-    }
-    let mut order: Vec<String> = Vec::new();
-    for k in legacy_favs {
-        if let Some(p) = key_to_path.get(&k) {
-            if !order.iter().any(|x| x.eq_ignore_ascii_case(p)) {
-                order.push(p.clone());
-            }
-        }
-    }
-    let mut cfg = cfg;
-    cfg.projects = projects;
-    cfg.order = order;
-    // 直接整份落盘；save_config_to 内部也持锁，嵌套会死锁
-    let _ = save_config_file(root, &cfg);
 }
 
 #[tauri::command]
@@ -3438,7 +3288,7 @@ fn purge_session(file: String) -> Result<(), String> {
 }
 
 /// 彻底删除会话后清掉置顶清单里已失效的条目。保存失败只是条目多留一会儿，
-/// 不影响删除结果，所以吞掉错误（与旧脚本迁移的落盘处理一致）。
+/// 不影响删除结果，所以吞掉错误。
 fn prune_pins_after_purge() {
     let _guard = config_lock();
     let mut cfg = load_config();
@@ -3870,52 +3720,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_cd_quoted() {
-        assert_eq!(
-            parse_cd_path("@echo off\r\nchcp 65001 >nul\r\ncd /d \"D:\\MyWorkspaces\\yaotu\\tdc\""),
-            Some("D:\\MyWorkspaces\\yaotu\\tdc".to_string())
-        );
-    }
-
-    #[test]
-    fn parse_cd_unquoted() {
-        assert_eq!(
-            parse_cd_path("cd /d C:\\proj"),
-            Some("C:\\proj".to_string())
-        );
-    }
-
-    #[test]
-    fn parse_cd_missing() {
-        assert_eq!(parse_cd_path("@echo off\r\necho hi"), None);
-    }
-
-    #[test]
-    fn parse_cd_case_insensitive() {
-        assert_eq!(
-            parse_cd_path("CD /D \"X:\\y z\""),
-            Some("X:\\y z".to_string())
-        );
-    }
-
-    #[test]
-    fn parse_cd_sh_quoted() {
-        // macOS 脚本：cd "/path"（含 || exit 1 后缀）
-        assert_eq!(
-            parse_cd_path("#!/bin/bash\ncd \"/Users/me/My Workspaces/proj\" || exit 1\nexec claude"),
-            Some("/Users/me/My Workspaces/proj".to_string())
-        );
-    }
-
-    #[test]
-    fn parse_cd_sh_unquoted() {
-        assert_eq!(
-            parse_cd_path("cd /Users/me/proj"),
-            Some("/Users/me/proj".to_string())
-        );
-    }
-
-    #[test]
     fn strip_bom_works() {
         let mut b = vec![0xEF, 0xBB, 0xBF];
         b.extend_from_slice(b"{\"a\":1}");
@@ -4135,7 +3939,7 @@ mod tests {
         let root = temp_root("root");
         // 空目录：非根
         assert!(!is_root_dir(&root));
-        // 去脚本化布局：空对象 config.json 即认（用户显式引导便携模式的正规姿势）
+        // 空对象 config.json 即认（用户显式引导便携模式的正规姿势）
         fs::write(root.join("config.json"), "{}").unwrap();
         assert!(is_root_dir(&root));
         // 含 ≥2 个本项目已知字段（从旧数据目录/旧机器拷来的 config）：认定
@@ -4143,7 +3947,7 @@ mod tests {
         assert!(is_root_dir(&root));
         // 只撞上 1 个通用键：**不认**——便携判定向上扫 6 级祖先，安装模式会扫到
         // 用户主目录与 C:\Users，`{"dark":true}` 这类别的工具的配置若被认领，
-        // setup 的 ensure_projects_migrated 会在首次启动把它整份覆写
+        // 任意一次保存都会把它整份覆写
         fs::write(root.join("config.json"), r#"{"dark":true}"#).unwrap();
         assert!(!is_root_dir(&root));
         // 键完全对不上的外来 config.json：不认
@@ -4166,17 +3970,6 @@ mod tests {
         fs::remove_file(root.join("config.json")).unwrap();
         assert!(is_root_dir(&root));
         fs::remove_file(root.join("config.json.bak")).unwrap();
-        // 脚本时代布局（config.json + scripts/）：存量目录**免内容校验**直接认定
-        // ——给存量便携用户的 config 也加校验会让「原本能用」变「config 一坏就
-        // 找不到数据根」，那是实打实的回归
-        fs::write(root.join("config.json"), r#"{"apiKey":"xxx"}"#).unwrap();
-        fs::create_dir_all(root.join(SCRIPTS_DIR)).unwrap();
-        assert!(is_root_dir(&root));
-        // 旧布局：claude-claude-fast.<ext>（标记名随平台 bat/sh），无 config.json 也认
-        fs::remove_dir_all(root.join(SCRIPTS_DIR)).unwrap();
-        fs::remove_file(root.join("config.json")).unwrap();
-        fs::write(root.join(legacy_marker()), "").unwrap();
-        assert!(is_root_dir(&root));
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -4895,78 +4688,6 @@ mod tests {
         assert_eq!(delta.name, "path");
         let real_item = list.iter().find(|x| x.path == real.to_str().unwrap()).unwrap();
         assert!(!real_item.missing);
-        fs::remove_dir_all(&root).unwrap();
-    }
-
-    #[test]
-    fn legacy_config_migrates_to_projects() {
-        let root = temp_root("proj-migrate");
-        // 旧脚本指向的项目路径（脚本格式随平台：bat 用 cd /d，sh 用 cd "..."）
-        let (proj, dead) = if cfg!(windows) {
-            ("D:\\legacy\\proj", "D:\\legacy\\dead")
-        } else {
-            ("/legacy-migrate-test/proj", "/legacy-migrate-test/dead")
-        };
-        let mk_script = |p: &str| {
-            if cfg!(windows) {
-                format!("@echo off\r\ncd /d \"{p}\"")
-            } else {
-                format!("cd \"{p}\"")
-            }
-        };
-        // 旧脚本：claude-oldproj 指向 proj；claude-dead 指向不存在目录
-        let scripts = root.join("scripts");
-        fs::create_dir_all(&scripts).unwrap();
-        fs::write(
-            scripts.join(format!("claude-oldproj.{}", script_ext())),
-            mk_script(proj),
-        )
-        .unwrap();
-        fs::write(
-            scripts.join(format!("claude-dead.{}", script_ext())),
-            mk_script(dead),
-        )
-        .unwrap();
-        // 旧版 config：favorites 存脚本 key、无 projects 字段
-        fs::write(
-            root.join("config.json"),
-            r#"{"favorites": ["claude-oldproj", "claude-unknown"], "dark": false}"#,
-        )
-        .unwrap();
-
-        ensure_projects_migrated_in(&root);
-
-        let migrated = load_config_from(&root);
-        // projects = 全部脚本路径（顺序按解析序，包含已失效的）
-        assert!(migrated.projects.iter().any(|p| p.eq_ignore_ascii_case(proj)));
-        assert!(migrated.projects.iter().any(|p| p.eq_ignore_ascii_case(dead)));
-        // order = 旧收藏 key 映射后的路径（旧「收藏」即置顶语义，承接为排序最前几项）；
-        // unknown 找不到被丢弃
-        assert_eq!(migrated.order, vec![proj.to_string()]);
-        // 幂等：二次调用不再变化
-        ensure_projects_migrated_in(&root);
-        let again = load_config_from(&root);
-        assert_eq!(again.projects, migrated.projects);
-        fs::remove_dir_all(&root).unwrap();
-    }
-
-    /// 旧版 favorites 键（路径语义）经 serde alias 无缝承接为 order 初始排序，
-    /// 写回后键名变为 order、favorites 不再出现
-    #[test]
-    fn config_order_aliases_legacy_favorites() {
-        let root = temp_root("cfg-order-alias");
-        fs::write(
-            root.join("config.json"),
-            r#"{"favorites":["D:\\a","D:\\b"],"projects":[],"dark":false}"#,
-        )
-        .unwrap();
-        let mut cfg = load_config_from(&root);
-        assert_eq!(cfg.order, vec!["D:\\a".to_string(), "D:\\b".to_string()]);
-        cfg.order.push("D:\\c".to_string());
-        save_config_file(&root, &cfg).unwrap();
-        let json = fs::read_to_string(root.join("config.json")).unwrap();
-        assert!(json.contains("\"order\""));
-        assert!(!json.contains("\"favorites\""));
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -5982,10 +5703,6 @@ pub fn run() {
         .setup(|app| {
             use tauri::menu::{Menu, MenuItem};
             use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-
-            // 旧脚本清单一次性迁移（去脚本化）：解析 scripts/ 旧脚本生成
-            // config.projects / config.order（路径），幂等
-            ensure_projects_migrated();
 
             let show_i = MenuItem::with_id(app, "show", "显示窗口", true, None::<&str>)?;
             let quit_i = MenuItem::with_id(app, "quit", "退出程序", true, None::<&str>)?;
