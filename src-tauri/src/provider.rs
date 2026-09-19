@@ -1,4 +1,4 @@
-//! Claude Code 供应商配置切换——移植自 cc-switch v3.20.1 的最小核心语义：
+//! Claude Code 供应商配置切换的核心语义：
 //! 切换 = 回填离任供应商（吸收 live 手工修改）→ 记 current → sanitize 后整文件
 //! 原子替换 ~/.claude/settings.json。不含代理接管 / 多 App / Profile / MCP 同步。
 
@@ -46,7 +46,7 @@ pub fn claude_config_dir() -> PathBuf {
 }
 
 /// live settings 文件路径：settings.json 优先，遗留 claude.json 存在时回退，
-/// 都不存在时默认 settings.json（切换时创建）——cc-switch config.rs 同款语义
+/// 都不存在时默认 settings.json（切换时创建）
 pub fn claude_settings_path_from(config_dir: &Path) -> PathBuf {
     let settings = config_dir.join("settings.json");
     if settings.exists() {
@@ -66,7 +66,7 @@ fn read_json_file(path: &Path) -> Option<Value> {
     serde_json::from_slice(crate::strip_bom(&raw)).ok()
 }
 
-/// 净化：仅移除 cc-switch 存储层的内部顶层键（sanitize_claude_settings_for_live 同款）
+/// 净化：仅移除 cc-switch 存储层的内部顶层键（外部工具写入的，非 Claude Code 配置）
 pub fn sanitize_claude_settings(value: &Value) -> Value {
     let mut value = value.clone();
     if let Some(obj) = value.as_object_mut() {
@@ -112,7 +112,7 @@ pub fn write_json_atomic(path: &Path, value: &Value) -> Result<(), String> {
 // ---------------- 首启导入 / live 读取 ----------------
 
 /// 首启导入：providers 为空时把 live 配置整文件收编为 default 供应商
-/// （cc-switch import_default_config 的 Claude 分支：不拆 env，整份保留）
+/// （不拆 env，整份保留）
 pub fn import_default_from(config_dir: &Path) -> Option<ProviderInfo> {
     let value = read_json_file(&claude_settings_path_from(config_dir))?;
     Some(ProviderInfo {
@@ -145,13 +145,13 @@ fn env_fingerprint(value: &Value) -> Option<(String, Option<String>)> {
     Some((base.to_string(), cred))
 }
 
-/// 切换核心（cc-switch ProviderService::switch_normal 的 Claude 最小语义，顺序一致）：
+/// 切换核心（顺序固定）：
 /// 1) 回填：live 整文件写回离任供应商（用户在 Claude Code 里的手工修改不丢失；
-///    live 缺失/损坏仅告警不阻塞）；切给自己时不回填（与上游一致）；
+///    live 缺失/损坏仅告警不阻塞）；切给自己时不回填；
 ///    live 指纹与离任条目不符时跳过回填仅告警——current 标记可能与磁盘脱节
 ///    （外部工具改写 settings.json、导入采纳 is_current 不写盘等），照常吸收会
 ///    把别家配置静默灌进离任条目
-/// 2) current 指向目标（先记后写，写失败时 current 已指向新供应商，与上游一致）
+/// 2) current 指向目标（先记后写，写失败时 current 已指向新供应商）
 /// 3) sanitize 后整文件原子替换 live
 pub fn switch_provider_from(
     config_dir: &Path,
@@ -180,8 +180,7 @@ pub fn switch_provider_from(
                             (Some(live_fp), Some(slot_fp)) if live_fp != slot_fp => {
                                 warnings.push(format!("backfill_skipped:{cur}"));
                             }
-                            // 指纹一致（吸收手工修改）或无法判定（无 env 等退化情况），
-                            // 维持上游原语义
+                            // 指纹一致（吸收手工修改）或无法判定（无 env 等退化情况）
                             _ => slot.settings_config = live,
                         }
                     }
@@ -706,7 +705,7 @@ mod tests {
         let warnings =
             switch_provider_from(&dir, &mut providers, &mut current, "old").unwrap();
         assert!(warnings.is_empty());
-        // 与上游一致：切给自己不回填，live 被存储配置整文件覆盖
+        // 切给自己不回填，live 被存储配置整文件覆盖
         let live: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         assert_eq!(live, stored);
         assert!(live.get("hacked").is_none());

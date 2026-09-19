@@ -1,9 +1,8 @@
-//! Claude Code 检查更新与一键升级——移植自 cc-switch 的「本地环境检查」：
+//! Claude Code 检查更新与一键升级（本地环境检查）：
 //! 当前版本 = 定位命令行实际命中的 claude 可执行后执行 `claude --version`；
-//! 最新版本 = npm registry 的 `/latest` 端点（cc-switch 取全量文档的
-//! dist-tags.latest 并为抢跑通道纳入 next，本处稳定通道等价简化）；
+//! 最新版本 = npm registry 的 `/latest` 端点（稳定通道，预发布不误报）；
 //! 升级 = 隐藏窗口执行锚定绝对路径的 `claude update`，失败兜底
-//! `npm i -g @anthropic-ai/claude-code@latest`（cc-switch 的 WindowsBatch 白名单语义）。
+//! `npm i -g @anthropic-ai/claude-code@latest`（npm 优先取 claude 同目录的兄弟文件）。
 
 use serde::Serialize;
 use std::cmp::Ordering;
@@ -368,7 +367,7 @@ fn spawn_upgrade_process(script_path: &Path, out: File, err: File) -> Result<Chi
     let mut cmd = {
         let mut c = Command::new("cmd");
         c.args(["/D", "/S", "/C"]).arg(script_path);
-        // 升级必须全程静默：不设这个标志 cmd 会弹命令行窗口（对齐 cc-switch 行为）
+        // 升级必须全程静默：不设这个标志 cmd 会弹命令行窗口
         c.creation_flags(CREATE_NO_WINDOW);
         c
     };
@@ -475,7 +474,7 @@ fn try_parse_version_at(b: &[u8], start: usize) -> Option<String> {
     Some(String::from_utf8_lossy(&b[start..end]).into_owned())
 }
 
-// ---------------- 版本比较（semver 语义，移植自 cc-switch） ----------------
+// ---------------- 版本比较（semver 语义） ----------------
 
 /// 预发布段标识符：数字段按数值比较且 < 非数字段（semver 规范第 11 条）
 #[derive(PartialEq, Eq, PartialOrd, Ord, Debug)]

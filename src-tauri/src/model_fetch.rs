@@ -1,5 +1,4 @@
-//! 拉取供应商可用模型列表——移植自 cc-switch services/model_fetch.rs 的
-//! URL 候选探测逻辑（OpenAI 兼容 GET /v1/models，按候选顺序尝试）。
+//! 拉取供应商可用模型列表——URL 候选探测（OpenAI 兼容 GET /v1/models，按候选顺序尝试）。
 
 use serde::Serialize;
 use serde_json::Value;
@@ -119,7 +118,7 @@ fn truncate_body(body: String) -> String {
     format!("{truncated}…")
 }
 
-/// 候选顺序（移植自 cc-switch build_models_url_candidates，无 override/full-url 分支）：
+/// 候选顺序：
 /// 1. baseURL 以版本段 `/v{N}` 结尾（`/v1`、智谱 `/api/coding/paas/v4` 等）→
 ///    版本号已在路径里，拼 `{base}/models`；非 `/v1` 时再追加 `/v1/models` 兜底
 /// 2. 其余拼 `{base}/v1/models`
