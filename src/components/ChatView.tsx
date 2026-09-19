@@ -764,6 +764,8 @@ export default function ChatView({
 
   // ---------- 搜索（防抖全文搜索 + 跳转定位） ----------
 
+  // 依赖与历史初始加载同一键控口径（session?.file）：重命名只换对象身份，
+  // 不重发同文件同关键词的冗余查询；内容重载会清空关键词，搜索随之复位
   useEffect(() => {
     if (!session || !searchKeyword.trim()) {
       setSearchResults(null);
@@ -790,7 +792,7 @@ export default function ChatView({
       cancelled = true;
       window.clearTimeout(t);
     };
-  }, [session, searchKeyword, onToast]);
+  }, [session?.file, searchKeyword, onToast]);
 
   /** 跳转到某条历史消息（全局序号）：未加载的分页先加载对应页再定位 */
   const jumpTo = useCallback(

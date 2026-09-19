@@ -4666,8 +4666,10 @@ mod tests {
                 );
                 fs::remove_dir_all(&d).unwrap();
             }
-            // `"` 在 Windows 文件名中不合法、目录无从存在，只验证字符串形态
-            assert!(validate_resume_path("D:\\a\"b").is_err());
+            // `"` 在 Windows 文件名中不合法、目录无从存在，改按错误文案断言：
+            // 若禁字符规则被删，这里只会报「不存在」而非「非法字符」，断言即失败
+            let quote_err = validate_resume_path("D:\\a\"b").unwrap_err();
+            assert!(quote_err.contains("非法字符"));
         }
         #[cfg(not(windows))]
         {
