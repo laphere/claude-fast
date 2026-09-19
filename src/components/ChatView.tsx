@@ -473,6 +473,9 @@ export default function ChatView({
     statusRef.current = status.phase;
   }, [status.phase]);
 
+  // 历史初始加载：默认取最后 500 条（会话切换或点「刷新」时重新加载）。
+  // 依赖会话 file 而非 session 对象身份：重命名只改标题也会换对象
+  // （App 侧同步 tab 标题），按对象重载会把阅读位置与搜索状态一起冲掉
   useEffect(() => {
     if (!session) {
       setHistory([]);
@@ -518,7 +521,7 @@ export default function ChatView({
     return () => {
       cancelled = true;
     };
-  }, [session, reloadKey, onToast]);
+  }, [session?.file, reloadKey, onToast]);
 
   /** 加载更早的一页（插入顶部并保持滚动位置） */
   const loadMore = useCallback(async () => {

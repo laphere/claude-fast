@@ -159,11 +159,16 @@ export default function App() {
     async (action: "quit" | "minimize", remember: boolean) => {
       setCloseChoiceOpen(false);
       if (remember) {
+        // 先落盘再改内存态：写失败时内存不领先磁盘
+        try {
+          await api.saveConfig(order, pinnedSessions, projectDirs, excludedDirs, dark, action);
+        } catch (e) {
+          // 失败必须留在窗口内报错：窗口一隐藏/退出，提示再没机会被看到，
+          // 用户会以为选择已记住。保持打开，可重试或去掉「记住」再关。
+          showToast("保存关闭行为失败：" + String(e));
+          return;
+        }
         setCloseAction(action);
-        // 落盘失败不拦住关窗动作，但要提示（否则重启后静默回退为每次询问）
-        await api
-          .saveConfig(order, pinnedSessions, projectDirs, excludedDirs, dark, action)
-          .catch((e) => showToast("保存关闭行为失败：" + String(e)));
       }
       if (action === "minimize") {
         await getCurrentWindow().hide();
