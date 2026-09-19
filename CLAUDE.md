@@ -4,13 +4,15 @@
 
 > **版本线**：`v2.0.0` 分支 = app 内直接对话（版本号 **2.0.0**，`package.json` / `Cargo.toml` / `tauri.conf.json` 三处一致）；`v1.0.0` 分支 = 纯查看器/启动器（版本号 1.0.0）。历史上的 PowerShell/WinForms 版与旧 v2.x/v3.x 版号均已作废，代码中不要再按旧版本号理解。另有 **Node.js（Electron）后端重构分支** `claude-fast-electron`（见下「分支结构」）。
 >
+> **⚠️ 本分支（v2.0.0）自 2026-09-19 起停止维护**：已完成与 v1.0.0 的最终同步（移除脚本化历史版本兼容、全量功能逻辑审核修复、注释按当前代码重写），此后不再接收任何改动；所有演进只发生在 `v1.0.0`（= `main`）。
+>
 > **项目清单（重要）**：为**路径模型**——`config.json` 的 `order`/`projects` 存的都是**项目绝对路径**（`order` 是项目显示顺序），右键菜单「在终端中启动」直接 `cmd /k cd /d "项目" && claude`，不生成/执行任何启动脚本。项目列表 = Claude 会话目录扫描（unmangle 反解）∪ config.projects 手动清单。
 
 ## 分支结构（双后端）
 
 | 分支 | 后端 | 说明 |
 |---|---|---|
-| `v2.0.0`（当前，版本号 2.0.0） | **Tauri 2 + Rust** | 主版本线：v1.0.0 的查看器/启动器 + app 内直接对话（chat.rs），后端在 `src-tauri/` |
+| `v2.0.0`（**已停止维护**，版本号 2.0.0） | **Tauri 2 + Rust** | v1.0.0 的查看器/启动器 + app 内直接对话（chat.rs），后端在 `src-tauri/`；2026-09-19 与 v1.0.0 完成最终同步后冻结 |
 | `v1.0.0` / `main` | **Tauri 2 + Rust** | 纯查看器/启动器（无 app 内对话），后端在 `src-tauri/` |
 | `claude-fast-electron` | **Electron + Node.js** | Node 重构后端服务的分支（自 `f76a56f` 分叉）：**前端技术栈不变**（React + TS + Vite），后端改为 `electron/main.ts`（主进程/窗口/托盘/IPC）+ `electron/backend/*.ts`（业务模块：paths/scriptnames/config/mangle/sessions/trash/platform/text，vitest 单测）；构建走 npm（vite + esbuild + electron-builder）。细节见该分支的 CLAUDE.md / README.md |
 
@@ -97,7 +99,7 @@
 ```bash
 npm install                  # 前端依赖
 npm run tauri dev            # 开发模式（热更新）
-cd src-tauri && cargo test   # 后端单元测试（全平台共 185 个定义，Windows 实测 179 个：路径解析/配置/扫描/根目录定位/会话管理/mangle/sh_quote/回收站/台账/供应商/模型拉取/版本升级/对话翻译层/方案结构化；差额为平台条件用例）
+cd src-tauri && cargo test   # 后端单元测试（全平台共 177 个定义，Windows 实测 171 个：路径解析/配置/扫描/根目录定位/会话管理/mangle/sh_quote/回收站/台账/供应商/模型拉取/版本升级/对话翻译层/方案结构化；差额为平台条件用例）
 npm run tauri build          # 生产构建
 # macOS 通吃包（Intel + Apple Silicon）：npm run tauri build -- --target universal-apple-darwin
 ```
