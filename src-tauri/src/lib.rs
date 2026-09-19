@@ -301,12 +301,14 @@ fn app_data_root() -> PathBuf {
     #[cfg(not(any(windows, target_os = "macos")))]
     let base = std::env::var("HOME").unwrap_or_default();
     if base.is_empty() {
-        // 环境变量缺失时退回 exe 所在目录，避免数据根退化成相对路径
-        // （相对进程 CWD，随启动位置漂移）
-        return std::env::current_exe()
+        // 环境变量缺失时退回 exe 同层的 claude-fast 子目录：绝对路径，且位于
+        // 子目录、不在 exe 的祖先链上，下次启动不会被 is_root_dir 当成便携根；
+        // exe 路径也取不到时用系统临时目录兜底——绝不能返回空路径（会相对 CWD 漂移）
+        let fallback = std::env::current_exe()
             .ok()
             .and_then(|p| p.parent().map(Path::to_path_buf))
-            .unwrap_or_default();
+            .unwrap_or_else(std::env::temp_dir);
+        return fallback.join("claude-fast");
     }
     PathBuf::from(base).join("claude-fast")
 }
@@ -4584,12 +4586,25 @@ mod tests {
         // 存在的目录通过
         let dir = temp_root("resume-valid");
         assert!(validate_resume_path(dir.to_str().unwrap()).is_ok());
-        // 平台元字符：Windows 拒 cmd 特殊字符，macOS 拒 bash 特殊字符
+        // 平台元字符。断言一律用**真实存在的目录**：拿不存在的路径断言会因
+        // is_dir 兜底而恒真，测不到字符规则本身
         #[cfg(windows)]
         {
-            assert!(validate_resume_path("D:\\a&b").is_err());
-            assert!(validate_resume_path("D:\\a|b").is_err());
-            assert!(validate_resume_path("D:\\a^b").is_err());
+            // 引号内 `& ^ ( )` 是字面量：存在的目录必须放行
+            let ok = temp_root("resume-amp & caret ^ paren");
+            assert!(validate_resume_path(ok.to_str().unwrap()).is_ok());
+            fs::remove_dir_all(&ok).unwrap();
+            // `%`（变量展开）与 `!`（延迟展开）在双引号内照样生效：存在的目录也必须拒
+            for name in ["resume-has%percent", "resume-has!bang"] {
+                let d = temp_root(name);
+                assert!(
+                    validate_resume_path(d.to_str().unwrap()).is_err(),
+                    "{name} 应被拒绝"
+                );
+                fs::remove_dir_all(&d).unwrap();
+            }
+            // `"` 在 Windows 文件名中不合法、目录无从存在，只验证字符串形态
+            assert!(validate_resume_path("D:\\a\"b").is_err());
         }
         #[cfg(not(windows))]
         {

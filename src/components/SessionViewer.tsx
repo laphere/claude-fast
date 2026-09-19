@@ -623,7 +623,9 @@ export default function SessionViewer({
    *  改动（双触发、整窗替换后的迟到回包），防止同一页被前插/追加两次 */
   const winRef = useRef({ start: 0, end: 0 });
 
-  // 初始加载：默认取最后 500 条（session 切换或点「刷新」时重新加载）
+  // 初始加载：默认取最后 500 条（session 切换或点「刷新」时重新加载）。
+  // 依赖会话 file 而非 session 对象身份：重命名只改标题也会换对象，
+  // 按对象重载会把阅读位置与搜索状态一起冲掉
   useEffect(() => {
     if (!session) {
       setMessages([]);
@@ -676,7 +678,7 @@ export default function SessionViewer({
     return () => {
       cancelled = true;
     };
-  }, [session, reloadKey, onToast]);
+  }, [session?.file, reloadKey, onToast]);
 
   // 初始加载完成后滚动到底部
   useEffect(() => {
@@ -722,8 +724,11 @@ export default function SessionViewer({
       });
     } catch (e) {
       onToast("加载更早消息失败：" + String(e));
+    } finally {
+      // 必须走 finally：上面的作废分支是提前 return，漏掉它会永久停在
+      // loadingMore=true——按钮从此「加载中」且禁用，触底分页也一起失效
+      setLoadingMore(false);
     }
-    setLoadingMore(false);
   }, [session, loading, loadingMore, hasMore, offset, onToast]);
 
   // 加载更晚的一页（窗口末尾续接），追加在尾部：跳转整窗替换后，向下翻
@@ -745,8 +750,10 @@ export default function SessionViewer({
       setStats(data.stats);
     } catch (e) {
       onToast("加载更晚消息失败：" + String(e));
+    } finally {
+      // 同上：作废分支提前 return 时也必须解锁
+      setLoadingMore(false);
     }
-    setLoadingMore(false);
   }, [session, loading, loadingMore, total, onToast]);
 
   // 进度条高亮跟随滚动：视口顶部附近最近的那条用户发言
@@ -828,7 +835,8 @@ export default function SessionViewer({
 
   // ---------- 搜索 ----------
 
-  // 防抖 300ms 调后端全文搜索（结果按消息序号返回；点「刷新」重载后同关键词重查）
+  // 防抖 300ms 调后端全文搜索（结果按消息序号返回）。内容重载（切换会话或点「刷新」）
+  // 会清空关键词，搜索随之复位
   useEffect(() => {
     if (!session || !searchKeyword.trim()) {
       setSearchResults(null);
@@ -855,7 +863,7 @@ export default function SessionViewer({
       cancelled = true;
       window.clearTimeout(t);
     };
-  }, [session, searchKeyword, reloadKey, onToast]);
+  }, [session, searchKeyword, onToast]);
 
   // 关键词高亮：作用于消息区与搜索结果片段（关键词清空/消息增减时重建）
   useEffect(() => {
