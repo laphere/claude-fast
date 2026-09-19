@@ -5,17 +5,17 @@ use tauri::Manager;
 /// app 内直接对话：托管官方 claude CLI 子进程（stdio stream-json）
 pub mod chat;
 
-/// Claude Code 供应商配置切换（移植自 cc-switch 最小核心）
+/// Claude Code 供应商配置切换
 pub mod provider;
 
-/// 拉取供应商可用模型列表（移植自 cc-switch model_fetch）
+/// 拉取供应商可用模型列表
 pub mod model_fetch;
 pub mod plan_structure;
 
-/// Coding Plan 套餐用量查询（移植自 cc-switch coding_plan 适配器）
+/// Coding Plan 套餐用量查询
 pub mod usage_query;
 
-/// Claude Code 检查更新与一键升级（移植自 cc-switch 本地环境检查）
+/// Claude Code 检查更新与一键升级
 pub mod claude_update;
 
 #[cfg(windows)]
@@ -340,7 +340,7 @@ fn resolve_root_from(start: &Path) -> Option<PathBuf> {
 
 /// 数据根解析结果**进程内缓存**。根在进程生命周期内不变（exe 位置固定），
 /// 缓存有两个必要理由：
-/// ① 判定已从 stat 级（is_file/is_dir）升到 read+parse 级，单次瞬态读失败
+/// ① 判定是 read+parse 级，单次瞬态读失败
 ///    （杀软保存后独占扫描、云盘占位文件未水合、网络盘瞬断）会让同一会话内
 ///    不同命令落到**不同的根**——load 读到一份空清单、save 写进另一个目录，
 ///    表现为「清单自己清空又自己回来」；
@@ -603,7 +603,7 @@ fn save_config_file(root: &Path, cfg: &Config) -> Result<(), String> {
     Ok(())
 }
 
-// ---------------- 供应商切换（移植自 cc-switch） ----------------
+// ---------------- 供应商切换 ----------------
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -1003,7 +1003,7 @@ fn launch_project(path: String) -> Result<(), String> {
     }
 }
 
-// ---------------- 会话继续对话（v2.0.0 阶段二：方向 B resume） ----------------
+// ---------------- 会话继续对话（终端 resume） ----------------
 
 /// shell 双引号内转义（macOS 命令行拼装用：路径可能含 `"`、`$`、反引号、`\`，
 /// 转义后放入 `cd "..."` 不会被展开/截断）。
@@ -1027,7 +1027,7 @@ fn sh_quote(s: &str) -> String {
 /// 只需拒掉引号内仍有效的字符——`"`（截断引号）与 `%`（环境变量展开，`%APPDATA%` 等
 /// 引号内照样展开）；`!`（延迟展开变量，防御注册表 AutoRun 开启 delayed expansion）
 /// macOS：路径经 sh_quote 转义后放进 `cd "..."`，双引号内 `$ ` \ "` 之外的特殊字符
-/// 均为字面量，故不再额外拒字符——否则会误伤含 `(` `)` `'` `\` 等的合法 mac 路径
+/// 均为字面量，故不额外拒字符——否则会误伤含 `(` `)` `'` `\` 等的合法 mac 路径
 /// （这类路径在「新建/启动」能通过，resume 却拒绝，造成行为不一致）。
 fn validate_resume_path(project_path: &str) -> Result<(), String> {
     let proj = project_path.trim();
@@ -1259,10 +1259,10 @@ fn claude_projects_dir() -> PathBuf {
     PathBuf::from(home).join(".claude").join("projects")
 }
 
-// ---------------- 会话管理（v2.0.0 阶段一） ----------------
+// ---------------- 会话管理 ----------------
 
 /// jsonl 轻量读取的 head/tail 缓冲大小：会话文件可达数 MB 甚至更大，
-/// 只读首尾各 64KB 即可提取全部元数据（与 cc-haha 的 LITE_READ_BUF_SIZE 一致）。
+/// 只读首尾各 64KB 即可提取全部元数据。
 const LITE_READ_BUF_SIZE: usize = 64 * 1024;
 
 /// Claude Code 项目目录名的正向 mangle：`:`、`\`、`/`、`_`、`.` 均替换为 `-`
@@ -1304,7 +1304,7 @@ fn is_valid_uuid(s: &str) -> bool {
 
 /// 剥离 XML 标签块（如 <command-name>/<command-args> 包裹的标题源）。
 /// command-args 块**保留块内文本**（它是标题内容本身），其余块整体剥离；
-/// 无闭合标签的孤立 `<` 原样保留。对应 cc-haha cleanSessionTitleSource。
+/// 无闭合标签的孤立 `<` 原样保留。
 fn strip_xml_blocks(s: &str) -> String {
     let mut out = String::new();
     let mut rest = s;
@@ -1609,7 +1609,7 @@ async fn list_pinned_sessions() -> Vec<PinnedSessionInfo> {
     pinned_meta_in(&cfg.pinned_sessions, &claude_projects_dir())
 }
 
-// ---------------- 会话内容读取（v2.0.0 阶段二：方向 A 只读查看） ----------------
+// ---------------- 会话内容读取（只读查看） ----------------
 
 /// 从 content 块数组中提取文本（tool_result 的 content 可能是 string 或数组）
 fn block_text(content: &serde_json::Value) -> Option<String> {
@@ -2591,9 +2591,8 @@ struct StatsLedger {
     files: std::collections::HashMap<String, LedgerEntry>,
 }
 
-/// v2：LedgerEntry 新增 per_day_model（排行按范围过滤）
-/// v3：扫描范围补上 `<会话>/subagents/**` 子代理文件 + 同一 message.id 改取收尾行
-///     （旧版取首行，占位行会把整条消息记成 0）——老条目口径不对，须全量重扫
+/// 台账口径版本：磁盘上 version 更小的台账口径不同（v2 前缺 per_day_model、
+/// v3 前漏扫子代理文件且 message.id 误取占位行，把整条消息记成 0），须全量重扫
 const LEDGER_VERSION: u32 = 3;
 
 fn ledger_path_in(root: &Path) -> PathBuf {
@@ -3687,7 +3686,7 @@ mod tests {
             .join("evil")
             .join(format!("{TEST_UUID}.jsonl"));
         assert!(validate_session_file_in(traversal.to_str().unwrap(), &projects).is_err());
-        // 文件不存在：canonicalize 失败必须拒绝（旧逻辑 starts_with 不要求存在）
+        // 文件不存在：canonicalize 失败必须拒绝（词法前缀匹配发现不了不存在的路径）
         assert!(validate_session_file_in(
             mangled.join("ffffffff-ffff-ffff-ffff-ffffffffffff.jsonl").to_str().unwrap(),
             &projects,
@@ -3881,8 +3880,7 @@ mod tests {
     #[test]
     fn resolve_root_with_mode_matches_ancestor_scan() {
         // 独立复算一遍「exe 向上 6 级的首个便携标记」，与 resolve 的结果对照。
-        // 旧版这里只断言 root.is_dir()——本机恒真，等于没测；现在两个分支的
-        // 期望值都由扫描推出，搜索深度写错或谓词漏判都会让它失败
+        // 期望值都由扫描推出，不依赖本机目录布局——搜索深度写错或谓词漏判都会失败
         let (root, install) = resolve_root_with_mode();
         let exe = std::env::current_exe().unwrap_or_default();
         let mut dir = exe.parent().map(Path::to_path_buf).unwrap_or_default();
@@ -4015,7 +4013,7 @@ mod tests {
         fs::remove_dir_all(&fake).unwrap();
     }
 
-    // ---------------- 会话管理（v2.0.0 阶段一） ----------------
+    // ---------------- 会话管理 ----------------
 
     #[test]
     fn mangle_project_path_works() {
@@ -4265,7 +4263,7 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
-    // ---------------- 回收站（v2.0.0 阶段一：删除会话 = 移入回收站） ----------------
+    // ---------------- 回收站（删除会话 = 移入回收站） ----------------
 
     #[test]
     fn utc_timestamp_matches_format() {
@@ -4422,7 +4420,7 @@ mod tests {
         fs::remove_dir_all(&root).unwrap();
     }
 
-    // ---------------- 会话内容读取（v2.0.0 阶段二：方向 A） ----------------
+    // ---------------- 会话内容读取（只读查看） ----------------
 
     #[test]
     fn parse_session_messages_extracts_blocks() {
@@ -4594,7 +4592,7 @@ mod tests {
         assert_eq!(r[1].blocks[0].text.as_deref(), Some("出错了"));
     }
 
-    // ---------------- 会话继续对话（v2.0.0 阶段二：方向 B resume） ----------------
+    // ---------------- 会话继续对话（终端 resume） ----------------
 
     #[cfg(windows)]
     #[test]
@@ -4659,7 +4657,7 @@ mod tests {
         #[cfg(not(windows))]
         {
             // macOS：路径放进 cd "..." 经 sh_quote 转义，双引号内这些字符均为字面量，
-            // 不再额外拒绝（避免误伤含 ( ) ' \ 等的合法 mac 路径）。用真实目录验证通过。
+            // 不额外拒绝（避免误伤含 ( ) ' \ 等的合法 mac 路径）。用真实目录验证通过。
             let d = temp_root("resume-tricky");
             let tricky = d.join("my'app (v2)\\3"); // 含 ' ( ) 空格 \ ——合法 mac 文件名字符
             fs::create_dir_all(&tricky).unwrap();
@@ -4687,7 +4685,7 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
-    // ---------------- 去脚本化：项目清单与迁移 ----------------
+    // ---------------- 项目清单 ----------------
 
     #[test]
     fn list_projects_impl_merges_scan_and_manual() {
@@ -5219,7 +5217,7 @@ mod tests {
             r#"{"type":"assistant","message":{"id":"msg_a","role":"assistant","content":[{"type":"text","text":"段1"}],"usage":{"input_tokens":100,"output_tokens":20,"cache_read_input_tokens":5}},"timestamp":"t1"}"#,
             // user 行（tool_result）打断相邻合并链
             r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]},"timestamp":"t2"}"#,
-            // msg_a 第二段：同 id、usage 相同 → 显示成新条目，但 usage 不再计入
+            // msg_a 第二段：同 id、usage 相同 → 显示成新条目，但 usage 不重复计入
             r#"{"type":"assistant","message":{"id":"msg_a","role":"assistant","content":[{"type":"text","text":"段2"}],"usage":{"input_tokens":100,"output_tokens":20,"cache_read_input_tokens":5}},"timestamp":"t3"}"#,
             r#"{"type":"user","message":{"role":"user","content":"继续"},"timestamp":"t4"}"#,
             // 新响应（不同 id）→ 正常计入
@@ -5720,7 +5718,7 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None::<Vec<&str>>,
         ))
-        // 单实例：再次启动时不再新建进程，而是把已有主窗口调到前台
+        // 单实例：再次启动时不新建进程，而是把已有主窗口调到前台
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             show_main_window(app);
         }))

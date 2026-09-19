@@ -1,12 +1,12 @@
 //! app 内直接对话：托管官方 claude CLI 子进程（stdio stream-json 模式）。
 //!
-//! 架构对应 cc-haha 的三层能力，改造为 Rust + 官方 CLI：
-//! 1. 进程托管层（对应 conversationService.ts）：spawn
+//! 三层架构：
+//! 1. 进程托管层：spawn
 //!    `claude --print --input-format stream-json --output-format stream-json
 //!    --include-partial-messages`，stdin 发消息、stdout 解析流；
-//! 2. 消息翻译层（对应 translateCliMessage / cliMessageParsing / streamBlocks）：
+//! 2. 消息翻译层：
 //!    StreamAssembler 把 CLI 原始事件翻译成前端友好的 ChatEvent 增量流；
-//! 3. 前端 ChatView（对应 chatStore）：经 Tauri ipc::Channel 接收事件渲染。
+//! 3. 前端 ChatView：经 Tauri ipc::Channel 接收事件渲染。
 //!
 //! 新对话/续聊由 CLI 自己写入 ~/.claude/projects 原生 jsonl，
 //! 自动进入现有会话列表（list_sessions 扫描），终端也能 resume——与
@@ -223,7 +223,7 @@ fn build_cli_args(
         "stream-json".to_string(),
         "--output-format".to_string(),
         "stream-json".to_string(),
-        // 桌面对话依赖增量事件；缺了它只有轮次结束才见到完整消息（cc-haha 同款注释场景）
+        // 桌面对话依赖增量事件；缺了它只有轮次结束才见到完整消息
         "--include-partial-messages".to_string(),
     ];
     if let Some(mode) = permission_mode {
@@ -258,10 +258,9 @@ struct PendingBlock {
 }
 
 /// CLI 原始消息 → ChatEvent 的翻译器（每会话一个，跨行维护去重与流式状态）。
-/// 对应 cc-haha 的 translateCliMessage + SessionStreamState（简化：无子 agent scope）。
 pub struct StreamAssembler {
     /// 已被流式渲染过的 assistant message.id——完整 assistant 消息到达时去重，
-    /// 防止同一份内容渲染两遍（cc-haha 的核心去重规则）
+    /// 防止同一份内容渲染两遍
     streamed_msg_ids: HashSet<String>,
     /// 当前消息流式中的内容块（key = content block index）
     blocks: BTreeMap<u64, PendingBlock>,
@@ -330,7 +329,7 @@ impl StreamAssembler {
             .unwrap_or("")
             .to_string();
         let usage = parse_usage(message.get("usage")).unwrap_or_default();
-        // 已流式渲染过 → 只补 usage，不重复产出内容（cc-haha 去重规则）
+        // 已流式渲染过 → 只补 usage，不重复产出内容
         if !msg_id.is_empty() && self.streamed_msg_ids.contains(&msg_id) {
             return vec![ChatEvent::MessageComplete { usage }];
         }

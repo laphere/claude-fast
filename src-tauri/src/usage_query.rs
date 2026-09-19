@@ -1,5 +1,5 @@
-//! Coding Plan 套餐用量查询——移植自 cc-switch services/coding_plan.rs 的
-//! 五个厂商适配器（Kimi / 智谱 GLM / MiniMax / ZenMux / OpenCode Go）。
+//! Coding Plan 套餐用量查询——五个厂商适配器
+//! （Kimi / 智谱 GLM / MiniMax / ZenMux / OpenCode Go）。
 //! 凭据从供应商配置的 env.ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN 现场取，
 //! base_url 命中即查，无需 per-provider 配置。解析函数为纯函数、fixture 可测。
 
@@ -66,7 +66,7 @@ impl UsageResult {
     }
 }
 
-/// 探测 base_url 属于哪家 Coding Plan 厂商（与 cc-switch detect_provider 同款规则）
+/// 探测 base_url 属于哪家 Coding Plan 厂商
 pub fn detect_vendor(base_url: &str) -> Option<&'static str> {
     let url = base_url.to_lowercase();
     if url.contains("api.kimi.com/coding") {
