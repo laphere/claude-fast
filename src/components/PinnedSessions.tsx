@@ -13,7 +13,7 @@ interface Props {
   projects: Project[];
   onOpenSession: (projectPath: string, session: SessionInfo) => void;
   onTogglePin: (projectPath: string, session: SessionInfo) => void;
-  /** 会话右键菜单（继续/重命名/取消置顶/删除收进菜单，行上不再放按钮） */
+  /** 会话右键菜单（继续/重命名/取消置顶/删除收进菜单，行上不放按钮） */
   onSessionContextMenu: (projectPath: string, session: SessionInfo, x: number, y: number) => void;
 }
 

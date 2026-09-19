@@ -12,7 +12,7 @@ interface Props {
   projectName?: string;
   onOpen: () => void;
   onTogglePin: () => void;
-  /** 右键菜单（继续/重命名/置顶/删除都收进菜单，行上不再放按钮挤占标题宽度） */
+  /** 右键菜单（继续/重命名/置顶/删除都收进菜单，行上不放按钮挤占标题宽度） */
   onContextMenu?: (e: MouseEvent) => void;
 }
 

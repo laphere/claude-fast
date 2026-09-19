@@ -1,11 +1,11 @@
 /**
- * 预设供应商配置模板（移植自 cc-switch v3.20.1，全量 88 个预设；
- * 去除 i18n 依赖：nameKey 保留字段但 UI 直接显示 name）
+ * 预设供应商配置模板（全量 88 个预设；
+ * nameKey 字段保留但 UI 直接显示 name）
  */
 
 export type ProviderCategory =
   | "official" // 官方
-  | "cn_official" // 开源官方（原"国产官方"）
+  | "cn_official" // 开源官方
   | "cloud_provider" // 云服务商（AWS Bedrock 等）
   | "aggregator" // 聚合网站
   | "third_party" // 第三方供应商
@@ -34,21 +34,21 @@ export interface ProviderPreset {
   name: string;
   nameKey?: string; // i18n key for localized display name
   websiteUrl: string;
-  // 新增：第三方/聚合等可单独配置获取 API Key 的链接
+  // 第三方/聚合等可单独配置获取 API Key 的链接
   apiKeyUrl?: string;
   settingsConfig: object;
   isOfficial?: boolean; // 标识是否为官方预设
   isPartner?: boolean; // 标识是否为商业合作伙伴
   primePartner?: boolean; // 置顶合作伙伴（顶级）：徽章显示为心形
   partnerPromotionKey?: string; // 合作伙伴促销信息的 i18n key
-  category?: ProviderCategory; // 新增：分类
-  // 新增：指定该预设所使用的 API Key 字段名（默认 ANTHROPIC_AUTH_TOKEN）
+  category?: ProviderCategory; // 分类
+  // 指定该预设所使用的 API Key 字段名（默认 ANTHROPIC_AUTH_TOKEN）
   apiKeyField?: "ANTHROPIC_AUTH_TOKEN" | "ANTHROPIC_API_KEY";
-  // 新增：模板变量定义，用于动态替换配置中的值
+  // 模板变量定义，用于动态替换配置中的值
   templateValues?: Record<string, TemplateValueConfig>; // editorValue 存储编辑器中的实时输入值
-  // 新增：请求地址候选列表（用于地址管理/测速）
+  // 请求地址候选列表（用于地址管理/测速）
   endpointCandidates?: string[];
-  // 新增：视觉主题配置
+  // 视觉主题配置
   theme?: PresetTheme;
   // 图标配置
   icon?: string; // 图标名称

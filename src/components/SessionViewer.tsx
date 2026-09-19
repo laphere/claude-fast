@@ -51,7 +51,7 @@ function formatTime(iso: string | null | undefined): string {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-/** Markdown 渲染（marked + DOMPurify 消毒，cc-haha 同方案） */
+/** Markdown 渲染（marked + DOMPurify 消毒） */
 function MarkdownText({ text }: { text: string }) {
   const html = useMemo(() => {
     try {
@@ -63,7 +63,7 @@ function MarkdownText({ text }: { text: string }) {
   return <div className="md-body" dangerouslySetInnerHTML={{ __html: html }} />;
 }
 
-/** 工具调用摘要（仿 cc-haha formatRecentToolUseSummary）：Bash · 命令 / Read · 文件名 */
+/** 工具调用摘要：Bash · 命令 / Read · 文件名 */
 function toolSummary(name: string, input: unknown): string {
   const obj = (input ?? {}) as Record<string, unknown>;
   const leaf = (p: unknown) =>
@@ -316,7 +316,7 @@ function CodeChangeCard({
 }
 
 /** 工具调用行（默认折叠）：代码变更工具展开显示 diff，其他工具展开显示输入 JSON
- *  与执行结果——每次工具调用只占一行摘要，结果不再单独渲染成卡片 */
+ *  与执行结果——每次工具调用只占一行摘要，结果不单独渲染成卡片 */
 function ToolUseRow({
   block,
   hasResult,
@@ -567,7 +567,7 @@ interface ChangedFile {
 }
 
 /** 右侧会话内容区：打开定位在最后一条，翻到窗口边缘自动加载更早/更晚的 500 条。
- *  会话域增强（v2.0.0）：消息搜索、token/成本统计、导出、变更文件导航。 */
+ *  会话域增强：消息搜索、token/成本统计、导出、变更文件导航。 */
 export default function SessionViewer({
   session,
   projectPath,
@@ -803,7 +803,7 @@ export default function SessionViewer({
   }, [loadMore, loadLater, updateActivePrompt]);
 
   // tool_use / tool_result 跨消息关联：resultMap 供状态标记，resultBlocks
-  // 供折叠展开时在工具行内直接看执行结果（结果不再单独渲染成卡片）
+  // 供折叠展开时在工具行内直接看执行结果（结果不单独渲染成卡片）
   const { resultMap, resultBlocks, toolNames } = useMemo(() => {
     const resultMap = new Map<string, boolean>();
     const resultBlocks = new Map<string, ContentBlock>();
@@ -900,7 +900,7 @@ export default function SessionViewer({
         }
       }
       const locate = () => {
-        if (sessionFileRef.current !== myFile) return; // 已切换会话，不再定位
+        if (sessionFileRef.current !== myFile) return; // 已切换会话，不定位
         if (seq !== winSeqRef.current) return; // 已有更新的跳转接管定位
         const body = bodyRef.current;
         if (!body) return;

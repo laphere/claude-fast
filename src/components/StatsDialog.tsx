@@ -40,10 +40,9 @@ const RANGE_LABELS: Array<[Range, string]> = [
  *  按**当前窗口**的用量排名分配——用量最大的模型恒定拿第一色（陶土，与 accent 同源）；
  *  切范围会重排配色，但下方模型分布每行都带同色色块充当图例，不会读错。
  *
- *  **为什么走 var() 而不是写死色值**：图表段与行内色块都是内联 style，而**内联 style 完全
- *  可以用 var()** —— 初版误以为取不到主题变量，只好写一组「同时兼容浅底 #fff 与深底
- *  #292724」的固定值，饱和度被压到 31%、明度 47%，在浅色主题下发暗沉（用户已反馈）。
- *  现在两套主题各给一组最优值（浅色 S45/L51、深色 S50/L62），这个折中不再需要。 */
+ *  **为什么走 var() 而不是写死色值**：图表段与行内色块都是内联 style，内联 style 完全
+ *  可以用 var()；两套主题各给一组最优值（浅色 S45/L51、深色 S50/L62），写死单一组
+ *  色值无法同时适配两套底色。 */
 const MODEL_COLORS = [
   "var(--chart-1)", // 陶土（与 --accent 同源，最强模型专用）
   "var(--chart-2)", // 青
@@ -131,8 +130,7 @@ function StatCard({ num, label, sub }: { num: string; label: string; sub?: strin
  *
  *  趋势图按模型堆叠：同一根柱按当日各模型用量分段，**柱高仍是当日总量**
  *  （所以不需要「总量 / 按模型」双视图——单色柱是它的严格子集：同样高度、更少信息）。
- *  后端 perModel 一直带着 perDay 明细（RankDayUsage），前端此前只拿它算窗口合计、
- *  没上时间轴——故这是纯前端改动：零后端字段、零台账版本变更、零重扫。 */
+ *  逐日明细来自后端 perModel[].perDay（RankDayUsage）。 */
 export default function StatsDialog({ onClose }: Props) {
   const [stats, setStats] = useState<UsageStats | null>(null);
   const [loading, setLoading] = useState(true);

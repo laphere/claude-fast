@@ -10,7 +10,7 @@ interface Props {
   /** 该会话当前是否已置顶（决定置顶项文案） */
   sessionPinned: boolean;
   onClose: () => void;
-  /** 把项目移到列表最前（替代已下线的收藏置顶） */
+  /** 把项目移到列表最前 */
   onMoveTop: (l: Project) => void;
   onOpenFolder: (l: Project) => void;
   onCopyPath: (l: Project) => void;

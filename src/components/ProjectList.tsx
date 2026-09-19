@@ -23,7 +23,7 @@ interface Props {
   dragEnabled: boolean;
   onToggleExpand: (key: string) => void;
   onTogglePin: (key: string, session: SessionInfo) => void;
-  /** 会话右键菜单（继续/重命名/置顶/删除收进菜单，行上不再放按钮） */
+  /** 会话右键菜单（继续/重命名/置顶/删除收进菜单，行上不放按钮） */
   onSessionContextMenu: (key: string, session: SessionInfo, x: number, y: number) => void;
   onOpenSession: (key: string, session: SessionInfo) => void;
   onContextMenu: (x: number, y: number, key: string) => void;

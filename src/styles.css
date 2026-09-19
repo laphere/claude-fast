@@ -22,9 +22,9 @@
   /* 趋势图堆叠色板（浅色主题）：9 色，色相刻意跨冷暖交错排布
      （1 陶土 / 2 青 / 3 金 / 4 紫 / 5 绿 / 6 玫 / 7 蓝 / 8 棕 / 9 松），
      这样即便两个用量接近的模型排到相邻色号，堆叠里也能分开。
-     饱和度约 45%、明度约 51%——比 app 主色略淡，但明显高于初版（S31/L47 偏暗沉）。
-     图表段与行内色块都用内联 style 引 var()，所以两套主题各给一组最优值，
-     不必再像初版那样为「同时兼容浅底深底」而把饱和度压到 31%。 */
+     饱和度约 45%、明度约 51%，比 app 主色略淡、浅底下不暗沉；
+     图表段与行内色块都用内联 style 引 var()，两套主题各给一组最优值，
+     不为兼容深浅两套底色压低饱和度。 */
   --chart-1: #d4703f;
   --chart-2: #3f8fa8;
   --chart-3: #c39620;
@@ -256,7 +256,7 @@ code {
   position: absolute;
   left: 10px;
   top: 50%;
-  /* 内容为对称 SVG：grid 收紧行盒后 -50% 精确居中（原 -52% 是 ⌕ 字形墨迹补偿） */
+  /* 内容为对称 SVG：grid 收紧行盒后 -50% 精确居中 */
   display: grid;
   place-items: center;
   line-height: 0;
@@ -287,7 +287,7 @@ code {
   right: 6px;
   top: 50%;
   transform: translateY(-50%);
-  /* 字符 × 换 SVG 后靠 flex 居中（font-size 对 svg 失效） */
+  /* SVG 图标：flex 居中（font-size 对 svg 失效） */
   display: flex;
   align-items: center;
   justify-content: center;
@@ -524,7 +524,7 @@ code {
   bottom: -3px;
 }
 
-/* ============ 会话列表（v2.0.0 阶段一：内联展开） ============ */
+/* ============ 会话列表（内联展开） ============ */
 .row-wrap.expanded .row {
   background: var(--accent-soft);
   border-color: var(--accent);
@@ -665,7 +665,7 @@ code {
   border-top: 1px solid var(--border);
 }
 
-/* ============ 回收站（v2.0.0 阶段一） ============ */
+/* ============ 回收站 ============ */
 .trash-list {
   display: flex;
   flex-direction: column;
@@ -674,7 +674,7 @@ code {
   overflow-y: auto;
 }
 
-/* ============ 会话内容区（v2.0.0 阶段二：左右分栏） ============ */
+/* ============ 会话内容区（左右分栏） ============ */
 .main-split {
   display: flex;
   gap: 0;
@@ -787,7 +787,7 @@ code {
 
 .viewer-load-more {
   align-self: center;
-  /* 字符 ↑↓ 换 SVG：flex 居中 + 图标间距 */
+  /* SVG 图标：flex 居中 + 图标间距 */
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -811,7 +811,7 @@ code {
   cursor: default;
 }
 
-/* ============ 会话域增强（v2.0.0：统计 / 搜索 / 文件面板 / 导出） ============ */
+/* ============ 会话域增强（统计 / 搜索 / 文件面板 / 导出） ============ */
 
 .viewer-stats {
   font-size: 11px;
@@ -1570,7 +1570,7 @@ mark {
   color: var(--dim);
 }
 
-/* ============ Markdown 正文（cc-haha 同方案：marked + DOMPurify） ============ */
+/* ============ Markdown 正文（marked + DOMPurify） ============ */
 .md-body {
   font-size: 13.5px;
   line-height: 1.75;
@@ -1689,7 +1689,7 @@ mark {
   margin: 0.8em 0;
 }
 
-/* ============ 思考 / 工具调用 / 工具结果（cc-haha 折叠卡片风格） ============ */
+/* ============ 思考 / 工具调用 / 工具结果（折叠卡片） ============ */
 .thinking-block {
   font-size: 12.5px;
   color: var(--muted);
@@ -1735,7 +1735,7 @@ mark {
 
 .tool-icon {
   flex-shrink: 0;
-  /* emoji 换 SVG：inline-flex 兼容 flex 子项（tool-summary 行）与行内文本
+  /* SVG 图标：inline-flex 兼容 flex 子项（tool-summary 行）与行内文本
      （thinking summary）两种上下文；vertical-align 仅行内上下文生效 */
   display: inline-flex;
   align-items: center;
@@ -1801,7 +1801,7 @@ mark {
   color: var(--accent);
   font-weight: 700;
   flex-shrink: 0;
-  /* 字符 ● 换 SVG 后靠 flex 居中 */
+  /* SVG 图标：flex 居中 */
   display: flex;
   align-items: center;
 }
@@ -1998,7 +1998,7 @@ mark {
 }
 
 .empty-icon {
-  /* emoji 换 SVG 后以 inline-flex 挂载（font-size 不作用于 svg） */
+  /* SVG 图标：inline-flex 挂载（font-size 不作用于 svg） */
   display: inline-flex;
   font-size: 34px;
   margin-bottom: 10px;
@@ -2112,7 +2112,7 @@ mark {
 }
 
 .modal-close {
-  /* 字符 × 换 SVG 后靠 flex 居中 */
+  /* SVG 图标：flex 居中 */
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2275,7 +2275,7 @@ mark {
   color: var(--danger);
 }
 
-/* ============ 本地环境检查（Claude Code 更新，移植自 cc-switch） ============ */
+/* ============ 本地环境检查（Claude Code 更新） ============ */
 .env-section {
   font-size: 12px;
   font-weight: 700;
@@ -2307,7 +2307,7 @@ mark {
   gap: 8px;
 }
 
-/* 平台徽标（Win / macOS），对齐 cc-switch 的环境徽标 */
+/* 平台徽标（Win / macOS） */
 .env-badge {
   font-size: 10px;
   font-weight: 600;
@@ -2474,7 +2474,7 @@ mark {
 .activity-caret {
   flex-shrink: 0;
   font-size: 9px;
-  /* 字符 ▶ 换 SVG 后靠 flex 居中；rotate(90deg) 作用在本元素，展开动画不变 */
+  /* SVG 图标：flex 居中；rotate(90deg) 作用在本元素，展开动画不变 */
   display: flex;
   align-items: center;
   transition: transform 0.12s;
@@ -2523,7 +2523,7 @@ mark {
   min-width: 0;
 }
 
-/* ============ 供应商切换（移植自 cc-switch） ============ */
+/* ============ 供应商切换 ============ */
 .provider-list {
   display: flex;
   flex-direction: column;
@@ -2541,7 +2541,7 @@ mark {
   background: var(--panel);
 }
 
-/* 单行三段式（cc-switch 布局）：信息（弹性）+ 用量列 + 操作按钮 */
+/* 单行三段式：信息（弹性）+ 用量列 + 操作按钮 */
 .provider-main {
   display: flex;
   align-items: center;
@@ -2754,7 +2754,7 @@ mark {
 }
 
 .provider-link {
-  /* 行内文字链接 + 尾部小图标（↗ 换 SVG） */
+  /* 行内文字链接 + 尾部 SVG 小图标 */
   display: inline-flex;
   align-items: center;
   gap: 3px;
@@ -2803,7 +2803,7 @@ mark {
 .preset-arrow {
   opacity: 0.5;
   flex-shrink: 0;
-  /* 字符 ▾▸ 换 SVG 后靠 flex 居中 */
+  /* SVG 图标：flex 居中 */
   display: flex;
   align-items: center;
 }
@@ -3020,7 +3020,7 @@ mark {
   font-family: Consolas, monospace;
 }
 
-/* 分档阈值与色值对齐 cc-switch utilizationColor（Tailwind green-600/orange-500/red-500） */
+/* 分档阈值与色值（Tailwind green-600/orange-500/red-500） */
 .usage-ok {
   color: #16a34a;
 }
@@ -3056,7 +3056,7 @@ mark {
 }
 
 .usage-refresh {
-  /* 字符 ⟳ 换 SVG 后靠 flex 居中；.loading 旋转动画作用在本元素不变 */
+  /* SVG 图标：flex 居中；.loading 旋转动画作用在本元素不变 */
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -3123,7 +3123,7 @@ mark {
   opacity: 0.9;
 }
 
-/* ============ 模型映射行（cc-switch 式下拉） ============ */
+/* ============ 模型映射行（下拉选择） ============ */
 .provider-model-row {
   display: flex;
   align-items: center;

@@ -74,7 +74,7 @@ export interface TrashedSession {
   projectPath: string | null;
 }
 
-/** 会话内容块（阶段二：只读查看） */
+/** 会话内容块（只读查看） */
 export interface ContentBlock {
   /** text | thinking | tool_use | tool_result */
   kind: string;
@@ -85,7 +85,7 @@ export interface ContentBlock {
   isError?: boolean | null;
 }
 
-/** 单条 assistant 消息的 token 用量（jsonl usage 字段，新旧格式已归一） */
+/** 单条 assistant 消息的 token 用量（jsonl usage 字段的两种格式已归一） */
 export interface Usage {
   inputTokens: number;
   outputTokens: number;
@@ -159,8 +159,8 @@ export interface RankDayUsage {
   sessions: number;
 }
 
-/** 单个模型的用量汇总（统计口径：子代理消息也计入——旧布局内联在父文件里的
- *  sidechain 行与新布局独立落盘的 `<会话>/subagents/*.jsonl` 都算真实消耗） */
+/** 单个模型的用量汇总（统计口径：子代理消息也计入——内联在父文件里的
+ *  sidechain 行与独立落盘的 `<会话>/subagents/*.jsonl` 都算真实消耗） */
 export interface ModelUsage {
   /** 完整模型名（前端简化显示日期后缀） */
   model: string;

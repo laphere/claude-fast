@@ -11,7 +11,7 @@ interface Props {
   onDelete: (items: Project[]) => void;
 }
 
-/** Windows 上显示 Win 环境徽标（对齐 cc-switch 的本地环境检查卡片） */
+/** Windows 上显示 Win 环境徽标 */
 const IS_WINDOWS = navigator.userAgent.includes("Windows");
 
 type UpgradeTip = { kind: "ok" | "warn" | "error"; text: string; log?: string };
@@ -57,7 +57,7 @@ export default function HealthDialog({ items, claudeOk, onClose, onDelete }: Pro
     refreshVersion();
   };
 
-  /** 一键升级：完成后自动重查版本；版本没动（仍可升级）按 cc-switch 语义告警 */
+  /** 一键升级：完成后自动重查版本；版本没动（仍可升级）则告警 */
   const handleUpgrade = async () => {
     if (upgrading) return;
     setUpgrading(true);
