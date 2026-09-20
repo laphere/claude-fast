@@ -97,7 +97,7 @@
 ```bash
 npm install                  # 前端依赖
 npm run tauri dev            # 开发模式（热更新）
-cd src-tauri && cargo test   # 后端单元测试（全平台共 185 个定义，Windows 实测 179 个：路径解析/配置/扫描/根目录定位/会话管理/mangle/sh_quote/回收站/台账/供应商/模型拉取/版本升级/对话翻译层/方案结构化；差额为平台条件用例）
+cd src-tauri && cargo test   # 后端单元测试（全平台共 177 个定义，Windows 实测 171 个：路径解析/配置/扫描/根目录定位/会话管理/mangle/sh_quote/回收站/台账/供应商/模型拉取/版本升级/对话翻译层/方案结构化；差额为平台条件用例）
 npm run tauri build          # 生产构建
 # macOS 通吃包（Intel + Apple Silicon）：npm run tauri build -- --target universal-apple-darwin
 ```
