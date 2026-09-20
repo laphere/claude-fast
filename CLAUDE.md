@@ -11,7 +11,7 @@
 | `src/` | 前端：React + TypeScript + Vite。`App.tsx` 状态管理；`src/components/` 15 个 UI 组件（对话框/列表/会话查看器等）；`src/lib/api.ts` 封装全部 preload 桥调用（`window.claudeFast`） |
 | `electron/main.ts` | Electron 主进程：窗口 / 托盘 / 单实例 / 关闭拦截 / 全部 IPC 命令注册 |
 | `electron/preload.ts` | `contextBridge` 白名单 API（渲染进程无 Node 权限，全部经 `ipcRenderer.invoke`） |
-| `electron/backend/` | 后端业务模块：`paths.ts`（数据根/项目目录定位）、`launchers.ts`（脚本列表/创建/查重）、`scriptnames.ts`（命名/模板/`parseCdPath`）、`config.ts`（配置三步保护）、`mangle.ts`（目录名正反解析）、`sessions.ts`（会话列表/元数据/内容解析）、`trash.ts`（回收站）、`platform.ts`（启动/健康检查/resume/批量扫描）、`text.ts`（标题清洗） |
+| `electron/backend/` | 后端业务模块：`paths.ts`（数据根定位/内容校验/进程内缓存 + 项目目录）、`config.ts`（配置模型 + 三步保护 + 读改写 + 写串行化）、`mangle.ts`（目录名正反解析）、`sessions.ts`（会话列表/元数据/内容解析/重命名）、`trash.ts`（回收站）、`platform.ts`（启动/健康检查/resume/批量扫描/旧脚本迁移）、`scriptnames.ts`（脚本时代遗留，仅 `platform.ts` 引用它）、`text.ts`（标题清洗） |
 | `tools/` | 构建脚本：`dev.mjs`（并行 vite + electron）、`build-electron.mjs`（esbuild 编译主进程） |
 | `build/` | 打包图标（icon.ico / icon.png / icon.icns） |
 | `README.md` | 使用说明、构建方法 |
@@ -41,6 +41,9 @@
 
 ## 功能
 
+- **配置模型（`config.json`）**：`order`（项目显示顺序，项目绝对路径数组；未收录项按名称追加在后）、`projects`（手动添加的项目路径，与会话扫描结果取并集）、`excluded`（从列表移除的项目路径，扫描会重新发现它们，必须靠它排除）、`dark`、`closeAction`、`providers` / `currentProvider`（供应商切换）、`pinnedSessions`（置顶会话，条目 `{file, projectPath}`：`file` 是会话 jsonl 绝对路径作稳定锚点，`projectPath` 在置顶时刻记录）。
+  - **兼容层 `favorites`**：本分支历史上的「收藏置顶」（顺序即显示顺序）。保留读写是为了不给当前 UI 造成回归，读取时在 `order` **键缺失**的情况下用它当 `order` 初值（显式写出的空 `order` 不会被覆盖回来）。前端切到 `order` 后删除该字段。
+  - `providers` / `pinnedSessions` 目前只有**数据模型与清理助手**（`dropPinsForProjects` / `pruneDeadPins`），对应的命令与 UI 待实现。
 - **收藏置顶**（`favorites`）：点星标或右键收藏，金色置顶。已收藏项可**整行拖拽排序**（顺序即 `favorites` 数组顺序，松手后复用 `saveConfig` 落盘；按 key 重排非索引，失效 key 原位保留；搜索过滤期间禁用拖拽；未收藏行不可拖拽）。前端用原生 HTML5 DnD——主进程的 **`will-navigate` 拦截是前提**（Electron 渲染层默认拖文件/链接会导航离开页面，`main.ts` 里 `webContents.on("will-navigate", e => e.preventDefault())` 与 `setWindowOpenHandler` deny 保证页面内 dragover/drop 可用，勿当冗余代码删掉）。
 - **健康检查不阻塞启动**：`listLaunchers` 只解析脚本内容不做目录 stat（秒返回）；前端渲染后异步调 `checkLaunchers` 并行检查，失效目录自动标红；「健康检查」对话框打开时现场重新检查。
 - **批量添加**：扫描 Claude Code 项目目录，`unmangleCandidates` 反解出真实路径并验证存在性，失效项目（`missing`）不参与生成。命名**无工作区概念**：任何路径统一用叶子目录名（如 `myapp` → `claude-myapp.bat`）；同名自动加序号（`claude-myapp-2.bat`，`pickUniqueScriptPath`），**绝不覆盖**其他项目的脚本。
@@ -53,10 +56,16 @@
 
 ## 数据根目录（双模式）
 
-`resolveRootDir(process.execPath)` 自动区分：
+`resolveRootDir(exePath)` 自动区分，**判定语义与 `v2.0.0` 的 `resolve_root_dir` 逐条对齐**（同一便携目录必须被两个 app 认成同一个根）：
 
-1. **便携模式**：exe 所在目录向上（最多 6 级）查找含 `config.json` + `scripts/` 的目录（或旧标记 `claude-claude-fast.bat`）——开发目录、整体移动的文件夹、绿色版走此路径。
-2. **安装模式**：找不到时回退 `%APPDATA%\claude-fast`（macOS `~/Library/Application Support/claude-fast`），首次运行自动创建 `scripts/`。
+1. **便携模式**：exe 所在目录向上（最多 6 级）查找首个数据根标记——开发目录、整体移动的文件夹、绿色版走此路径。
+   唯一标记 `isRootDir(dir)` = `config.json` 或 `config.json.bak` 过 `looksLikeOurConfig` **内容校验**：须为 JSON 对象，且**空对象**（`{}` 是用户显式引导便携模式的正规姿势）**或命中 ≥2 个**已知字段。
+   - 已知字段表 `KNOWN_CONFIG_KEYS` 必须与 `v2.0.0` 的 `KNOWN_KEYS` **逐字同表**（`order`/`projects`/`excluded`/`dark`/`closeAction`/`providers`/`currentProvider`/`pinnedSessions`）——给 Config 加字段两端同步加，否则同一个目录会被判成不同结果。
+   - **为什么是「≥2」而不是「≥1」**：`projects`/`dark`/`order`/`excluded` 都是通用词，只撞 1 个键就会把别的工具的 config.json 认成数据根，认领后任意一次保存都会把它整份覆写（原件只降级成 `.bak`）。≥2 不误杀自家配置：序列化器不跳过空字段，落盘永远写全 8 个键。
+   - **`.bak` 支是必需的**：主文件损坏/被删正是 .bak 存在的意义，根判定若先一步放弃该目录，会静默换根——用户看到空清单，数据其实都在原地。
+2. **安装模式**：找不到便携标记时回退 `%APPDATA%\claude-fast`（macOS `~/Library/Application Support/claude-fast`），并现场创建**数据根本身**（保证首次保存有目录可写）。`installMode` 只表示「没找到便携标记」——便携根通常是 exe 的祖先目录，拿 `root !== exeDir` 判模式必然误判。
+
+**解析结果进程内缓存**（`paths.ts` 的 `ROOT_CACHE`，按 exe 路径分键）：根在进程生命周期内不变，缓存消掉两个隐患——① 判定是 read+parse 级，单次瞬态读失败（杀软保存后独占扫描/云盘占位未水合/网络盘瞬断）会让同一会话内不同命令落到**不同的根**（load 读到空清单、save 写进另一个目录，表现为「清单自己清空又自己回来」）；② 每条命令都重扫祖先目录。单测用 `resetRootCache()` 清缓存，`resolveRootFrom(startDir)` 是不带缓存的纯查找（供单测直接打深度与「首个命中即返回」语义）。
 
 ## Agent SDK 验证结论（2026-09-20 实测）
 
@@ -105,7 +114,9 @@ app 内对话层改用官方 `@anthropic-ai/claude-agent-sdk` 前必须先确认
 
 ## 铁律
 
-- **绝不删除数据根的 `config.json` / `.bak`**——用户收藏在这里。`saveConfig` 三步保护：写临时文件 → 旧文件备份为 `.bak` → 原子替换；`loadConfig` 读主文件失败时自动从 `.bak` 回退。
+- **绝不删除数据根的 `config.json` / `.bak`**——用户的清单/排序/置顶都在这里。`saveConfig` 三步保护：写临时文件 → 旧文件备份为 `.bak` → 原子替换；`loadConfig` 读主文件失败时自动从 `.bak` 回退。
+- **配置一律经 `updateConfig` / `mutateConfig` 写（读改写），不许从参数重建**：重建会静默清掉调用方没传的字段——`save_config` 的 payload 只覆盖**出现过**的键（缺省=不动），项目增删走 `mutateConfig`。落盘保留 `unknownFields`（磁盘上本进程不认识的顶层键原样写回），键顺序固定 `order/projects/excluded/dark/closeAction/providers/currentProvider/pinnedSessions`（外加兼容层 `favorites`），与 `v2.0.0` 的 Config 声明顺序一致。
+- **读改写必须持锁**（`withConfigLock` 的串行链，Node 侧等价于 Rust 的 `CONFIG_LOCK`）；**持锁期间严禁调用另一个取锁函数**（`mutateConfig` / `updateConfig`）——链式锁不可重入，嵌套即自锁。
 - **会话删除必先备份**：删除会话 = `deleteSessionFile` 先 rename/copy 到 `trash/sessions/<UTC时间戳>/<mangled项目>/` 再删原文件；恢复时目标已存在必须拒绝（防覆盖）。
 - **渲染进程零 Node 权限**：新增后端能力时，在 `electron/main.ts` 注册 IPC handler + `electron/preload.ts` 白名单 API + `src/lib/electron-api.d.ts` 类型声明三处同步；不得在渲染层开 `nodeIntegration` 或放宽 contextIsolation。
 - ⚠️ **生产渲染层以 file:// 加载**：`vite.config.ts` 的 `base: './'` 是前提（默认 `/` 时资源 404 白屏），勿删。

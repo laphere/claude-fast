@@ -86,7 +86,15 @@ export default function App() {
       setCloseChoiceOpen(false);
       if (remember) {
         setCloseAction(action);
-        await api.saveConfig(favorites, projectDirs, excludedDirs, dark, action).catch(() => {});
+        await api
+          .saveConfig({
+            favorites,
+            projects: projectDirs,
+            excluded: excludedDirs,
+            dark,
+            closeAction: action,
+          })
+          .catch(() => {});
       }
       if (action === "minimize") {
         await api.hideWindow();
@@ -157,13 +165,13 @@ export default function App() {
   const persistConfig = useCallback(
     async (favs: string[], d: boolean, ca?: CloseAction) => {
       try {
-        await api.saveConfig(
-          favs,
-          projectDirs,
-          excludedDirs,
-          d,
-          ca === undefined ? closeAction : ca,
-        );
+        await api.saveConfig({
+          favorites: favs,
+          projects: projectDirs,
+          excluded: excludedDirs,
+          dark: d,
+          closeAction: ca === undefined ? closeAction : ca,
+        });
       } catch (e) {
         showToast("保存配置失败：" + String(e));
       }

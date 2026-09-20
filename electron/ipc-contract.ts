@@ -7,12 +7,15 @@ export interface IpcContract {
   // ---------- 项目清单（去脚本化） ----------
   list_projects: void;
   load_config: void;
+  /** 只覆盖 payload 里**出现过**的键（主进程读改写）；缺省 = 不动该字段 */
   save_config: {
-    favorites: string[];
-    projects: string[];
-    excluded: string[];
-    dark: boolean;
+    favorites?: string[];
+    order?: string[];
+    projects?: string[];
+    excluded?: string[];
+    dark?: boolean;
     closeAction?: string | null;
+    pinnedSessions?: { file: string; projectPath: string }[];
   };
   add_project: { path: string };
   remove_project: { path: string };

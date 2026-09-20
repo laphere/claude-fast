@@ -11,9 +11,26 @@ export interface Project {
 
 export type CloseAction = "quit" | "minimize" | null;
 
+/** 供应商条目（切换时整文件替换 ~/.claude/settings.json 的内容） */
+export interface ProviderInfo {
+  id: string;
+  name: string;
+  settingsConfig: string;
+  websiteUrl?: string;
+  category?: string;
+}
+
+/** 置顶会话条目：file = 会话 jsonl 绝对路径（稳定锚点）；projectPath = 置顶时刻记录 */
+export interface PinnedSession {
+  file: string;
+  projectPath: string;
+}
+
 export interface Config {
-  /** 收藏的项目绝对路径（置顶） */
+  /** 收藏的项目绝对路径（置顶）；兼容字段，显示顺序的正式载体是 `order` */
   favorites: string[];
+  /** 手动排序的项目绝对路径（全局拖拽排序真源；未收录项按名称追加在后） */
+  order?: string[];
   /** 手动添加的项目路径清单 */
   projects: string[];
   /** 被用户从列表移除的项目路径（会话扫描会重新发现它们，需排除） */
@@ -21,7 +38,15 @@ export interface Config {
   dark: boolean;
   /** null/undefined = 每次询问；"quit" = 直接退出；"minimize" = 最小化到托盘 */
   closeAction?: CloseAction;
+  providers?: ProviderInfo[];
+  currentProvider?: string | null;
+  pinnedSessions?: PinnedSession[];
 }
+
+/** 保存配置的增量载荷：只出现的键才会被写盘（主进程读改写） */
+export type ConfigPatch = Partial<
+  Pick<Config, "favorites" | "order" | "projects" | "excluded" | "dark" | "closeAction" | "pinnedSessions">
+>;
 
 export interface CreateResult {
   file: string;

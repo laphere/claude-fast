@@ -11,13 +11,8 @@ const api = {
   // ---------- 项目清单 ----------
   listProjects: () => invoke("list_projects", undefined),
   loadConfig: () => invoke("load_config", undefined),
-  saveConfig: (
-    favorites: string[],
-    projects: string[],
-    excluded: string[],
-    dark: boolean,
-    closeAction?: string | null,
-  ) => invoke("save_config", { favorites, projects, excluded, dark, closeAction }),
+  /** 保存配置：只传要改的字段（主进程读改写，未传的键保持磁盘原值） */
+  saveConfig: (patch: IpcContract["save_config"]) => invoke("save_config", patch),
   addProject: (path: string) => invoke("add_project", { path }),
   removeProject: (path: string) => invoke("remove_project", { path }),
   launchProject: (path: string) => invoke("launch_project", { path }),

@@ -3,7 +3,13 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Tray } from "electron";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { loadConfig, saveConfig, type Config } from "./backend/config";
+import {
+  dropPinsForProjects,
+  mutateConfig,
+  loadConfig,
+  updateConfig,
+  type ConfigPatch,
+} from "./backend/config";
 import {
   addProject,
   checkClaude,
@@ -45,13 +51,10 @@ let tray: Tray | null = null;
 /** true 时 close 事件不再拦截（quit_app / window_destroy / before-quit 已置位） */
 let quitting = false;
 
-// ---------------- 数据根（进程内缓存；exe 位置运行期不变） ----------------
-
-let cachedRoot: RootResolution | null = null;
+// ---------------- 数据根（paths.ts 内按 exe 路径缓存；exe 位置运行期不变） ----------------
 
 function rootInfo(): RootResolution {
-  if (!cachedRoot) cachedRoot = resolveRootDir(process.execPath);
-  return cachedRoot;
+  return resolveRootDir(process.execPath);
 }
 
 function rootDir(): string {
@@ -99,7 +102,7 @@ function toInt(v: unknown): number | undefined {
 //   projects  = 全部脚本指向的项目路径
 //   favorites = 旧收藏 key 映射后的项目路径（找不到的丢弃）
 // 判定：config.json 原始内容含 "projects" 字段（或无 config 文件）即视为已迁移。
-function ensureProjectsMigrated(): void {
+async function ensureProjectsMigrated(): Promise<void> {
   const root = rootDir();
   const cfgPath = path.join(root, "config.json");
   let raw: { projects?: unknown; favorites?: unknown } | null = null;
@@ -112,15 +115,18 @@ function ensureProjectsMigrated(): void {
 
   const keyToPath = legacyScriptPaths(scriptsDirOf(root));
   const legacyFavs = Array.isArray(raw.favorites) ? raw.favorites.map(String) : [];
-  const cfg = loadConfig(root);
-  cfg.projects = [...new Set(keyToPath.values())];
-  cfg.favorites = [
+  const migratedFavs = [
     ...new Set(legacyFavs.map((k) => keyToPath.get(k)).filter((p): p is string => !!p)),
   ];
   try {
-    saveConfig(root, cfg);
+    await mutateConfig(root, (cfg) => {
+      cfg.projects = [...new Set(keyToPath.values())];
+      cfg.favorites = migratedFavs;
+      // 显示顺序初值：旧「收藏置顶」顺序即用户心中的优先级
+      if (cfg.order.length === 0) cfg.order = [...migratedFavs];
+    });
   } catch {
-    return; // 写失败时保留内存态本次会话仍可用
+    // 写失败时保留内存态本次会话仍可用
   }
 }
 
@@ -221,35 +227,38 @@ function registerIpc(): void {
   handle("list_projects", () =>
     listProjects(projectsDir(), loadConfig(rootDir()).projects, loadConfig(rootDir()).excluded));
   handle("load_config", () => loadConfig(rootDir()));
+  // 只覆盖 payload 里出现过的键，其余从磁盘读回——从参数重建会清掉未传字段
   handle("save_config", (p) => {
-    const cfg: Config = {
-      favorites: Array.isArray(p.favorites) ? p.favorites.map(String) : [],
-      projects: Array.isArray(p.projects) ? p.projects.map(String) : [],
-      excluded: Array.isArray(p.excluded) ? p.excluded.map(String) : [],
-      dark: p.dark === true,
-      closeAction:
-        p.closeAction === "quit" || p.closeAction === "minimize" ? p.closeAction : null,
-    };
-    saveConfig(rootDir(), cfg);
+    const patch: ConfigPatch = {};
+    if (p.favorites !== undefined) patch.favorites = (p.favorites ?? []).map(String);
+    if (p.order !== undefined) patch.order = (p.order ?? []).map(String);
+    if (p.projects !== undefined) patch.projects = (p.projects ?? []).map(String);
+    if (p.excluded !== undefined) patch.excluded = (p.excluded ?? []).map(String);
+    if (p.dark !== undefined) patch.dark = p.dark === true;
+    if (p.closeAction !== undefined) patch.closeAction = p.closeAction;
+    if (p.pinnedSessions !== undefined) patch.pinnedSessions = p.pinnedSessions;
+    return updateConfig(rootDir(), patch);
   });
-  handle("add_project", (p) => {
-    const cfg = loadConfig(rootDir());
-    cfg.projects = addProject(cfg.projects, String(p.path));
-    // 重新加入 = 解除排除
-    cfg.excluded = cfg.excluded.filter((x) => x.toLowerCase() !== String(p.path).toLowerCase());
-    saveConfig(rootDir(), cfg);
-  });
-  handle("remove_project", (p) => {
-    const cfg = loadConfig(rootDir());
-    cfg.projects = removeProject(cfg.projects, String(p.path));
-    // 收藏里同步移除（列表键已变为项目路径）
-    cfg.favorites = cfg.favorites.filter((f) => f.toLowerCase() !== String(p.path).toLowerCase());
-    // 加入排除清单：会话扫描会重新发现该项目，必须过滤才能让「移除」生效
-    if (!cfg.excluded.some((x) => x.toLowerCase() === String(p.path).toLowerCase())) {
-      cfg.excluded.push(String(p.path));
-    }
-    saveConfig(rootDir(), cfg);
-  });
+  handle("add_project", (p) =>
+    mutateConfig(rootDir(), (cfg) => {
+      cfg.projects = addProject(cfg.projects, String(p.path));
+      // 重新加入 = 解除排除
+      cfg.excluded = cfg.excluded.filter((x) => x.toLowerCase() !== String(p.path).toLowerCase());
+    }));
+  handle("remove_project", (p) =>
+    mutateConfig(rootDir(), (cfg) => {
+      const target = String(p.path);
+      cfg.projects = removeProject(cfg.projects, target);
+      // 显示顺序与旧收藏清单同步移除（列表键已变为项目路径）
+      cfg.order = cfg.order.filter((v) => v.toLowerCase() !== target.toLowerCase());
+      cfg.favorites = cfg.favorites.filter((f) => f.toLowerCase() !== target.toLowerCase());
+      // 项目级的置顶会话条目一并撤掉，否则置顶区留下孤儿条目
+      dropPinsForProjects(cfg, [target]);
+      // 加入排除清单：会话扫描会重新发现该项目，必须过滤才能让「移除」生效
+      if (!cfg.excluded.some((x) => x.toLowerCase() === target.toLowerCase())) {
+        cfg.excluded.push(target);
+      }
+    }));
   handle("launch_project", (p) => launchProject(String(p.path)));
   handle("open_folder", (p) => openFolder(String(p.path)));
   handle("check_claude", () => checkClaude());
@@ -345,10 +354,10 @@ if (!gotSingleInstanceLock) {
 } else {
   app.on("second-instance", () => showMainWindow());
 
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
     app.setAppUserModelId("com.claudefast.launcher");
     Menu.setApplicationMenu(null);
-    ensureProjectsMigrated();
+    await ensureProjectsMigrated();
     registerIpc();
     createWindow();
     createTray();

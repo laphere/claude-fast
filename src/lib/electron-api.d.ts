@@ -3,6 +3,7 @@
 import type {
   ClaudeProject,
   Config,
+  ConfigPatch,
   Project,
   SessionInfo,
   SessionMessages,
@@ -13,13 +14,8 @@ export interface ClaudeFastApi {
   // ---------- 项目清单（去脚本化） ----------
   listProjects: () => Promise<Project[]>;
   loadConfig: () => Promise<Config>;
-  saveConfig: (
-    favorites: string[],
-    projects: string[],
-    excluded: string[],
-    dark: boolean,
-    closeAction?: string | null,
-  ) => Promise<void>;
+  /** 保存配置：只传要改的字段（主进程读改写，未传的键保持磁盘原值） */
+  saveConfig: (patch: ConfigPatch) => Promise<void>;
   addProject: (path: string) => Promise<void>;
   removeProject: (path: string) => Promise<void>;
   launchProject: (path: string) => Promise<void>;
