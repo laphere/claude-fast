@@ -2,7 +2,7 @@
 
 一键在项目目录启动 Claude Code 的桌面应用：**Tauri 2 + React + TypeScript（前端）+ Rust（后端）**，Windows + macOS 双平台，不限定工作区目录。
 
-> **版本线**：`v2.0.0` 分支 = app 内直接对话（版本号 **2.0.0**，`package.json` / `Cargo.toml` / `tauri.conf.json` 三处一致）；`v1.0.0` 分支 = 纯查看器/启动器（版本号 1.0.0）。历史上的 PowerShell/WinForms 版与旧 v2.x/v3.x 版号均已作废，代码中不要再按旧版本号理解。另有 **Node.js（Electron）后端重构分支** `claude-fast-electron`（见下「分支结构」）。
+> **版本线**：`v2.0.0` 分支（= 本分支）= 查看器/启动器 + **app 内 GUI 对话**（版本号 **2.0.0**，`package.json` / `Cargo.toml` / `tauri.conf.json` 三处一致）；`v1.0.0` 分支 = 查看器/启动器 + **app 内嵌终端**（真 claude TUI，PTY + xterm.js，版本号 1.1.0）。**两支各走各的会话交互层**：本分支的目标就是页面内 GUI 对话、**明确不要内嵌终端**——这是有意分道，不是待合的历史遗留，别把终端往本分支搬。历史上的 PowerShell/WinForms 版与旧 v2.x/v3.x 版号均已作废，代码中不要再按旧版本号理解。另有 **Node.js（Electron）后端重构分支** `claude-fast-electron`（见下「分支结构」）。
 >
 > **项目清单（重要）**：为**路径模型**——`config.json` 的 `order`/`projects` 存的都是**项目绝对路径**（`order` 是项目显示顺序），右键菜单「在终端中启动」直接 `cmd /k cd /d "项目" && claude`，不生成/执行任何启动脚本。项目列表 = Claude 会话目录扫描（unmangle 反解）∪ config.projects 手动清单。
 
@@ -10,8 +10,8 @@
 
 | 分支 | 后端 | 说明 |
 |---|---|---|
-| `v2.0.0`（当前，版本号 2.0.0） | **Tauri 2 + Rust** | 主版本线：v1.0.0 的查看器/启动器 + app 内直接对话（chat.rs），后端在 `src-tauri/` |
-| `v1.0.0` / `main` | **Tauri 2 + Rust** | 纯查看器/启动器（无 app 内对话），后端在 `src-tauri/` |
+| `v2.0.0`（当前，版本号 2.0.0） | **Tauri 2 + Rust** | 查看器/启动器 + app 内 **GUI 对话**（`chat.rs` + `ChatView.tsx`），**不含内嵌终端**，后端在 `src-tauri/` |
+| `v1.0.0` / `main` | **Tauri 2 + Rust** | 查看器/启动器 + **app 内嵌终端**（真 claude TUI，PTY + xterm.js；版本号 1.1.0），后端在 `src-tauri/` |
 | `claude-fast-electron` | **Electron + Node.js** | Node 重构后端服务的分支（自 `f76a56f` 分叉）：**前端技术栈不变**（React + TS + Vite），后端改为 `electron/main.ts`（主进程/窗口/托盘/IPC）+ `electron/backend/*.ts`（业务模块：paths/scriptnames/config/mangle/sessions/trash/platform/text，vitest 单测）；构建走 npm（vite + esbuild + electron-builder）。细节见该分支的 CLAUDE.md / README.md |
 
 两分支各自独立演进，**去脚本化（路径模型）与「从列表移除 → excluded 排除清单」已在两端对齐**；不要跨分支混用实现细节（IPC 通道、构建命令、配置读写互不通用），在 `claude-fast-electron` 分支工作时以其分支内 CLAUDE.md 为准。
