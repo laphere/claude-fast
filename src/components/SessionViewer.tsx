@@ -1182,7 +1182,7 @@ export default function SessionViewer({
           >
             <RefreshIcon size={15} />
           </button>
-          <button className="icon-btn icon-btn-primary" onClick={onResume} title="新开窗口继续这个对话">
+          <button className="icon-btn icon-btn-primary" onClick={onResume} title="继续对话（在终端 tab 打开）">
             <PlayIcon size={15} />
           </button>
         </div>

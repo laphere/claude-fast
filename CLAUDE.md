@@ -2,7 +2,7 @@
 
 一键在项目目录启动 Claude Code 的桌面应用：**Tauri 2 + React + TypeScript（前端）+ Rust（后端）**，Windows + macOS 双平台，不限定工作区目录。
 
-> **版本线**：仓库已重新规划，当前全部代码为 **v1.0.0**（`package.json` / `Cargo.toml` / `tauri.conf.json` 三处版本号一致）。历史上的 PowerShell/WinForms 版与 v2.x/v3.x 旧版号均已作废，代码中不要再按旧版本号理解。另有 **Node.js（Electron）后端重构分支** `claude-fast-electron`（见下「分支结构」）。
+> **版本线**：`v1.0.0` 分支（= `main`）= 查看器/启动器 + **app 内嵌终端**，版本号 **1.1.0**（`package.json` / `Cargo.toml` / `tauri.conf.json` 三处一致）；`v2.0.0` 分支 = 在其之上再加 app 内直接对话（`chat.rs` 托管 claude stream-json 子进程 + 自建 ChatView），版本号 2.0.0。历史上的 PowerShell/WinForms 版与旧 v2.x/v3.x 版号均已作废，代码中不要再按旧版本号理解。另有 **Node.js（Electron）后端重构分支** `claude-fast-electron`（见下「分支结构」）。
 >
 > **项目清单（重要）**：为**路径模型**——`config.json` 的 `order`/`projects` 存的都是**项目绝对路径**（`order` 是项目显示顺序），`+` 号启动直接 `cmd /k cd /d "项目" && claude`，不生成/执行任何启动脚本。项目列表 = Claude 会话目录扫描（unmangle 反解）∪ config.projects 手动清单。
 
@@ -10,21 +10,27 @@
 
 | 分支 | 后端 | 说明 |
 |---|---|---|
-| `v1.0.0`（当前）/ `main` | **Tauri 2 + Rust** | 本 CLAUDE.md 描述的主版本线，后端在 `src-tauri/` |
+| `v1.0.0`（当前）/ `main` | **Tauri 2 + Rust** | 本 CLAUDE.md 描述的主版本线：查看器/启动器 + app 内嵌终端（`pty.rs` + xterm.js），版本号 1.1.0，后端在 `src-tauri/` |
+| `v2.0.0` | **Tauri 2 + Rust** | 在 v1.0.0 之上再加 app 内直接对话（`chat.rs` + `ChatView.tsx`），版本号 2.0.0；后端同在 `src-tauri/`，细节见该分支的 CLAUDE.md |
 | `claude-fast-electron` | **Electron + Node.js** | Node 重构后端服务的分支（自 `f76a56f` 分叉）：**前端技术栈不变**（React + TS + Vite），后端改为 `electron/main.ts`（主进程/窗口/托盘/IPC）+ `electron/backend/*.ts`（业务模块：paths/scriptnames/config/mangle/sessions/trash/platform/text，vitest 单测）；构建走 npm（vite + esbuild + electron-builder）。细节见该分支的 CLAUDE.md / README.md |
 
 两分支各自独立演进，**去脚本化（路径模型）与「从列表移除 → excluded 排除清单」已在两端对齐**；不要跨分支混用实现细节（IPC 通道、构建命令、配置读写互不通用），在 `claude-fast-electron` 分支工作时以其分支内 CLAUDE.md 为准。
+
+另有 `embedded-terminal` 分支（内嵌终端的开发分支，自 `1a7a2da` 拉出）已**并入 `v1.0.0`**，其内容即本分支的「功能」首条；该分支暂留作存档、不再单独演进。
 
 ## 核心文件
 
 | 文件 | 作用 |
 |---|---|
 | `src/` | 前端：React + TypeScript + Vite。`App.tsx` 状态管理；`src/components/` UI 组件（对话框/列表/会话查看器等）；`src/lib/api.ts` 封装全部 Tauri invoke |
+| `src/components/TerminalPane.tsx` | 前端：**app 内嵌终端**面板——xterm.js（fit/WebGL addon）承载 PTY 会话。配套 `src/lib/` 四个纯函数模块：`pty.ts`（invoke 封装 + 会话 id 生成）、`bold-bright.ts`（粗体补亮改写）、`term-unicode.ts`（圈号字形宽度表）、`term-title.ts`（OSC 标题 → tab 名） |
 | `src-tauri/src/lib.rs` | 后端主文件（约 5700 行，**全部 commands 与大部分单元测试都在此**，`#[cfg(test)]`）。项目清单系：`list_projects`/`add_project`/`remove_project`/`launch_project`/`check_projects`；另有用量统计台账（`get_usage_stats`/`StatsLedger`，约 1940–2650 行区段） |
 | `src-tauri/src/provider.rs` | 供应商切换（读写 `~/.claude/settings.json`：指纹守卫回填、current 重锚定、cc-switch SQL 备份导入） |
 | `src-tauri/src/model_fetch.rs` | 供应商可用模型拉取（OpenAI 兼容 /v1/models，候选地址逐个探测） |
 | `src-tauri/src/usage_query.rs` | Coding Plan 套餐用量查询适配器（Kimi/GLM/MiniMax/ZenMux/OpenCode 五家厂商 HTTP 接口；**不是** jsonl 用量统计——统计在 lib.rs） |
 | `src-tauri/src/claude_update.rs` | Claude Code 版本探测与一键升级（semver 比较、bat errorlevel 链兜底 npm 安装） |
+| `src-tauri/src/pty.rs` | 后端：内嵌终端——portable-pty（Windows 走 ConPTY）起 `claude` 子进程，输出经 ipc Channel **二进制直传**；命令 `pty_spawn_claude`/`pty_write`/`pty_resize`/`pty_kill` |
+| `src-tauri/src/clipboard_image.rs` | 后端：读剪贴板 CF_HDROP 文件列表取首个图片路径（终端贴图用），命令 `clipboard_image_path` |
 | `README.md` | 使用说明、构建方法 |
 
 > 本目录为**纯源码库**（与 GitHub 仓库一致）：不含 exe、scripts、config.json——这些运行时产物/用户数据都在数据根目录（见「数据根目录」）。
@@ -50,6 +56,7 @@
 
 ## 功能
 
+- **app 内嵌终端（`pty.rs` + xterm.js）**：项目行「+」新建会话、会话右键「继续对话」= 在内容区开一个 tab 跑**真 claude TUI**（PTY + xterm.js，不自建聊天 UI——自建 UI 永远追不上 CLI 交互面：权限确认/plan 选择/斜杠补全/Shift+Tab 模式切换每版都要追，且 stream-json 协议本不为完整交互设计）。后端起 `claude` 子进程，输出经 ipc Channel **二进制直传**（不走 base64/字符串，跨 chunk 中文与 TUI 重绘都不破帧）；tab 条由查看器与终端共用（`TerminalTab`/`TabActivity` 在 `types.ts`，`activity` 与 `status` 有别：status 只说进程活着，activity 才是「在忙/等输入」）。**两个实测踩坑，改代码时勿回退**：① Windows 关 tab 必须**先 `taskkill /T /F` 再 `ChildKiller.kill`**——反序会先把孙进程孤儿化、taskkill 再找不到整棵树（实测留下 claude.exe + MCP 孤儿持续吃 API）；② spawn 必须剥掉 `CLAUDE_CODE_CHILD_SESSION`/`CLAUDE_CODE_ENTRYPOINT`/`CLAUDECODE`——app 从 claude 会话终端里启动时子进程会继承，导致 transcript 不落盘、会话列表看不到。**贴图**：Ctrl+V 等按键先问后端 `clipboard_image_path`（只读 CF_HDROP）→ 有图片文件就当**粘贴文本**把路径送进 PTY（claude 认路径为图片），否则发 `\x1bv`（mac `\x16`，claude 的剪贴板粘贴绑在 Alt+V）——**别改回「改写用户剪贴板」那一版**（会留下剪贴板被替换的副作用）。**观感对齐系统终端**：`bold-bright.ts` 在写入前补 `ESC[97m`/`ESC[39m`（claude 发裸 `ESC[1m`，xterm 的 `drawBoldTextInBrightColors` 只管索引色、够不着默认色）；`term-unicode.ts` 给 U+2460-24FF 圈号插 @font-face 且必须设 `rescaleOverlappingGlyphs: false`（否则 ④ 这类满宽字形被横向压成细条）。**待人工确认**：真 IME 候选窗交互（其余已用 CDP 驱动真 app 实测）。
 - **顶栏与左栏布局（单行顶栏 + 可收起左栏）**：工具栏整行已撤，功能入口全在顶栏右侧（搜索/新建/批量添加/回收站/统计，纯图标 + title），品牌区移除（应用名只在窗口/任务栏标题）；搜索框收进左栏顶部（顶栏搜索按钮展开/收起，Escape 或再点即收起并清空关键词），常驻不被列表滚走（`.left-scroll` 独立滚动，`.left-search` 只覆盖 `.search-box` 的 `flex`/`max-width`）。左栏可手动收起（顶栏最左 panel-left 开关，收起后内容区占满全宽）；窗口窄于 980 自动收起、宽于 1020 才恢复（40px 迟滞带 + `resize` 80ms 防抖），**只恢复「被自动收起」的那次**——用户手动切换后 `toggleSidebar` 清掉 `autoCollapsedRef` 标记，resize 不再干预，否则手动收起会被下一次拉宽吃掉。收起态仅内存不落盘。默认窗口 1120×720、最小宽 800（顶栏按钮组 `flex: none` 不参与压缩，左右两簇在 minWidth 下恒不相接）。
 - **全局拖拽排序**（`order`）：项目行整行可拖拽调序（顺序即 `config.order` 数组顺序，松手后复用 `save_config` 落盘；重排时以「order 收录项 + 其余按名称」拼出当前全序列，首次拖拽后全部项目都有显式顺序；搜索过滤期间禁用拖拽）。前端用原生 HTML5 DnD——**`tauri.conf.json` 的 `dragDropEnabled: false` 是前提**（默认 true 时 Windows 上 WebView2 的 OLE 拖放处理会拦截页面内 dragover/drop，勿当冗余配置删掉）。右键菜单「移到最前」是同一套全序列语义的快捷入口（项目多时不必从底部拖到顶部）。
 - **置顶会话聚合区**（`pinned_sessions`）：会话行左侧图钉按钮置顶/取消置顶，置顶项聚到左栏顶部**跨项目**区域（无置顶项时整块不渲染；带项目名徽标消歧，标题重名可分辨）。条目形如 `{file, projectPath}`：`file` 是会话 jsonl **绝对路径**作稳定锚点（重命名只追加 customTitle 不改文件名、回收站恢复回原路径），`projectPath` 在置顶时刻记录（mangled 目录名反解项目路径是启发式枚举，不可反查）。`list_pinned_sessions` 按清单顺序**实时**解析元数据（不存快照），文件缺失的条目静默跳过不报错；**已置顶会话不再在项目列表中重复显示**（前端按 file 过滤）。语义要点：新置顶插最前、不支持拖拽排序；**删除会话保留条目**（恢复后自动复活），只有彻底删除才清理——`purge_session`/`purge_trash` 后 `prune_dead_pins` 清失效条目，`remove_project`/`purge_claude_project_data` 按 projectPath 撤条目（`drop_pins_for_projects`）。**后端这四个入口改的都是磁盘 config，前端内存里的 `pinnedSessions` 必须重新读盘同步**——它是下次 `persistConfig` 的真源，不同步则之后任意一次保存（切主题/拖拽排序/置顶取消/保存设置）都会把已清掉的死条目写回，与后端 prune 形成「清了又回」（症状不可见：`list_pinned_sessions` 对缺失文件静默跳过）。调用方已接线：回收站走 `refreshAfterTrashChange`（含 `syncPinsFromConfig`）、移除项目走 `removeProject` 内的 `load()`、批量添加「删除失效数据」走 `onRefresh`。**注意 `refreshPinned` 只刷置顶区展示元数据 `pinnedMeta`，不碰真源清单，两者不可互相替代。**
@@ -66,7 +73,7 @@
 - **供应商表单（结构化字段 + JSON 沉底，移植 cc-switch ProviderForm 布局）**：预设模板（仅新增时，PresetPicker：**按名称字母序** collation 排序 + **子序列模糊搜索**如 kfc→Kimi For Coding；`${KEY}` 模板变量实时替换）→ 名称 → API Key（password 输入 + **输入框内嵌眼睛图标**切换明文/密文（Icons.tsx 新增 EyeIcon/EyeOffIcon，Lucide 风格）；非官方预设显示「获取 API Key ↗」经 `open_url` 命令开系统浏览器，Windows 走 explorer 免 cmd 转义）→ 接入地址 → 「高级选项」折叠区 → 配置 JSON textarea（**SSOT 沉底**）。**字段同步**：结构化输入→改 JSON 对应 env 键→序列化回 jsonText（echoRef 打标）；手改 JSON→effect 回读刷新结构化字段，防回声循环。**模型映射 6 行**（默认 ANTHROPIC_MODEL/Sonnet/Opus/Fable/Haiku/子代理 CLAUDE_CODE_SUBAGENT_MODEL）：`fetch_models_for_config` 命令拉 **/v1/models 模型列表**（返回 `{id, ownedBy}`）；**ModelSelect 下拉**=输入框+箭头按钮弹出浮层（搜索框 + 按 ownedBy 分组、缺失归 Other、Other 殿后），点击整值替换（与上游 handleRoleModelChange 一致，[1M] 随之消失），datalist 在 WebView2 下拉失效故弃用；**「声明支持 1M」勾选**=模型值尾部字面 `[1M]` 后缀（has1M/strip1M/set1M 移植上游 CLAUDE_ONE_M_MARKER 语义，**Haiku 行不支持**），从下拉选择/手输的值若带 [1M] 同样成立；模型写入时同步 `_NAME` 显示名键（sonnet/opus/fable/haiku）并删除上游废弃的 `ANTHROPIC_SMALL_FAST_MODEL`。`model_fetch.rs` 候选探测移植上游：base 以版本段 `/v{N}` 结尾拼 `{base}/models`（智谱 paas/v4），命中 /anthropic、/coding 等兼容后缀再追加剥后缀的 `{root}/v1/models`；Bearer 认证；404/405 换下一候选；`{data:[{id,owned_by}]}` 按 id 排序去重。
 - **Coding Plan 用量查询**（移植 cc-switch coding_plan 适配器，零配置）：`usage_query.rs` 按供应商 env 的 base_url **探测厂商**（api.kimi.com/coding→Kimi；bigmodel.cn/api.z.ai→智谱；minimaxi/minimax.io→MiniMax；zenmux→ZenMux；opencode.ai/zen/go→OpenCode Go），命中即用其 env 里的密钥查询（命令 `provider_query_usage(id)`，非已知厂商返回 supported=false 前端静默）。各厂商端点/解析逐字段照搬上游：Kimi `GET api.kimi.com/coding/v1/usages` Bearer；智谱 `GET {origin}/api/monitor/usage/quota/limit` **Authorization 无 Bearer 前缀**（unit:3=5h/unit:6=周，unit 缺失走 reset 升级兜底）；MiniMax `coding_plan/remains` 只取 model_remains.general、周桶 status=1 才展示；ZenMux `GET base_url` 本身即用量端点（percentage 0-1 ×100，带 $金额）；OpenCode Go `zen/go/v1/usage` rolling/weekly/monthly、percent=0 丢重置时间。401/403 统一报「认证失败」。HTTP 用 **ureq**（新依赖，阻塞、rustls；同步命令跑 Tauri 线程池）。前端卡片内联用量条：徽标为**中性描边底、颜色只标百分比**（粗体等宽，利用率 <70 绿/<90 橙/其余红，阈值与 Tailwind 色值对齐 cc-switch utilizationColor；名称与倒计时/金额弱化灰显——整块色底会淹没关键数字，这是用户明确要求的信息层级）；重置倒计时 + 单卡刷新按钮；**会话级缓存 stale-while-revalidate**（模块级 usageCache + 5 分钟新鲜期，对话框重开立即显示上次结果并标注后台静默刷新，骨架仅出现在「从未查过」的供应商；厂商探测前端镜像 detectUsageVendor 与 Rust detect_vendor 需同步），无后台轮询；millis→ISO8601 为纯算法实现（不引 chrono）。
 - **单实例**（`tauri-plugin-single-instance`）：重复启动不新建进程，回调里 show + unminimize + set_focus + `set_always_on_top` 开关（对抗 Windows 前台锁定，勿当冗余代码删掉）把已有窗口调到前台。
-- **按钮与图标体系统一**（新增按钮/图标必须遵循）：① 图标只用 `Icons.tsx` 的 Lucide 线性组件（viewBox 24、stroke=currentColor、strokeWidth=2、round cap/join），**禁止 emoji / 纯字符（× ⋯ ⟳ ▾ ✓ 等）做图标**——新增图标按现有样板写组件，path 取 Lucide 官方源（国内网络用 npmmirror 拉 `lucide-static` tarball，GitHub raw 直连不通）；② 主操作按钮（顶栏/查看器头部）与行内/卡片紧凑操作一律纯 SVG 图标(13px) + title、**不放文字**（顶栏改版起统一为纯图标形态），对话框底部按钮（取消/确定/保存）与菜单项一律纯文字；③ 变体只有 `btn`/`btn-primary`/`btn-danger`/`btn-sm`——主按钮类名是 **`btn btn-primary`**（历史上出现过两处 `btn primary` 笔误，`.primary` 无样式定义，主按钮会静默降级成描边样式）；④ 字符换 SVG 后居中靠 flex/grid（font-size/line-height 对 svg 失效）：`.tool-icon`/`.inline-icon`（行内文本上下文，inline-flex + vertical-align:-2px）、`.modal-close`/`.search-clear`/`.usage-refresh`（flex 居中）、`.row-icon`（grid place-items 天然支持）；⑤ `FileTextIcon`/`FileDiffIcon` 的文档轮廓沿用仓库既有 `FileIcon` 轮廓（Lucide 新版换了圆角轮廓，同屏混用两代轮廓会露馅，勿单独升级）。
+- **按钮与图标体系统一**（新增按钮/图标必须遵循）：① 图标只用 `Icons.tsx` 的 Lucide 线性组件（viewBox 24、stroke=currentColor、strokeWidth=2、round cap/join），**禁止 emoji / 纯字符（× ⋯ ⟳ ▾ ✓ 等）做图标**——新增图标按现有样板写组件，path 取 Lucide 官方源（国内网络用 npmmirror 拉 `lucide-static` tarball，GitHub raw 直连不通）；② 主操作按钮（顶栏/查看器头部）与行内/卡片紧凑操作一律纯 SVG 图标(13px) + title、**不放文字**（内嵌终端 UI 改版起统一为纯图标形态），对话框底部按钮（取消/确定/保存）与菜单项一律纯文字；③ 变体只有 `btn`/`btn-primary`/`btn-danger`/`btn-sm`——主按钮类名是 **`btn btn-primary`**（历史上出现过两处 `btn primary` 笔误，`.primary` 无样式定义，主按钮会静默降级成描边样式）；④ 字符换 SVG 后居中靠 flex/grid（font-size/line-height 对 svg 失效）：`.tool-icon`/`.inline-icon`（行内文本上下文，inline-flex + vertical-align:-2px）、`.modal-close`/`.search-clear`/`.usage-refresh`（flex 居中）、`.row-icon`（grid place-items 天然支持）；⑤ `FileTextIcon`/`FileDiffIcon` 的文档轮廓沿用仓库既有 `FileIcon` 轮廓（Lucide 新版换了圆角轮廓，同屏混用两代轮廓会露馅，勿单独升级）。
 - 其他：深色主题（`dark`）、搜索过滤、右键菜单、全局拖拽排序、置顶会话聚合区、关闭行为可选（`close_action`：询问/退出/最小化到托盘）、系统托盘（显示窗口/退出）。状态存 `config.json`。
 
 ## 数据根目录（双模式）
@@ -98,7 +105,7 @@
 ```bash
 npm install                  # 前端依赖
 npm run tauri dev            # 开发模式（热更新）
-cd src-tauri && cargo test   # 后端单元测试（全平台共 148 个定义，Windows 实测 142 个：路径解析/配置/扫描/根目录定位/会话管理/mangle/sh_quote/回收站/台账/供应商/模型拉取/版本升级；差额为平台条件用例）
+cd src-tauri && cargo test   # 后端单元测试（全平台共 160 个定义，Windows 实测 153 个：路径解析/配置/扫描/根目录定位/会话管理/mangle/sh_quote/回收站/台账/供应商/模型拉取/版本升级/伪终端 pty；差额为平台条件用例）
 npm run tauri build          # 生产构建
 # macOS 通吃包（Intel + Apple Silicon）：npm run tauri build -- --target universal-apple-darwin
 ```

@@ -132,8 +132,10 @@ code {
   align-items: center;
   justify-content: space-between;
   /* 底色与全窗统一用 --bg（原 --panel 的白条与内容区有割裂感），
-     仅靠底边发丝线分隔；按钮/pill 本就是 --panel 描边芯片，浮起更清晰 */
-  padding: 8px 18px;
+     仅靠底边发丝线分隔；按钮/pill 本就是 --panel 描边芯片，浮起更清晰。
+     纵向 8→6：顶栏里最高的元素是 30px 的 .icon-btn，再去掉 4px 松量就把
+     46px 压到 42px，省下的高度全部归终端（横向不动，避免影响已有对齐）。 */
+  padding: 6px 18px;
   background: var(--bg);
   border-bottom: 1px solid var(--border);
 }
@@ -2041,7 +2043,8 @@ mark {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 18px;
+  /* 纵向 8→6：11.5px 字 + 上下 6 = 约 27px（原 31px） */
+  padding: 6px 18px;
   font-size: 11.5px;
   color: var(--muted);
   border-top: 1px solid var(--border);
@@ -2102,6 +2105,28 @@ mark {
 
 .context-danger {
   color: var(--danger);
+}
+
+/* 无操作可做时把菜单项置灰（如"可关闭的会话 = 0"），给出反馈而不是点了没反应 */
+.context-item:disabled {
+  color: var(--dim);
+  cursor: default;
+}
+
+.context-item:disabled:hover {
+  background: none;
+}
+
+/* 菜单里的说明行（如"跳过 3 个：1 个干活中"）：不可点、不占点击区；
+   pre-line 是为了让诊断行能换行显示（开发期才有） */
+.context-note {
+  padding: 6px 10px 2px;
+  font-size: 11.5px;
+  color: var(--dim);
+  border-top: 1px solid var(--border);
+  margin-top: 4px;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
 }
 
 /* ============ 模态框 ============ */
@@ -3305,4 +3330,175 @@ mark {
   font-size: 11px;
   opacity: 0.5;
   white-space: nowrap;
+}
+
+/* ============ 内容区 tab（会话查看 / 内嵌终端） ============ */
+.content {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.content-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  /* 纵向 8→6：tab 高 25px + 分界线 = 32px（原 42px）。
+     底部那 1px 是给 active tab 的 margin-bottom:-1px 落脚的：stretch 下它的盒高
+     会变成内容盒高 +1px，用来盖住 tab 条与内容区的分界线。把这 1px 收进 padding
+     里，它就不再算作滚动溢出——否则 overflow-x:auto 会让 overflow-y 自动变 auto，
+     这 1px 会顶出一根竖向滚动条（老板截图里右边那根）。 */
+  padding: 6px 12px 1px;
+  /* 分界线改由背景画在 padding 内：原来的 border-bottom 在 padding 之外，tab 够
+     不着，要盖住它就只能溢出到 border 区，同样会触发滚动条。 */
+  background: linear-gradient(to top, var(--border) 0 1px, transparent 1px);
+  /* 滚动条整体隐藏：横向滚动能力保留（滚轮监听在 App.tsx，滚动条 15px 宽又丑） */
+  overflow-x: auto;
+  scrollbar-width: none;
+  flex: none;
+}
+
+/* 隐藏 tab 条的滚动条（WebView2/Chromium/WebKit；上面的 scrollbar-width 管 Firefox） */
+.content-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.content-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 230px;
+  /* 盒高 31→25px（实测：截图里 tab 高 46 物理px ÷ dpr1.5 ≈ 31，而 13px 字的
+     墨迹只有 13.3px）：
+     ① line-height normal→1.25：这串字体栈 normal 约 1.36em，13px 会撑出 17.7px
+        行盒，收成 16.25px，省掉的是看不见的字距而不是墨迹；
+     ② padding 5/7→3/5：保留"下比上多 2px"的墨迹补偿差（YaHei 墨迹略偏下，
+        这是上一轮专门调过的），别改成对称——只等比缩，不反过来。
+     整条 tab 条因此再省约 6px，全部归终端高度。 */
+  padding: 3px 10px 5px;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 8px 8px 0 0;
+  background: none;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.25;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.content-tab.active {
+  color: var(--text);
+  background: var(--bg);
+  border-color: var(--border);
+  /* 下探 1px 盖住 tab 条底边线，与内容区连成一体 */
+  margin-bottom: -1px;
+}
+
+.content-tab-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 已退出的终端 tab 整体弱化（缓冲仍可回看，直到手动关闭） */
+.content-tab-term.status-exited {
+  color: var(--dim);
+}
+
+.content-tab-close {
+  /* SVG 图标：flex 居中（font-size 对 svg 失效）。
+     18→16px：tab 收矮后 18px 会顶成内容盒最高项（把带关闭键的终端 tab 又撑高
+     1.7px，与查看器 tab 不等齐），16px 与 16.25px 的行盒持平 */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--dim);
+  cursor: pointer;
+  flex: none;
+}
+
+.content-tab-close:hover {
+  color: var(--text);
+  background: var(--panel-2);
+}
+
+.content-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.content-body-hidden {
+  display: none;
+}
+
+/* 中文单独放大（只 Windows）：截图实测同一屏下 cmd 的中文字面比本 app 大一档
+ *  （同字号，cmd 单字墨迹约 24×23 设备px、本 app 22×22；拉丁那边两边逐像素一致），
+ *  回退字体没法单独定字号，只能靠 @font-face 的 size-adjust 缩放这一个字体。
+ *  106% 是按上面的墨迹差反推的；改这个值请重新截图对比。
+ *  mac 走 "PingFang SC"（排在 TermCJK 前），碰不到这里。 */
+@font-face {
+  font-family: "TermCJK";
+  src: local("SimHei");
+  size-adjust: 106%;
+}
+
+/* 圈号一类"歧义宽度"符号必须抢在 Consolas 前交给中易黑体。
+ *  原因（实测）：①~⑳（U+2460-24FF）这些码位 Consolas 也有，但那本"拉丁字宽"的
+ *  圈号画得极小——canvas 实测 ④ 墨迹 16.5×13.5 设备px，而同样字号下中易黑体/
+ *  雅黑是 24×22.5。字体栈里 Consolas 排在 TermCJK 之前，于是 app 里圈号"特别小"
+ *  （并排截图与系统终端差一档：app 14×13、WT/cmd 22×23——用户报的就是这个）。
+ *  cmd 那边不会这样：conhost 是按 font linking 把这类码位整段交给中文黑体的，
+ *  这里用 unicode-range 复刻同一种分工——只圈"拉丁字体有、且画得小"的块，
+ *  拉丁字母/方块字符/制表符不受影响（它们仍走 Cascadia，块状字符的整格重绘
+ *  也依赖这一点）。mac 上 SimHei 不存在 → 这个 family 直接不生效，落到 Menlo。 */
+@font-face {
+  font-family: "TermWide";
+  src: local("SimHei");
+  size-adjust: 106%;
+  unicode-range: U+2460-24FF;
+}
+
+/* 同一个块的后半段（⑪-⑳、⒜-⒵ 等）中文字体也没有——中易黑体/雅黑/宋体实测都只
+ *  覆盖 50/160 个码位（缺 U+246A 起）。剩下一半交给 Segoe UI Symbol（实测整块
+ *  160/160 全覆盖），只是它的圈号偏小（19.5×19.5 设备px，汉字 25.5×24），按比例
+ *  放大 125% 补到与中文同档，免得同一行里 ⑩ 大 ⑪ 小。 */
+@font-face {
+  font-family: "TermWide2";
+  src: local("Segoe UI Symbol");
+  size-adjust: 125%;
+  unicode-range: U+2460-24FF;
+}
+
+/* 内嵌终端面板：配色在 TerminalPane 固定深色，不随 app 主题。
+ *  不给 .xterm 强制定高——行高取整后由 xterm 自算视口高，强定 100% 会与
+ *  行数取整打架，实测会把最后一行裁掉一截。padding 贴近 cmd 的紧凑边距：
+ *  纵向 4/6→2/2 再省 6px（横向 8px 保持不变——横向只影响列数取整，不影响
+ *  行数，动它有把 claude 表格换行点改掉的风险，收益为零）。 */
+.terminal-pane {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  padding: 2px 8px 2px;
+  overflow: hidden; /* 只裁 1px 级舍入残边，不裁整行（行数由 FitAddon 保证容得下） */
+}
+
+/* xterm 自带样式里 .xterm-viewport 是 overflow-y: scroll（xterm.css 第 93 行），
+   会在终端右侧常驻一根滚动条——dpr1.5 下实测 15px 宽的一条亮线，既占宽度又破坏
+   深底观感（老板截图红框圈的就是它，早先量截图的 x=2553.5 那条竖线同为它）。
+   滚动能力照旧（滚轮 / Shift+PageUp 翻 scrollback），只把滚动条本身藏掉。
+   注意：藏掉后终端内容宽 +15px，claude TUI 会多排一列左右，换行点随之变化。 */
+.terminal-pane .xterm-viewport {
+  scrollbar-width: none;
+}
+.terminal-pane .xterm-viewport::-webkit-scrollbar {
+  display: none;
 }

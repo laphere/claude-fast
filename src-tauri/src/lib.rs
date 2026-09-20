@@ -18,6 +18,12 @@ pub mod usage_query;
 /// Claude Code 检查更新与一键升级
 pub mod claude_update;
 
+/// App 内嵌终端（portable-pty + 前端 xterm.js，设计见 docs/embedded-terminal-plan.md）
+pub mod pty;
+
+/// 剪贴板图片路径提取（复制的图片文件 → 当作粘贴文本送进终端，补 conhost 的行为）
+pub mod clipboard_image;
+
 /// 控制台子进程不创建新窗口（GUI 主进程 spawn where 等工具时防止闪黑窗口，仅 Windows）
 #[cfg(windows)]
 pub(crate) const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -939,8 +945,12 @@ fn mangle_project_path(path: &str) -> String {
         .collect()
 }
 
-/// UUID v4 格式校验（会话文件名主体）
-fn is_valid_uuid(s: &str) -> bool {
+/// uuid 形态校验（长度 36、连字符必须落在 8/13/18/23 位、其余为 hex）。
+/// **只看形态，不看版本位/变体位**（`-4562-` 那种位置上的字符不校验，名字里带 v4
+/// 是历史叫法，别照它去「补」版本校验）。
+/// `pub(crate)`：pty.rs 的 `validate_session_id` 复用它——会话 id 的格式
+/// **只能有一处定义**，两处各写一份早晚分叉（pty.rs 原先那份更松，36 个连字符都放行）。
+pub(crate) fn is_valid_uuid(s: &str) -> bool {
     let bytes = s.as_bytes();
     if bytes.len() != 36 {
         return false;
@@ -1208,6 +1218,38 @@ async fn list_sessions(project_path: String) -> Vec<SessionInfo> {
     }
     out.sort_by(|a, b| b.last_modified.cmp(&a.last_modified));
     out
+}
+
+/// 单个会话的显示标题（按项目真实路径 + 会话 id 定位文件）。
+/// 取法与应用列表**完全一致**（customTitle > aiTitle > 首条用户消息），只是不扫整个
+/// 项目目录——新会话 tab 要按 id 反复问「这个会话起名了吗」，扫目录太贵。
+/// None = 文件还没出现（会话还没落盘）/ 不是会话文件。
+fn session_title_in(projects_dir: &Path, project_path: &str, session_id: &str) -> Option<String> {
+    // 会话 id 进文件名。这里只做 shape 校验：拼路径前挡住 `..`、分隔符一类注入面
+    if !is_valid_uuid(session_id) {
+        return None;
+    }
+    let file = projects_dir
+        .join(mangle_project_path(project_path))
+        .join(format!("{session_id}.jsonl"));
+    if !file.is_file() {
+        return None;
+    }
+    let (head, tail, mtime) = read_head_tail(&file)?;
+    session_meta_from_lite(&head, &tail, session_id, mtime).map(|info| info.title)
+}
+
+/// 按会话 id 读标题（内嵌终端新会话 tab 的标题补挂用：claude 的 OSC 0 终端标题不带
+/// 「首条用户消息」这一档，会话没生成 aiTitle 时它只写兜底值 "Claude Code"，tab 只能
+/// 回来读文件）。会话文件在第一条消息之后才出现，文件不存在时本命令只做一次 stat。
+#[tauri::command]
+async fn session_title_for(project_path: String, session_id: String) -> Option<String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        session_title_in(&claude_projects_dir(), &project_path, &session_id)
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
 /// 置顶会话的展示项：会话元数据 + 所属项目路径
@@ -4157,6 +4199,51 @@ mod tests {
     }
 
     #[test]
+    fn session_title_in_reads_title_by_session_id() {
+        let root = temp_root("title-by-id");
+        let projects = root.join("projects");
+        let project = r"D:\MyWorkspaces\myProject\claude-fast";
+        let dir = projects.join(mangle_project_path(project));
+        fs::create_dir_all(&dir).unwrap();
+        let sid = "5426d6d0-c08f-43bd-94df-4d6d99e5c699";
+        fs::write(dir.join(format!("{sid}.jsonl")), sample_head()).unwrap();
+        // 与列表同一条取法：customTitle > aiTitle > 首条用户消息（sample_head 只有 aiTitle）
+        assert_eq!(
+            session_title_in(&projects, project, sid).as_deref(),
+            Some("修复登录页面")
+        );
+        // 会话还没落盘 → None（这就是新会话 tab 轮询时最常见的回答）
+        assert_eq!(
+            session_title_in(&projects, project, "00000000-0000-4000-8000-000000000000"),
+            None
+        );
+        // 非法 id 不进文件路径
+        assert_eq!(session_title_in(&projects, project, "../evil"), None);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn session_title_in_wins_with_custom_title() {
+        let root = temp_root("title-by-id-custom");
+        let projects = root.join("projects");
+        let project = "/Users/me/proj";
+        let dir = projects.join(mangle_project_path(project));
+        fs::create_dir_all(&dir).unwrap();
+        let sid = "5426d6d0-c08f-43bd-94df-4d6d99e5c699";
+        let content = format!(
+            "{}\n{}\n",
+            sample_head(),
+            r#"{"type":"custom-title","customTitle":"我起的名字","sessionId":"5426d6d0-c08f-43bd-94df-4d6d99e5c699"}"#
+        );
+        fs::write(dir.join(format!("{sid}.jsonl")), content).unwrap();
+        assert_eq!(
+            session_title_in(&projects, project, sid).as_deref(),
+            Some("我起的名字")
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn read_head_tail_handles_large_and_small_files() {
         let dir = temp_root("sess-headtail");
         // 小文件：head == tail
@@ -5679,6 +5766,10 @@ pub fn run() {
         .setup(|app| {
             use tauri::menu::{Menu, MenuItem};
             use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+            use tauri::Manager;
+
+            // 内嵌终端会话表（pty-exit 事件、退出清场都从这里取会话）
+            app.manage(pty::PtyState::default());
 
             let show_i = MenuItem::with_id(app, "show", "显示窗口", true, None::<&str>)?;
             let quit_i = MenuItem::with_id(app, "quit", "退出程序", true, None::<&str>)?;
@@ -5733,6 +5824,7 @@ pub fn run() {
             provider_query_usage,
             open_url,
             list_sessions,
+            session_title_for,
             list_pinned_sessions,
             rename_session,
             delete_session,
@@ -5748,8 +5840,20 @@ pub fn run() {
             resume_session,
             get_data_root,
             autostart_supported,
-            quit_app
+            quit_app,
+            pty::pty_spawn_claude,
+            pty::pty_write,
+            pty::pty_resize,
+            pty::pty_kill,
+            clipboard_image::clipboard_image_path
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while running tauri application")
+        .run(|app, event| {
+            // 退出前杀光内嵌终端子进程（claude 是 cmd→node 链，taskkill 兜底杀树；
+            // 最小化到托盘不触发 Exit，终端继续在后台运行）
+            if let tauri::RunEvent::Exit = event {
+                pty::shutdown_all(app);
+            }
+        });
 }

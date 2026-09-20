@@ -1,6 +1,6 @@
 [package]
 name = "claude-fast"
-version = "1.0.0"
+version = "1.1.0"
 description = "Claude助手"
 edition = "2021"
 
@@ -22,7 +22,15 @@ tauri-plugin-autostart = "2.5.1"
 # uuid 生成供应商 id
 ureq = { version = "2", features = ["json"] }
 uuid = { version = "1", features = ["v4"] }
+# 内嵌终端：跨平台伪终端（Windows ConPTY / Unix openpty），WezTerm 出品
+portable-pty = "0.9"
 
-# Windows 专用：ShellExecuteW 打开 cmd / explorer（macOS 用 open 命令，无需此依赖）
+# Windows 专用：ShellExecuteW 打开 cmd / explorer（macOS 用 open 命令，无需此依赖）；
+# 剪贴板图片路径提取需要 Win32 剪贴板（DataExchange）+ DragQueryFileW（Shell）
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_DataExchange",
+] }
