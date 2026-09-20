@@ -17,10 +17,10 @@ export interface PtySpawnOptions {
   onData: (chunk: Uint8Array) => void;
   /** 进程退出（code 为 null = 被信号终止） */
   onExit: (code: number | null) => void;
-  /** 拿到 pty id 的**即时**回调：早于 onExit 监听的注册（`listen` 是另一次 IPC 往返）。
-   *  调用方要在这一步之前把终端输入缓存起来、在这里按序补发——理由见 TerminalPane
-   *  里 pendingInput 的注释（claude 启动握手的 DSR 应答就发生在这一小段窗口里，
-   *  丢掉会让终端永久黑屏零输出）。 */
+  /** 拿到 pty id 的**即时**回调（spawn 应答一到就调，先于函数 resolve）。
+   *  调用方要把这之前产生的终端输入缓存起来、在这里按序补发——spawn 的 IPC
+   *  往返期间 xterm 就可能要回灌 cmd.exe 的 DSR 应答（理由见 TerminalPane 里
+   *  pendingInput 的注释），丢掉会让终端永久黑屏零输出。 */
   onSpawned?: (id: number) => void;
 }
 
@@ -32,26 +32,48 @@ export async function ptySpawnClaude(opts: PtySpawnOptions): Promise<number> {
   channel.onmessage = (buf) => {
     if (buf && buf.byteLength > 0) opts.onData(new Uint8Array(buf));
   };
-  const id = await invoke<number>("pty_spawn_claude", {
-    cwd: opts.cwd,
-    resumeSessionId: opts.resumeSessionId,
-    newSessionId: opts.newSessionId ?? null,
-    cols: opts.cols,
-    rows: opts.rows,
-    onData: channel,
-  });
-  // 先把 id 交出去，再注册退出监听：listen 要再走一次 IPC 往返，而 PTY 里的
-  // cmd.exe 启动 ~20-30ms 就会发 DSR 等应答（不应答则整条链永久卡在第一帧）。
-  // 让调用方早一步拿到 id，就早一步把输入通道接通（详见 PtySpawnOptions.onSpawned）。
-  opts.onSpawned?.(id);
+  // 退出监听必须先于 spawn 就位：后端读线程在 pty_spawn_claude 返回之前就已
+  // 开跑，秒退的进程（shim 被删、claude 立即报错）会把 pty-exit 发在 invoke
+  // 应答之前——Tauri 事件不缓存，晚注册 = 事件发给空气，tab 永远停在「运行中」。
+  // 此时 id 还不知道，事件先落 earlyExits 记账，invoke 返回后对号补发。
+  const earlyExits: { id: number; code: number | null }[] = [];
+  let myId: number | null = null;
   let unlisten: (() => void) | undefined;
   const stop = await listen<{ id: number; code: number | null }>("pty-exit", (e) => {
-    if (e.payload.id === id) {
+    if (myId === null) {
+      earlyExits.push(e.payload);
+      return;
+    }
+    if (e.payload.id === myId) {
       unlisten?.();
       opts.onExit(e.payload.code);
     }
   });
   unlisten = stop;
+  let id: number;
+  try {
+    id = await invoke<number>("pty_spawn_claude", {
+      cwd: opts.cwd,
+      resumeSessionId: opts.resumeSessionId,
+      newSessionId: opts.newSessionId ?? null,
+      cols: opts.cols,
+      rows: opts.rows,
+      onData: channel,
+    });
+  } catch (e) {
+    stop(); // 没起成就退订，不留一个永远等不到的监听
+    throw e;
+  }
+  myId = id;
+  // id 一到就交出去接通输入通道：排队中的输入（多半是 cmd.exe 启动 ~20-30ms
+  // 就发的 DSR 应答，不应答则整条链永久卡在第一帧）在这里按序补发；退出监听
+  // 此时已就位，不再欠一次 IPC 往返
+  opts.onSpawned?.(id);
+  const early = earlyExits.find((e) => e.id === id);
+  if (early) {
+    stop();
+    opts.onExit(early.code); // 进程在 invoke 往返期间就已退出：补发退出事件
+  }
   return id;
 }
 

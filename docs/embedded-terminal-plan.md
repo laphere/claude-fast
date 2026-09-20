@@ -80,7 +80,7 @@
 
 ### 前端（约 400–600 行）
 
-- **`TerminalPane.tsx`**：xterm.js 封装。FitAddon（容器 resize 防抖 150ms → `pty_resize`）、WebGL addon（WebView2 支持；**仅对激活 tab 挂载**——Chromium 每页 WebGL 上下文有 ~16 个硬上限，多 tab 全挂会黑屏，非激活 tab 走 DOM 渲染器，claude TUI 的输出量 DOM 也足够流畅）、主题固定深色 Campbell 系（claude 探测 OSC 11 背景自适应明暗，必须答深色）、`term.onData → pty_write`、**粘贴整条拦下转发**：host 上捕获 keydown，Ctrl+V / Cmd+V / Shift+Insert / Alt+V 一律 preventDefault，**剪贴板里是图片文件时改为把路径当粘贴文本送进终端**（`clipboard_image_path` + `Terminal.paste()`，见下），否则向 PTY 写 `\x1bv`（Alt+V 序列，ESC 紧跟 v 无空格；**多打一个空格会变成「敲入空格+v」**）。Claude Code 的剪贴板粘贴绑定在 Alt+V，收到后自己去读系统剪贴板（图片贴成 `[Image #1]`、文本照常粘贴，图片+文本一条通道通吃，也无 WebView 剪贴板权限问题）。**不能走浏览器 paste**：xterm 的 paste 只会写文本、纯图片剪贴板一个字节都不发；**`\x16`（Ctrl+V 原始键码）在 Windows claude 2.1.278 实测无反应**（PTY 探针逐键码验证，社区「让 Ctrl+V 穿透」方案在 Windows 不成立）；macOS 按官方口径发 `\x16`。AltGr 在 Windows 上同时带 ctrlKey+altKey，Ctrl+V 分支须 `!altKey` 排除，否则会吃掉用 AltGr 打的字符。scrollback 上限 5000（多 tab 内存）、关闭时 dispose。
+- **`TerminalPane.tsx`**：xterm.js 封装。FitAddon（容器 resize 防抖 150ms → `pty_resize`）、WebGL addon（WebView2 支持；**每个 tab 都挂**——Chromium 每页 ~16 个上下文的上限实际到不了，终端 tab 撑死 5 个，而「仅挂激活 tab」要拿「每次切 tab 重建上下文 + 字形图集」来换，不划算；上下文丢失后按退避重挂，见 §6.11）、主题固定深色 Campbell 系（claude 探测 OSC 11 背景自适应明暗，必须答深色）、`term.onData → pty_write`、**粘贴整条拦下转发**：host 上捕获 keydown，Ctrl+V / Cmd+V / Shift+Insert / Alt+V 一律 preventDefault，**剪贴板里是图片文件时改为把路径当粘贴文本送进终端**（`clipboard_image_path` + `Terminal.paste()`，见下），否则向 PTY 写 `\x1bv`（Alt+V 序列，ESC 紧跟 v 无空格；**多打一个空格会变成「敲入空格+v」**）。Claude Code 的剪贴板粘贴绑定在 Alt+V，收到后自己去读系统剪贴板（图片贴成 `[Image #1]`、文本照常粘贴，图片+文本一条通道通吃，也无 WebView 剪贴板权限问题）。**不能走浏览器 paste**：xterm 的 paste 只会写文本、纯图片剪贴板一个字节都不发；**`\x16`（Ctrl+V 原始键码）在 Windows claude 2.1.278 实测无反应**（PTY 探针逐键码验证，社区「让 Ctrl+V 穿透」方案在 Windows 不成立）；macOS 按官方口径发 `\x16`。AltGr 在 Windows 上同时带 ctrlKey+altKey，Ctrl+V 分支须 `!altKey` 排除，否则会吃掉用 AltGr 打的字符。scrollback 上限 5000（多 tab 内存）、关闭时 dispose。
 - **剪贴板图片路径提取（`src-tauri/src/clipboard_image.rs`）**：补齐**「复制的图片文件」在内嵌终端里贴不进去**的缺口。**cmd 里能贴**是因为 Ctrl+V 由 conhost 处理——它读到剪贴板的 CF_HDROP 文件列表后，把**文件路径当文本**塞进输入流，claude 识别出图片路径即转成 `[Image #1]`。内嵌终端走 xterm.js：浏览器 paste 对文件列表**不带任何文本**，而 claude 自己读剪贴板的两条路也都不认文件列表（①位图路 `ContainsImage()` 答 False；②路径路用纯 `powershell -NoProfile -Command Get-Clipboard`，PS 5.1 对文件列表返回空），于是报 `No image found in clipboard. Use alt+v to paste images.`。本模块补的就是 conhost 那一步：`clipboard_image_path` 只读地取出文件列表里首个图片文件的路径，前端用 `Terminal.paste()` 当**粘贴文本**送进 PTY（自动按 bracketed paste 包裹）——实测 claude 立刻转成 `[Image #1]`，**且完全不碰用户剪贴板**（早先那版改剪贴板内容的实现已废弃：多一个「剪贴板被改写」的副作用，还要自己猜还原时机）。白名单与 claude 源码正则严格一致（png/jpg/jpeg/gif/webp），bmp/tiff/heic 不送（送过去 claude 也不会转）。Win32 剪贴板直接调 `windows-sys`（已依赖），零新增 crate；macOS 无需处理（`osascript … «class furl»` 对 Finder 复制本就返回路径）。
 - **`TerminalTabs.tsx`**：tab 条（标题 + 运行状态点 + 关闭 × + 「+」新开）。tab 标题：resume 场景直接用会话标题；新会话等 claude 落盘 jsonl 后由现有**聚焦自动刷新**机制补齐。tab 切换不销毁底层 PTY——多会话并行正是目标形态。有活跃进程的 tab 关闭前二次确认。
 - **内容区改造**：右栏内容区加 tab 条，tab = `{kind: 'viewer' | 'terminal', …}`——点会话标题开查看 tab（现 SessionViewer 原样复用），「继续对话」开终端 tab。样式遵循项目按钮规范（inline-flex 居中 + 墨迹补偿，勿漏）。
@@ -97,7 +97,7 @@
 | 键盘冲突（app 快捷键 vs 终端） | Tauri 无浏览器默认快捷键，基本干净；终端聚焦时 `attachCustomKeyEventHandler` 拦截 app 自有快捷键 |
 | 吞吐 | claude TUI 输出 KB 级，Channel 推送绰绰有余；读线程可合并 <16ms 窗口的 chunk |
 | 多 tab 长会话内存 | scrollback 上限 + 关 tab 即 dispose |
-| 多 tab WebGL 上下文上限（~16/页，WebView2 与 Electron 同限） | 仅激活 tab 挂 WebGL addon，其余 DOM 渲染器 |
+| 多 tab WebGL 上下文上限（~16/页，WebView2 与 Electron 同限） | **实际到不了**（终端 tab 撑死 5 个）→ 每个 tab 都挂 WebGL，不为省上下文牺牲切 tab 的观感；上下文真丢了走退避重挂（§6.11） |
 | app 退出残留终端进程 | 退出路径统一杀全部 PTY（close_action 询问弹窗可提示「N 个会话运行中」） |
 
 ### 工作量与节奏
@@ -204,8 +204,9 @@
   | 延迟 500ms 才应答 | **完整恢复**（33KB）——握手没有超时，**晚答无妨、丢了才致命** |
 
 - **纠正一条既有认识**：§6.6 把首发 `ESC[6n` 记成了 claude 的查询。实测它出现在**spawn 后 21~30ms**，而 claude 的痕迹（`ESC]0;claude BEL`）在 374~381ms 才出现；用 `PROBE_RAW="/C echo hi"` 跑**不含 claude 的纯 cmd.exe**，那 4 字节照样在 22ms 出现。即：**这是 cmd.exe/conhost 启动时的 DSR（问光标位置），它卡住 => 整条链（含 claude 的启动）都不会发生**，不是 claude 自己的第一帧。
-- **成因（前端一侧的窗口）**：应答由 xterm.js 生成（`deviceStatus` → `triggerDataEvent` → `term.onData`，xterm 源码里对 `CSI 6 n` 无条件回 `ESC[<行>;<列>R`），回灌 PTY 必须经过 `ptyIdRef`；而 `ptyIdRef` 要等 spawn 命令的 IPC 应答**外加一次退出监听的往返**（`ptySpawnClaude` 里 `invoke` 之后才 `await listen(...)`）才就位——落在同一量级（约 5~25ms）上。撞进这个窗口的那次应答被 `term.onData` 里的 `if (id !== null)` **静默丢掉**，于是 cmd.exe 永远等不到，终端永久全黑。谁先谁后取决于当时主线程/IPC 队列忙不忙（开 tab 那一刻正忙着 React 挂载 + WebGL 上下文 + 字体图集），所以表现为**偶发**；新会话与 resume 走同一条链，理论上都有，只是用户开 resume 更多。
-- **修法**：`TerminalPane` 里加 `pendingInput` 队列 + `sendInput()`——**pty id 未就位时的输入一律排队，拿到 id 后按序补发，绝不丢弃**（粘贴路径一并改走 `sendInput`，`term.paste()` 本就经 `term.onData`）；同时 `ptySpawnClaude` 新增 `onSpawned(id)` 回调，在 `invoke` 一回来就把 id 交出去，把窗口从「两次 IPC 往返」收窄到一次。因为「晚答无妨」，排队是安全的正解。
+- **成因（前端一侧的窗口）**：应答由 xterm.js 生成（`deviceStatus` → `triggerDataEvent` → `term.onData`，xterm 源码里对 `CSI 6 n` 无条件回 `ESC[<行>;<列>R`），回灌 PTY 必须经过 `ptyIdRef`；而 `ptyIdRef` 要等 spawn 命令的**一次 IPC 应答**才就位（`await listen(...)` 已挪到 `invoke` **之前**注册，不再额外占一次往返，见下条）——落在同一量级（约 5~25ms）上。撞进这个窗口的那次应答被 `term.onData` 里的 `if (id !== null)` **静默丢掉**，于是 cmd.exe 永远等不到，终端永久全黑。谁先谁后取决于当时主线程/IPC 队列忙不忙（开 tab 那一刻正忙着 React 挂载 + WebGL 上下文 + 字体图集），所以表现为**偶发**；新会话与 resume 走同一条链，理论上都有，只是用户开 resume 更多。
+- **修法**：`TerminalPane` 里加 `pendingInput` 队列 + `sendInput()`——**pty id 未就位时的输入一律排队，拿到 id 后按序补发，绝不丢弃**（粘贴路径一并改走 `sendInput`，`term.paste()` 本就经 `term.onData`）；同时 `ptySpawnClaude` 新增 `onSpawned(id)` 回调，在 `invoke` 一回来就把 id 交出去，把窗口收窄到**一次** IPC 往返。因为「晚答无妨」，排队是安全的正解。
+- **退出监听改为先注册、后 `invoke`**（2026-09-20 复审补的第二刀）：后端读线程在 `pty_spawn_claude` 返回**之前**就已跑起来，秒退的进程（claude shim 被删 / 启动即报错）会把 `pty-exit` 发在 invoke 应答之前——Tauri 事件不缓存，晚注册就是发给空气，该 tab 会永远停在「运行中」。此时 id 还未知，事件先落 `earlyExits` 记账，`invoke` 返回后对号补发。**别再改回 invoke-first 的顺序**：那正是本条与「tab 卡在运行中」两个 bug 的共同成因（前者丢的是输入应答、后者丢的是退出事件）。前端一侧配套：`TerminalPane` 用 `exited` 标志把状态钉住，防 `.then` 里那句 `running` 把补发的 `exited` 覆盖回去。
 - **验证**：`tsc --noEmit` 通过；后端 `cargo test` 149 项通过；探针三项实验如上表。**真机偶发复现待用户确认**（单实例插件占着 app id，自起 dev 实例会被顶回来）。
 - **探针配方**（一次性，验证完即删，同 §6.6）：`cargo run --example` + portable-pty 起 `cmd /D /S /C call claude.cmd [--resume <id>]`，读线程逐块回传、主线程扫描 `ESC[6n` 并按 `dsr_delay_ms` 参数决定何时回 `ESC[1;1R`，逐块打「距 spawn 毫秒数」。**判断黑屏成因时先看这条**：若日志停在 4 字节 `ESC[6n`，就是握手没人应答。
 
@@ -218,6 +219,29 @@
 - **确认框要说清**：删除确认框按情况追加一句——只有已结束的 tab「将一并关闭」；运行中且探针判 idle「删除将一并关闭该终端」；运行中且探针判 busy/unknown「删除将一并结束它——claude 正在干活，这一轮会被中断」。忙/闲**在点删除这一刻现算**（与右键菜单同一套口径，unknown 按忙处理），不缓存快照。**不新增"某些会话删不掉"的规则**：单会话删除本来就是带 danger 确认的破坏性操作，与「关单个 tab 先确认」一致；批量关闭那种"跳过在跑的"是另一回事（一次误点会杀多个）。
 - **覆盖不到**：同一会话在**系统终端**里跑着（右键"在系统终端继续对话"，或用户自己 `claude --resume`）时删除，后端无从得知，行为与上面那条风险相同。要根治只能在录音层面记下每个 live 进程持有的 session id（含外部进程），成本不成比例，暂不做。
 - **验证**：`tsc --noEmit` 与 `npm run build` 通过；**真机行为待用户验收**——在终端里跑着会话，删掉它，看确认框文案、tab 是否随删除消失、进程是否被杀干净（任务管理器里无 claude/node 孤儿）。
+
+### 6.9 PTY 输入改「专属写线程 + 队列」（2026-09-20，复审后定稿）
+
+- **问题**：`pty_write` 原先是命令体里内联 `writer.lock()` + `write_all()`，两头都不对——① 管道写会阻塞（ConPTY 输入管道只有 4 KiB，claude 忙时不读就卡住），卡在 tokio worker 上会拖慢**全部**命令；② 改成每次调用 `spawn_blocking` 解掉了①，却把**顺序**丢了：多个 invoke 同时在飞时，阻塞池多线程执行、各自抢 writer 锁，先发的可能后写。
+- **系统终端怎么解**（用户提出对照后查证，两条独立实现指向同一结构——**单写者**）：Windows Terminal 直接在 UI 线程同步写，因为 UI 事件循环就是唯一写者、顺序天然（代价是接受阻塞，它专门修过「持锁期间 WriteFile」的死锁：`microsoft/terminal` PR #16224，粘贴 >5 KiB 到不读的程序即复现）；iTerm2 则把 pty 写派发到一条**专属串行队列**上，源码注释写明「阻塞主队列是不可接受的」。共同点：**写要能自由阻塞，但只阻塞它自己**。
+- **定稿**：`PtySession.input: Sender<Vec<u8>>` + spawn 时起的 `pty-writer-<id>` 线程。`pty_write` 只 `send`（无界通道：不阻塞、不占线程池、不持锁），写线程独占 writer、按序 `write_all`。三件事因此一起成立：**顺序 = 入队顺序**；**阻塞只落在那条线程**；**`writer: Mutex` 整个消失**——也就没有 WT 那个「持锁做阻塞写」的反模式可犯。`pty_resize` 仍走 `spawn_blocking`（幂等、与顺序无关，留着当保险）。
+- **生命周期不用单独管**（这是选它而不是「每写入派一个任务」的关键）：写线程挂在会话上——会话被清表（读线程 EOF）→ Arc 落地 → Sender 最后一份丢弃 → `recv` 返回 Err → 线程收尾。`pty_kill` / `shutdown_all` / app 退出**都不需要新增代码**（与读线程同一套）。写线程刻意起在**子进程之前**：失败时还没有任何东西被拉起来，无需清理。
+- **残留窗口：已关**（同日复审后补的一刀）——把 `pty_write` 的 `async` 去掉就够了：Tauri 里**不带 `async` 的命令由 IPC 处理器内联、按消息到达次序执行**（带 `async` 的才被派进异步运行时的多线程任务池，完成次序不保证），于是「入队顺序 = 前端发送顺序」成立，单写者队列的保序链条补全。命令体只有一次短锁 + 一次无界 `send`，内联执行不构成 UI 阻塞。前端因此不必再加那条 promise 链。
+- **验证**：`cargo test` 153 项通过；**真机行为待验收**——大段粘贴/快速连打后 claude 侧无错序字符，关 tab 后无线程残留。
+
+### 6.10 kill 路径的两处加固（2026-09-20）
+
+- **`pty_kill` 改走阻塞线程池**：Windows 那步 `taskkill /T /F` 是**要等外部进程跑完**的（大 claude/node 树 100ms 到数秒），挂在 async 命令上会钉死一个 tokio worker。调用方本来就 `await` 它（删会话必须「先杀完进程、再动会话文件」，见 6.8），进池不影响那套顺序。至此 pty 四个命令的阻塞面归位：`pty_spawn_claude` / `pty_kill` / `pty_resize` 走阻塞池，`pty_write` 只入队（见 6.9）。
+- **kill 不再锁 `child` 取 pid**：pid 改为 spawn 时取一次、存进 `PtySession.pid`。原来那版是 `session.child.lock()...process_id()`，两个毛病：① 读线程在 EOF 之后要持着 `child` 锁 `wait()` 等退出码，kill 来抢同一把锁就成了「wait 等进程退出 → 进程等 kill → kill 等锁」的互相等待——窗口窄（要 EOF 已到而直接子进程还没退），但代价是前端 `await ptyKill` 永久挂起、删会话卡死；② 即便没撞上，那把锁也横跨整个 taskkill。`portable-pty` 的 `process_id()` 返回的是 spawn 时记下的值，提前存与事后取同值，语义零变化。
+- **验证**：`cargo test` 153 项通过；真机待验收——删除运行中的会话后进程树无残留、UI 不卡、确认框与 tab 关闭行为不变。
+
+### 6.11 WebGL 挂载策略与上下文丢失重挂（2026-09-20）
+
+- **原计划 vs 实际**：设计节写的是「仅对激活 tab 挂 WebGL，其余走 DOM 渲染器」，理由是 Chromium 每页 ~16 个 WebGL 上下文硬上限（[确有其事](https://issues.chromium.org/issues/40939743)，超限即强杀最老的上下文）。**实际没照它做**：那个上限到不了——终端 tab 撑死 5 个（用户口径：「5 个都撑死了，谁会同时进行那么多对话任务」），而「只挂激活 tab」的代价是**每次切 tab 都要重建上下文 + 字形纹理图集**，对一个就是用来切来切去的 tab 条不划算。定稿：**每个 tab 都挂**。
+- **顺带纠一处不准的预言**：设计节原写「多 tab 全挂会黑屏」。按代码路径不会黑屏——`onContextLoss` 会把插件 dispose 掉、xterm 回落内置 DOM 渲染器，症状是**块状字符每 14px 一条暗缝**（正是当初换 WebGL 要消掉的那个，见 `TerminalPane` 的 WebGL 注释），功能不受影响。留着这句会让后来者去修一个不存在的症状。
+- **真正会丢上下文的是别的原因**：GPU 进程崩溃、显卡驱动更新、休眠唤醒、远程桌面/切独显——桌面应用跑久了必然遇到，而原来一丢就**永久**回落 DOM，只能关掉 tab 重开。现在按 **1s / 5s / 30s 三次退避重挂**：GPU 回来即自动恢复，回不来就老实待在 DOM 上（有缝、但能用）。
+- **重挂预算用完不重置**（刻意）：GPU 反复抽风时「挂成功就重置」会变成无休止的「建-丢」循环，预算用完即止；想再试可以关掉 tab 重开（预算随挂载重置）。排着的定时器随卸载清掉。
+- **验证**：`tsc --noEmit` 通过；**真机待验收**——① 正常路径所有 tab 都应是 WebGL（开 5 个 tab，看块状字符无暗缝）；② 丢失重挂这条只能人为制造上下文丢失来验（如任务管理器结束 WebView2 的 GPU 进程 `msedgewebview2.exe --type=gpu-process`），**本次未验**。
 
 ## 七、待优化（用户已记录，后续统一做，当前先做功能）
 

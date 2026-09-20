@@ -945,8 +945,12 @@ fn mangle_project_path(path: &str) -> String {
         .collect()
 }
 
-/// UUID v4 格式校验（会话文件名主体）
-fn is_valid_uuid(s: &str) -> bool {
+/// uuid 形态校验（长度 36、连字符必须落在 8/13/18/23 位、其余为 hex）。
+/// **只看形态，不看版本位/变体位**（`-4562-` 那种位置上的字符不校验，名字里带 v4
+/// 是历史叫法，别照它去「补」版本校验）。
+/// `pub(crate)`：pty.rs 的 `validate_session_id` 复用它——会话 id 的格式
+/// **只能有一处定义**，两处各写一份早晚分叉（pty.rs 原先那份更松，36 个连字符都放行）。
+pub(crate) fn is_valid_uuid(s: &str) -> bool {
     let bytes = s.as_bytes();
     if bytes.len() != 36 {
         return false;

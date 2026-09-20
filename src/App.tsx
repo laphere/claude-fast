@@ -118,6 +118,29 @@ export default function App() {
 
   // ---------- 内嵌终端 tab（真 claude CLI 跑在 PTY 里，xterm.js 渲染） ----------
   const [termTabs, setTermTabs] = useState<TerminalTab[]>([]);
+  /** tab 列表的 ref 镜像：removeTabs 常在长 await 之后才被调（删会话要等
+   *  taskkill 跑完），闭包里的 termTabs 可能已被期间的其他关闭换掉——按旧
+   *  数组挑「接管 tab」会选中刚被关掉的那个。每次渲染同步最新值（兜底）。 */
+  const termTabsRef = useRef(termTabs);
+  /** 兜底同步：只写**已提交**的那个值。不能像别处那样直接写在 render 体里——
+   *  render 体对「未提交/被丢弃的那次渲染」也会执行，那会把它的旧值写进 ref、正好
+   *  把 updateTabs 刚写进去的新列表回滚掉，而长 await 之后的 removeTabs 正是按 ref
+   *  算接管 tab 的（见其注释）。effect 只在提交后跑，没有这个问题。 */
+  useEffect(() => {
+    termTabsRef.current = termTabs;
+  });
+
+  /** tab 列表的**唯一**写入口：先落 ref 再落 state，两者始终同源。
+   *  为什么需要它：`setTermTabs(fn)` 是异步的，同一 tick 里「先开一个 tab、再关一批」
+   *  时函数式更新还没落到 state，ref 才是唯一看得见那次 append 的地方——所以每个
+   *  改列表的地方都得走这里（只落 state 的话，随后的 removeTabs 会按旧 ref 算出的
+   *  数组把刚加的 tab 整个覆掉，而 activeTabId 还指着那个已消失的 id）。
+   *  上面那句「每次渲染同步」只是兜底：跨 tick 自愈，同 tick 靠这里。 */
+  const updateTabs = useCallback((fn: (prev: TerminalTab[]) => TerminalTab[]) => {
+    const next = fn(termTabsRef.current);
+    termTabsRef.current = next;
+    setTermTabs(next);
+  }, []);
   /** 当前激活 tab：null = 查看器 tab（activeSession 的只读内容） */
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const tabSeqRef = useRef(0);
@@ -437,17 +460,19 @@ export default function App() {
   const removeTabs = useCallback(
     (ids: string[], preferId: string | null = null) => {
       const gone = new Set(ids);
-      setTermTabs((prev) => prev.filter((t) => !gone.has(t.id)));
+      // 接管 tab 从 ref 的最新列表里挑（见 termTabsRef / updateTabs 注释）：
+      // ref 里含本 tick 内刚 append 的 tab，连续两次关闭也不会按同一份旧数组互相覆盖
+      const rest = termTabsRef.current.filter((t) => !gone.has(t.id));
+      updateTabs(() => rest);
       setActiveTabId((cur) => {
         // 当前是查看器（null = 只读内容页）→ 保持查看器，不因为关了终端 tab 就跳走
         if (cur === null) return null;
         if (!gone.has(cur)) return cur;
         if (preferId && !gone.has(preferId)) return preferId;
-        const rest = termTabs.filter((t) => !gone.has(t.id));
         return rest.length > 0 ? rest[rest.length - 1].id : null;
       });
     },
-    [termTabs],
+    [],
   );
 
   /** 挂着某个会话的终端 tab：续聊 tab 认 resumeSessionId、新会话 tab 认 newSessionId
@@ -484,7 +509,7 @@ export default function App() {
         showToast(kept > 0 ? "没有可关闭的会话（在跑的已跳过）" : "没有可关闭的会话");
         return;
       }
-      // 一次性移除（removeTabs 内部是函数式 setState，批量不会丢更新）；
+      // 一次性移除（removeTabs 内部经 termTabsRef 取最新列表，批量不会丢更新）；
       // exceptId 传给 removeTabs：被关掉的若是当前激活 tab，优先接管到右键那个
       removeTabs(closable.map((t) => t.id), exceptId);
       showToast(
@@ -510,9 +535,15 @@ export default function App() {
 
   const openTerminalTab = useCallback(
     (opts: { title: string; projectPath: string; resumeSessionId: string | null }) => {
-      // 同一会话已开过 tab → 直接激活，避免 --resume 同 id 双开两条分支
+      // 同一会话已开过 tab → 直接激活，避免 --resume 同 id 双开。续聊 tab
+      // （resumeSessionId）与新会话 tab（newSessionId）都要认：新会话的 jsonl
+      // 落盘后从右键「继续对话」进来就是同一个 uuid，漏掉它照样双开两个 claude
+      // 进程交错写同一份会话文件。
+      // **只认还活着的**（exited 不算）：命中一个已退出的 tab 等于把用户送到死终端上，
+      // `--resume` 永远发不出去（得先手动关掉那个 tab 再来一次）。那种情况下照常新开
+      // 一个 tab——旧的那个进程已经没了，不会跟它争同一份 jsonl。
       if (opts.resumeSessionId) {
-        const dup = termTabs.find((t) => t.resumeSessionId === opts.resumeSessionId);
+        const dup = tabsForSession(opts.resumeSessionId).find((t) => t.status !== "exited");
         if (dup) {
           setActiveTabId(dup.id);
           return;
@@ -529,33 +560,36 @@ export default function App() {
         status: "starting",
         exitCode: null,
       };
-      setTermTabs((prev) => [...prev, tab]);
+      updateTabs((prev) => [...prev, tab]);
       setActiveTabId(tab.id);
     },
-    [termTabs],
+    [tabsForSession, updateTabs], // 体内只用它（它自己闭包了 termTabs），别再加 termTabs
   );
 
   /** 终端状态回传（TerminalPane：starting → running / exited） */
   const updateTabStatus = useCallback(
     (id: string, status: TerminalTab["status"], exitCode: number | null) => {
-      setTermTabs((prev) =>
+      updateTabs((prev) =>
         prev.map((t) => (t.id === id ? { ...t, status, exitCode } : t)),
       );
     },
-    [],
+    [updateTabs],
   );
 
   /** 改 tab 标题。**标题没变就不 setState**：claude 干活时每 ~960ms 用 ◐/◑ 重写一次
    *  OSC 标题，剥掉字形后内容完全相同，不挡住这一路会让整棵 tab 条跟着动画帧重渲染。 */
-  const setTabTitle = useCallback((id: string, title: string) => {
-    setTermTabs((prev) => {
-      const i = prev.findIndex((t) => t.id === id);
-      if (i < 0 || prev[i].title === title) return prev;
-      const next = prev.slice();
-      next[i] = { ...next[i], title };
-      return next;
-    });
-  }, []);
+  const setTabTitle = useCallback(
+    (id: string, title: string) => {
+      updateTabs((prev) => {
+        const i = prev.findIndex((t) => t.id === id);
+        if (i < 0 || prev[i].title === title) return prev;
+        const next = prev.slice();
+        next[i] = { ...next[i], title };
+        return next;
+      });
+    },
+    [updateTabs],
+  );
 
   /** 标题已定稿的 tab：定稿后不再让「会话文件兜底」插话（它读到的可能还是首条用户消息，
    *  比 claude 刚写出的 OSC 标题旧）。ref 给轮询里的同步判断用，state 用来重算待办清单。 */
@@ -804,9 +838,15 @@ export default function App() {
   // 挂载即检一次（窗口可能一开始就窄）
   useEffect(() => {
     let timer: number | undefined;
+    // 只在**真正向下穿过阈值**那一刻收起，而不是处于窄窗期间的每次 resize 都
+    // 收一次——否则窄窗里手动展开的侧栏被 1px 拖动就再次压回去，手动意图被
+    // 覆盖。prevW 初值取无穷大：挂载即窄的窗口也算一次「穿入」（首检仍生效）。
+    let prevW = Infinity;
     const apply = () => {
       const w = window.innerWidth;
-      if (w < SIDEBAR_COLLAPSE_BELOW && !sidebarCollapsedRef.current) {
+      const crossedBelow = w < SIDEBAR_COLLAPSE_BELOW && prevW >= SIDEBAR_COLLAPSE_BELOW;
+      prevW = w;
+      if (crossedBelow && !sidebarCollapsedRef.current) {
         autoCollapsedRef.current = true;
         setSidebarCollapsed(true);
       } else if (w > SIDEBAR_EXPAND_ABOVE && sidebarCollapsedRef.current && autoCollapsedRef.current) {

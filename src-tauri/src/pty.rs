@@ -3,7 +3,8 @@
 //! 数据流（设计见 docs/embedded-terminal-plan.md）：
 //! - 输出：专用读线程阻塞读 PTY → `ipc::Channel` 二进制 chunk 直传前端
 //!   （xterm.js `term.write(Uint8Array)` 自带跨 chunk 的 UTF-8 解码）；
-//! - 输入：`pty_write`（前端 term.onData）；
+//! - 输入：`pty_write`（前端 term.onData）**只入队**，由会话的专属写线程串行写进
+//!   PTY——单写者、顺序即入队顺序，阻塞只落在那条线程上（见 `PtySession.input`）；
 //! - 退出：读线程收到 EOF → `child.wait()` → 全局事件 `pty-exit` 广播
 //!   `{ id, code }`，前端按 id 过滤后标记对应 tab「已退出」；
 //! - 击杀：`pty_kill` 先 `ChildKiller::kill()`，Windows 再 `taskkill /T /F`
@@ -19,6 +20,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 
 use portable_pty::{Child, ChildKiller, CommandBuilder, MasterPty, PtySize};
@@ -32,10 +34,29 @@ use std::os::windows::process::CommandExt;
 #[cfg(windows)]
 use crate::CREATE_NO_WINDOW;
 
-/// 单个终端会话：master 供 resize、writer 供输入、child/killer 供击杀与回收
+/// 单个终端会话：master 供 resize、child/killer 供击杀与回收、输入走 `input` 队列
 struct PtySession {
     master: Mutex<Box<dyn MasterPty + Send>>,
-    writer: Mutex<Box<dyn Write + Send>>,
+    /// PTY 输入的入队端：`pty_write` 把字节塞进来（非阻塞），由 spawn 时起的
+    /// **专属写线程**按序写进 PTY。为什么要独立线程而不是命令体直接写：
+    /// ① 管道写会阻塞（对端不读时 `write_all` 一直卡着），直接写就只有两条烂路
+    ///    ——要么持着 writer 锁卡住，要么每次调用派一个线程池任务（后者既不保序、
+    ///    又把「持锁做阻塞写」留给别人）；
+    /// ② 系统终端就是这么做的：iTerm2 把 pty 写派发到**专属串行队列**（因为阻塞主
+    ///    队列不可接受），Windows Terminal 也为「持锁期间 WriteFile」专门修过死锁
+    ///    （microsoft/terminal PR #16224，4 KiB 输入管道塞满即复现）。结论是同一条：
+    ///    写要能自由阻塞，但只阻塞它自己——单写者 + FIFO 队列，顺序不需要额外机制。
+    /// 写线程的生命周期**挂在会话上**：会话被清表（读线程 EOF）→ Arc 落地 → 本
+    /// Sender 最后一份丢弃 → `recv` 返回 Err → 线程自然收尾，无需单独管理。
+    input: Sender<Vec<u8>>,
+    /// 子进程 pid，**spawn 时取一次存下**（非 Windows 用不到，只在杀树时读）：
+    /// kill 要拿它跑 `taskkill /T /F`，而**不能**为此去锁 `child`——读线程在 EOF
+    /// 之后要持着 `child` 锁 `wait()` 等退出码，kill 若也来抢这把锁就成了
+    /// 「wait 等进程退出 → 进程等 kill → kill 等锁」的互相等待。顺带也把一把锁
+    /// 横跨整个 taskkill 的写法去掉（那个外部进程要跑上百 ms 到数秒；WT 专门修过
+    /// 「持锁期间做阻塞的外部调用」，见 microsoft/terminal PR #16224）。
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pid: Option<u32>,
     child: Mutex<Box<dyn Child + Send + Sync>>,
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
 }
@@ -95,37 +116,59 @@ pub(crate) async fn pty_spawn_claude(
     .unwrap_or_else(|e| Err(format!("终端启动任务异常退出：{e}")))
 }
 
-/// 前端键盘输入写入 PTY（data 为 UTF-8 字符串，xterm.js onData 原文）
+/// 前端键盘输入写入 PTY（data 为 UTF-8 字符串，xterm.js onData 原文）。
+/// **只入队、不写**：真正的写由会话的专属写线程串行完成（见 `PtySession.input`）。
+/// 所以这里既不占线程池、也不持任何锁——`send` 在无界通道上不会阻塞。
+///
+/// **刻意不写 `async`**：Tauri 里带 `async` 的命令会被派成独立任务丢进异步运行时
+/// （多线程、完成次序不保证），而不带 `async` 的命令由 IPC 处理器**内联、按消息到达
+/// 次序**执行。前端 `sendInput`（尤其 `pendingInput` 的补发循环）是在一个 tick 里连发
+/// 多个 invoke 的，只有内联执行才能让「入队顺序 = 前端发送顺序」真正成立——这是单写者
+/// 队列保序链条上最后一段（也是 docs/embedded-terminal-plan.md §6.9 里记的那个「残留
+/// 窗口」）。命令体只有一次短锁 + 一次无界 send，内联不构成 UI 阻塞。
 #[tauri::command]
-pub(crate) async fn pty_write(state: State<'_, PtyState>, id: u32, data: String) -> Result<(), String> {
+pub(crate) fn pty_write(state: State<'_, PtyState>, id: u32, data: String) -> Result<(), String> {
     let session = get_session(&state, id)?;
-    let mut writer = session.writer.lock().unwrap_or_else(|e| e.into_inner());
-    writer
-        .write_all(data.as_bytes())
-        .map_err(|e| format!("写入终端失败：{e}"))
+    session
+        .input
+        .send(data.into_bytes())
+        .map_err(|_| "终端已关闭".to_string())
 }
 
-/// 终端尺寸变更（前端容器 resize 防抖后调用）
+/// 终端尺寸变更（前端容器 resize 防抖后调用）。resize 同样是可能阻塞的
+/// 管道 IO（持 master 锁），处理同 pty_write。
 #[tauri::command]
-pub(crate) async fn pty_resize(state: State<'_, PtyState>, id: u32, cols: u16, rows: u16) -> Result<(), String> {
-    let session = get_session(&state, id)?;
-    let master = session.master.lock().unwrap_or_else(|e| e.into_inner());
-    master
-        .resize(PtySize {
-            rows,
-            cols,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .map_err(|e| format!("调整终端尺寸失败：{e}"))
+pub(crate) async fn pty_resize(app: AppHandle, id: u32, cols: u16, rows: u16) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<PtyState>();
+        let session = get_session(&state, id)?;
+        let master = session.master.lock().unwrap_or_else(|e| e.into_inner());
+        master
+            .resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|e| format!("调整终端尺寸失败：{e}"))
+    })
+    .await
+    .unwrap_or_else(|e| Err(format!("尺寸调整任务异常退出：{e}")))
 }
 
 /// 关闭终端会话：kill 直接子进程 + Windows 杀进程树兜底。
 /// 读线程随后收到 EOF，自行 wait/广播/清表——本函数不做清场。
+/// 走阻塞线程池：Windows 那步 `taskkill /T /F` 要**等**外部进程跑完（大 claude/node
+/// 树上一百 ms 到数秒），直接挂在 async 命令上会钉死一个 tokio worker；调用方本来
+/// 就 `await` 它（删会话必须「先杀完进程、再动会话文件」），进池不影响这套顺序。
 #[tauri::command]
 pub(crate) async fn pty_kill(app: AppHandle, id: u32) -> Result<(), String> {
-    let state = app.state::<PtyState>();
-    kill_session(&state, id)
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<PtyState>();
+        kill_session(&state, id)
+    })
+    .await
+    .unwrap_or_else(|e| Err(format!("关闭终端任务异常退出：{e}")))
 }
 
 /// 会话参数：续聊 `--resume <id>`；新会话 `--session-id <id>`。
@@ -231,6 +274,34 @@ fn spawn_session(
     let writer = master
         .take_writer()
         .map_err(|e| format!("获取终端输入通道失败：{e}"))?;
+    // 会话 id 从 1 起（0 保留，前端可用 0 判断「尚未 spawn」的异常态）。
+    // 提到这里取：下面的写线程要用它命名，而线程必须赶在子进程之前起来（失败时
+    // 无需清理——那会儿还没有任何东西被拉起来）；失败路径上多耗一个 id 无副作用。
+    let id = state.next_id.fetch_add(1, Ordering::Relaxed) + 1;
+    let (input, input_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    /* 专属写线程：PTY 输入的唯一写者，顺序 = 入队顺序（为什么不让命令体直接写，
+     *  见 PtySession.input 的注释）。它独占 writer、不持任何锁，卡住也只卡自己。
+     *  `recv` 返回 Err = 发送端已全部丢弃（会话被清表，或这里后续步骤失败提前
+     *  返回）→ 线程自然收尾，不需要谁去 join 或显式通知。 */
+    std::thread::Builder::new()
+        .name(format!("pty-writer-{id}"))
+        .spawn(move || {
+            let mut writer = writer;
+            while let Ok(buf) = input_rx.recv() {
+                if let Err(e) = writer.write_all(&buf) {
+                    // 写失败 = 这个 PTY 的输入侧已废（进程没了 / 管道断了）：跳出，
+                    // 队列里剩下的输入一并丢弃。这里是**唯一**的知情点——原先命令体
+                    // 直接写时错误还能回给调用方，换成队列后就没有回程了。留一行日志：
+                    // **dev 下可见**（debug 构建带控制台），release 无控制台写不出去，
+                    // 那种构建里用户侧的信号只剩「PTY 一废 → 读线程 EOF → pty-exit →
+                    // tab 显示已退出」。正常关闭不走这条：那是由「会话清表 → 发送端
+                    // 全部丢弃 → recv 返回 Err」收尾的。
+                    eprintln!("终端 {id} 写入失败，输入通道关闭：{e}");
+                    break;
+                }
+            }
+        })
+        .map_err(|e| format!("启动终端写线程失败：{e}"))?;
     let reader = master
         .try_clone_reader()
         .map_err(|e| format!("获取终端输出通道失败：{e}"))?;
@@ -241,11 +312,13 @@ fn spawn_session(
     drop(slave);
 
     let killer = child.clone_killer();
-    // 会话 id 从 1 起（0 保留，前端可用 0 判断「尚未 spawn」的异常态）
-    let id = state.next_id.fetch_add(1, Ordering::Relaxed) + 1;
+    // pid 也在这里取走存下：portable-pty 返回的是 spawn 时记下的那个值，事后取与
+    // 当时取同值，提前存纯粹是为了让 kill 不必去锁 `child`（见 PtySession.pid）
+    let pid = child.process_id();
     let session = Arc::new(PtySession {
         master: Mutex::new(master),
-        writer: Mutex::new(writer),
+        input,
+        pid,
         child: Mutex::new(child),
         killer: Mutex::new(killer),
     });
@@ -301,22 +374,14 @@ fn spawn_session(
 /// 树击杀，killer.kill 收尾处理伪控制台句柄（进程已死时它只是 no-op）。
 fn kill_session(state: &PtyState, id: u32) -> Result<(), String> {
     let session = get_session(state, id)?;
+    // pid 取 spawn 时存下的那份，**不碰 `child` 锁**（理由见 PtySession.pid 的注释）
     #[cfg(windows)]
-    {
-        if let Some(pid) = session
-            .child
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .process_id()
-        {
-            kill_process_tree(pid);
-        }
+    if let Some(pid) = session.pid {
+        kill_process_tree(pid);
     }
     if let Ok(mut k) = session.killer.lock() {
         let _ = k.kill();
     }
-    #[cfg(not(windows))]
-    let _ = session; // 非 Windows 无杀树兜底，ChildKiller 即全部
     Ok(())
 }
 
@@ -346,14 +411,12 @@ pub fn shutdown_all(app: &AppHandle) {
     }
 }
 
-/// 会话 id 只放行 uuid 形态（hex + 连字符，长度 36）：该值直接拼进
-/// `claude --resume <id>`，非 uuid 内容可能是任意 flag
+/// 会话 id 只放行 uuid 形态：该值直接拼进 `claude --resume <id>` / `--session-id <id>`，
+/// 非 uuid 内容可能是任意 flag。校验直接复用 lib.rs 的 `is_valid_uuid`——**会话 id 的
+/// 格式只能有一处定义**；这里原先另写了一份更松的（只查长度 + hex/连字符，不查位置），
+/// 连「36 个连字符」都放行，与 lib.rs 那份早晚分叉。
 fn validate_session_id(id: &str) -> Result<(), String> {
-    let ok = id.len() == 36
-        && id.bytes().all(|b| {
-            b.is_ascii_digit() || (b'a'..=b'f').contains(&b) || (b'A'..=b'F').contains(&b) || b == b'-'
-        });
-    if ok {
+    if crate::is_valid_uuid(id) {
         Ok(())
     } else {
         Err(format!("非法的会话 id：{id}"))
@@ -383,6 +446,10 @@ mod tests {
         assert!(validate_session_id("3fa85f64-5717-4562-b3fc-2c963f66afa66").is_err());
         // hex 之外的字母不允许（uuid 只含 hex）
         assert!(validate_session_id("3ga85f64-5717-4562-b3fc-2c963f66afa6").is_err());
+        // 连字符**位置**也要对（复用 lib.rs 的 is_valid_uuid）：形状看着像、位置全错的
+        // 串同样拒绝——上面那份更松的实现会放过这两个
+        assert!(validate_session_id("------------------------------------").is_err());
+        assert!(validate_session_id("3fa85f6-45717-4562-b3fc-2c963f66afa6").is_err());
     }
 
     #[test]

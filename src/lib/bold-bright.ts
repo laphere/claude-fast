@@ -39,7 +39,7 @@ const ST = 0x5c; // '\'（OSC 的 ESC \ 收尾）
 
 /** CSI 序列的结束下标（终止字节 0x40-0x7E）；未结束（chunk 被切开）返回 -1；
  *  首字节就不合法返回 -2（当普通字节跳过） */
-function findCsiEnd(b: number[], start: number): number {
+function findCsiEnd(b: Uint8Array, start: number): number {
   for (let i = start + 2; i < b.length; i++) {
     if (b[i] >= 0x40 && b[i] <= 0x7e) return i;
     if (b[i] < 0x20 || b[i] > 0x3f) return -2;
@@ -48,7 +48,7 @@ function findCsiEnd(b: number[], start: number): number {
 }
 
 /** OSC 序列（`ESC ] ... BEL` 或 `ESC ] ... ESC \`）的结束下标；未结束返回 -1 */
-function findOscEnd(b: number[], start: number): number {
+function findOscEnd(b: Uint8Array, start: number): number {
   for (let i = start + 2; i < b.length; i++) {
     if (b[i] === BEL) return i + 1;
     if (b[i] === ESC && b[i + 1] === ST) return i + 2;
@@ -56,60 +56,92 @@ function findOscEnd(b: number[], start: number): number {
   return -1;
 }
 
+/** 补色用的两条常量序列（push 里按引用共享，勿改动内容） */
+const SGR_BRIGHT = new Uint8Array([ESC, CSI, 0x39, 0x37, 0x6d]); // ESC[97m
+const SGR_DEFAULT = new Uint8Array([ESC, CSI, 0x33, 0x39, 0x6d]); // ESC[39m
+
 export function createBoldBrightFilter(): BoldBrightFilter {
   // 终端侧状态（只能从看得见的流里推断）：粗体开着？前景色是默认色？补的 97 还生效？
   let bold = false;
   let fgDefault = true;
   let applied = false;
-  /** 上一个 chunk 末尾没结束的转义序列 */
-  let carry: number[] = [];
+  /** 上一个 chunk 末尾没结束的转义序列（独立拷贝，不引用任何 chunk） */
+  let carry = new Uint8Array(0);
 
   return { push };
 
+  /** 段式改写：不逐字节装箱——只在「补色注入点」处把流切成几段 Uint8Array
+   *  （透传段是 subarray 视图），最后一次性拼接。claude 输出几乎每段都带
+   *  转义序列、快路径基本不触发，逐字节 push 到 number[] 再 from 回来的
+   *  旧实现等于对每个 8KB chunk 做 ~8k 次装箱分配，流式输出期间 GC 压力
+   *  持续不断；现在除最终拼接（有注入时）与残留拷贝外零分配。 */
   function push(chunk: Uint8Array): Uint8Array {
     // 快路径：没有转义序列、也没有半条残留 → 原样返回，不复制
     if (carry.length === 0 && !chunk.includes(ESC)) return chunk;
 
-    const bytes = carry.length ? [...carry, ...chunk] : Array.from(chunk);
-    carry = [];
-    const out: number[] = [];
+    // 有残留才拼一个新缓冲；否则直接在 chunk 上扫（透传段全是它的视图）
+    let bytes: Uint8Array;
+    if (carry.length > 0) {
+      bytes = new Uint8Array(carry.length + chunk.length);
+      bytes.set(carry);
+      bytes.set(chunk, carry.length);
+      carry = new Uint8Array(0);
+    } else {
+      bytes = chunk;
+    }
+    const parts: Uint8Array[] = [];
+    let segStart = 0; // 当前透传段的起点
     let i = 0;
+    let carryFrom = -1; // 从这里起是未结束的转义序列（转存进 carry）
     while (i < bytes.length) {
-      if (bytes[i] !== ESC) {
-        out.push(bytes[i++]);
-        continue;
-      }
-      if (i + 1 >= bytes.length) { carry = bytes.slice(i); break; }
+      if (bytes[i] !== ESC) { i++; continue; }
+      if (i + 1 >= bytes.length) { carryFrom = i; break; }
       const kind = bytes[i + 1];
       if (kind === CSI) {
         const end = findCsiEnd(bytes, i);
-        if (end === -1) { carry = bytes.slice(i); break; }
-        if (end === -2) { out.push(bytes[i++]); continue; }
-        out.push(...bytes.slice(i, end + 1));
-        if (bytes[end] === 0x6d) applySgr(bytes.slice(i + 2, end), out); // 'm'
+        if (end === -1) { carryFrom = i; break; }
+        if (end === -2) { i++; continue; } // 首字节不合法：当普通字节留在透传段
+        if (bytes[end] === 0x6d) {
+          const act = applySgr(bytes.subarray(i + 2, end));
+          if (act !== 0) {
+            emit(bytes.subarray(segStart, end + 1)); // 原序列透传
+            emit(act === 1 ? SGR_BRIGHT : SGR_DEFAULT); // 再补色
+            segStart = end + 1;
+          }
+        }
         i = end + 1;
         continue;
       }
       if (kind === OSC) {
         const end = findOscEnd(bytes, i);
-        if (end === -1) { carry = bytes.slice(i); break; }
-        out.push(...bytes.slice(i, end));
+        if (end === -1) { carryFrom = i; break; }
         i = end;
         continue;
       }
       // 其余 ESC 序列：ESC + 一字节；`ESC ( ) # % * +` 这类带中间字节的再吞一个
       const extra = kind >= 0x20 && kind <= 0x2f ? 2 : 1;
-      if (i + extra >= bytes.length) { carry = bytes.slice(i); break; }
-      out.push(...bytes.slice(i, i + extra + 1));
+      if (i + extra >= bytes.length) { carryFrom = i; break; }
       i += extra + 1;
     }
-    return Uint8Array.from(out);
+    emit(bytes.subarray(segStart, carryFrom < 0 ? bytes.length : carryFrom));
+    if (carryFrom >= 0) carry = bytes.slice(carryFrom); // slice = 拷贝，脱开对 chunk 的引用
+    if (parts.length === 1) return parts[0]; // 无注入：整段（或 chunk 的视图）原样返回
+    const total = parts.reduce((n, p) => n + p.length, 0);
+    const out = new Uint8Array(total);
+    let o = 0;
+    for (const p of parts) { out.set(p, o); o += p.length; }
+    return out;
+
+    function emit(v: Uint8Array): void {
+      parts.push(v);
+    }
   }
 
-  /** 处理一条 SGR（`ESC[<params>m`）：先更新状态，再决定要不要补色。
-   *  补色码追加在该序列**之后**——"同一条序列里既开粗体又给颜色"的情形因此不会被
+  /** 处理一条 SGR（`ESC[<params>m`）：先更新状态，再返回要补的序列：
+   *  1 = 补 ESC[97m，-1 = 补 ESC[39m，0 = 不补。补色码追加在该序列**之后**——
+   *  "同一条序列里既开粗体又给颜色"的情形因此不会被
    *  打乱（那种情况下 fgDefault 已为 false，不会补）。 */
-  function applySgr(paramBytes: number[], out: number[]): void {
+  function applySgr(paramBytes: Uint8Array): number {
     const reset = () => { bold = false; fgDefault = true; applied = false; };
     // 参数写成字符串再切分：真彩色里夹着的 0/1（如 rgb(1,0,0)）必须整段吃掉，
     // 否则会被当成"重置/粗体"，把状态机带偏
@@ -139,7 +171,8 @@ export function createBoldBrightFilter(): BoldBrightFilter {
       // 其余参数（背景色 40-47/48/49、下划线、删除线……）不影响前景色
     }
     const want = bold && fgDefault;
-    if (want && !applied) { out.push(ESC, CSI, 0x39, 0x37, 0x6d); applied = true; } // ESC[97m
-    else if (!want && applied) { out.push(ESC, CSI, 0x33, 0x39, 0x6d); applied = false; } // ESC[39m
+    if (want && !applied) { applied = true; return 1; }
+    if (!want && applied) { applied = false; return -1; }
+    return 0;
   }
 }

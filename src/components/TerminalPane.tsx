@@ -111,7 +111,21 @@ function termTheme() {
  *
  *  用 canvas 实测步进、而不是算 em 比例：浏览器可能有 hinting，实测值才与实际排版
  *  一致。搜索限制在目标字号 ±0.5px 内，字号几乎不变（16 → 15.93，视觉无差）。 */
+const advanceSizeCache = new Map<string, number>();
+
+/** 结果缓存（key = `字体栈@dpr@字号`）：与 alignRowHeight 同理——开每个 tab 都重跑
+ *  一遍上面那 101 次 measureText 扫（每轮还要重新解析一次字体串）纯属浪费，
+ *  输入相同则结果必相同。 */
 function integralAdvanceFontSize(fontFamily: string, dpr: number, want: number): number {
+  const key = `${fontFamily}@${dpr}@${want}`;
+  const hit = advanceSizeCache.get(key);
+  if (hit !== undefined) return hit;
+  const result = computeAdvanceFontSize(fontFamily, dpr, want);
+  advanceSizeCache.set(key, result);
+  return result;
+}
+
+function computeAdvanceFontSize(fontFamily: string, dpr: number, want: number): number {
   try {
     const ctx = document.createElement("canvas").getContext("2d");
     if (!ctx) return want;
@@ -147,6 +161,12 @@ function integralAdvanceFontSize(fontFamily: string, dpr: number, want: number):
 const TERM_FONT_FAMILY =
   '"Cascadia Mono", TermWide, TermWide2, Menlo, Consolas, "PingFang SC", TermCJK, "Microsoft YaHei", monospace';
 
+/** alignRowHeight 的结果缓存（key = `dpr@size`）：结果只由这两个输入决定，
+ *  而 TerminalPane 每次挂载都会调它——不缓存的话同一个 @font-face 会随开关
+ *  tab 无限往 <head> 里堆字节级相同的 <style>。缓存的样式节点随 app 存活、
+ *  全部终端共享（实际上界 = 出现过的 (dpr, 字号) 组合数）。 */
+const rowHeightCache = new Map<string, [string, number]>();
+
 /** 让终端格高与 cmd 相同：xterm 的格高是 floor(ceil(字行盒 × dpr) × lineHeight)，
  *  cmd 那边把同一个值**截断**——dpr 1.5 下两边都是 28.5 设备px，Chromium 得 29、
  *  cmd 得 28，于是每行差 1px。lineHeight 不能 < 1（xterm 直接抛错）、字号也不能动
@@ -155,6 +175,15 @@ const TERM_FONT_FAMILY =
  *  再用 lineHeight 补回 cmd 的高度。两边取值都按 dpr 现算，换 dpr 不会跑偏。
  *  返回 [字体栈, lineHeight]；压不动或压了没生效就原样返回（宁差 1px，不乱补）。 */
 function alignRowHeight(size: number, dpr: number): [string, number] {
+  const key = `${dpr}@${size}`;
+  const hit = rowHeightCache.get(key);
+  if (hit) return hit;
+  const result = computeRowHeight(size, dpr);
+  rowHeightCache.set(key, result);
+  return result;
+}
+
+function computeRowHeight(size: number, dpr: number): [string, number] {
   const ctx = document.createElement("canvas").getContext("2d");
   if (!ctx) return [TERM_FONT_FAMILY, 1];
   const boxOf = (font: string) => {
@@ -195,6 +224,15 @@ export default function TerminalPane({ tab, onStatus, onTitle, probes, killers }
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
+    /* 卸载标志 / 退出标志：**必须声明在本 effect 最前面**。下面 WebGL 那段在挂载时
+     *  就会同步调 attachWebgl()，而它第一句就读 disposed——写在后面会踩 `let` 的 TDZ
+     *  （ReferenceError 直接炸掉整个 effect：终端不 spawn、监听不注册、cleanup 也不
+     *  返回）。凡是「被同步调用的闭包在读」的 effect 级变量，都放这一块里。 */
+    let disposed = false;
+    /** 进程是否已退出。包含「spawn 应答前就秒退、退出事件由 lib/pty 的 earlyExits
+     *  补发」这一路——补发发生在 .then 之前，而 .then 里那句 running 会把刚写好的
+     *  exited 覆盖回去（tab 于是永远显示运行中），故用它把状态钉住。 */
+    let exited = false;
     const dpr = window.devicePixelRatio || 1;
     // 16px 对齐 cmd 窗口的可读性（首版 13px 实测明显偏小）；实际用 15.93——
     // 见 integralAdvanceFontSize：只有让「步进×dpr」落在整数上（14.0 设备px，
@@ -287,15 +325,55 @@ export default function TerminalPane({ tab, onStatus, onTitle, probes, killers }
      *   logo 就出现横竖都有的暗线（实测每 14px 一条、暗 8~19%）。
      * WebGL 渲染器按整数设备像素栅格化并画四边形，配合上面的 fontSize（让格宽/行高
      * 恰好 14×28 设备px，与 cmd 同格）缝就消失。
-     * 失败/上下文丢失时丢弃插件，xterm 自动回落内置 DOM 渲染器（只是缝回来，功能不受影响）。 */
+     * 失败/上下文丢失时丢弃插件，xterm 自动回落内置 DOM 渲染器（只是缝回来，功能不受影响）。
+     *
+     * **每个 tab 都挂**（不是只挂激活的那个）：原计划为了躲 Chromium 每页 ~16 个
+     *  WebGL 上下文的上限而「仅对激活 tab 挂载」，但那个上限实际到不了——终端 tab
+     * 撑死 5 个（多会话并行的目标形态也没到 16），而为省上下文去「只挂激活 tab」要拿
+     * 「每次切 tab 重建上下文 + 字形纹理图集」来换，对一个就是用来切来切去的 tab 条
+     * 不划算。所以维持全挂。
+     *
+     * **会丢，所以要能重挂**：上下文丢失不止「超限」一种原因——GPU 进程崩溃、显卡
+     * 驱动更新、休眠唤醒、远程桌面/切独显都会（这些才是实际会遇到的），而原来一丢就
+     * dispose 掉、**永久**回落 DOM 渲染器（块状字符每 14px 一条暗缝），只能关掉 tab
+     * 重开才能恢复。现在按退避重挂：GPU 回来就自己恢复，回不来就老实待在 DOM 上。 */
     let webgl: WebglAddon | undefined;
-    try {
-      webgl = new WebglAddon();
-      webgl.onContextLoss(() => webgl?.dispose());
-      term.loadAddon(webgl);
-    } catch {
-      /* WebGL2 不可用（软件渲染 / 远程桌面）：保持 DOM 渲染器 */
+    let webglTimer: number | undefined;
+    /** 重挂预算：1s / 5s / 30s 三次，用完即止。
+     *  为什么「用完即止」而不是每次挂成功就重置：GPU 反复抽风时会变成无休止的
+     *  「建-丢」循环。但**不能一刀切不重置**——真正会丢上下文的恰是休眠唤醒、切独显、
+     *  远程桌面、驱动更新这类**低频**事件，一个开一整天的 tab 丢三次之后就永久停在
+     *  DOM 渲染器上（块状字符每 14px 一条暗缝），与「GPU 回来就恢复」自相矛盾。
+     *  所以用「活够久」当判据：挂上后撑过 WEBGL_HEALTHY_MS 再丢的，视为一次新的
+     *  低频事件，预算还回去；只有「建完立刻又丢」那种抽风才会连续耗尽预算。 */
+    const WEBGL_HEALTHY_MS = 60_000;
+    let webglRetries = 0;
+    let webglAttachedAt = 0;
+    const scheduleWebglRetry = () => {
+      if (disposed) return;
+      const ms = [1000, 5000, 30000][webglRetries++];
+      if (ms === undefined) return;
+      webglTimer = window.setTimeout(attachWebgl, ms);
+    };
+    function attachWebgl() {
+      if (disposed || webgl) return;
+      try {
+        const w = new WebglAddon();
+        w.onContextLoss(() => {
+          w.dispose();
+          webgl = undefined;
+          if (Date.now() - webglAttachedAt > WEBGL_HEALTHY_MS) webglRetries = 0; // 活够久 = 真恢复过，预算还回去
+          scheduleWebglRetry();
+        });
+        term.loadAddon(w);
+        webgl = w;
+        webglAttachedAt = Date.now();
+      } catch {
+        // WebGL2 不可用（软件渲染 / 远程桌面）：先待在 DOM 渲染器上，稍后按退避再试
+        scheduleWebglRetry();
+      }
     }
+    attachWebgl();
 
     /* 注册忙/闲探针：宿主右键 tab 时**现算**（不轮询）。最近 1 秒的输出 chunk 数
      * 由 chunkTimesRef 现算，≥8 判忙（见 detectActivity 的判据）。 */
@@ -361,53 +439,85 @@ export default function TerminalPane({ tab, onStatus, onTitle, probes, killers }
       void ptyWrite(id, data);
     };
 
-    let disposed = false;
     let resizeTimer: number | undefined;
     // 布局晚于挂载稳定（字体度量、tab 条撑开等）时补 fit：ResizeObserver 只在
     // 容器尺寸变化时触发，晚到的布局修正不一定伴随尺寸事件，曾致底部行被裁
     const settles = [120, 450].map((ms) => window.setTimeout(refit, ms));
 
-    ptySpawnClaude({
-      cwd: tab.projectPath,
-      resumeSessionId: tab.resumeSessionId,
-      newSessionId: tab.newSessionId,
-      cols: Math.max(term.cols, 2),
-      rows: Math.max(term.rows, 1),
-      onData: (chunk) => {
-        const now = Date.now();
-        const arr = chunkTimesRef.current;
-        arr.push(now);
-        if (arr.length > 16) arr.splice(0, arr.length - 16);
-        // 粗体补色（见 bold-bright.ts）：claude 的裸 ESC[1m 在 cmd/WT 里是"加亮白"，
-        // xterm 这边不补就与正文同色
-        term.write(boldBright.push(chunk));
-      },
-      onExit: (code) => {
-        term.write(`\r\n\x1b[2m── 进程已退出${code !== null ? `（code ${code}）` : ""} ──\x1b[0m\r\n`);
-        onStatusRef.current(tab.id, "exited", code);
-      },
-      // id 一到就接通输入通道并把排队中的输入（多半就是那条 DSR 应答）补发出去，
-      // 不等退出监听注册完成
-      onSpawned: (id) => {
-        if (disposed) return; // 卸载时 cleanup 已经/即将按 ptyIdRef 杀，这里不再接管
-        ptyIdRef.current = id;
-        for (const d of pendingInput) void ptyWrite(id, d);
-        pendingInput.length = 0;
-      },
-    })
-      .then((id) => {
-        if (disposed) {
-          // 挂载后立即被卸载（用户秒关 tab）：进程刚起就杀掉
-          void ptyKill(id);
-          return;
-        }
-        onStatusRef.current(tab.id, "running", null);
-        refit(); // spawn 期间布局可能已稳定出不同尺寸，补一次对齐
+    /* spawn 推迟一个宏任务再发——**dev 下不再双起 claude 的关键**。
+     *  React 18 的 StrictMode 会把挂载 effect 跑两遍：setup → cleanup → setup，且三步
+     *  在同一个 commit 里**同步**走完。若在 setup 里同步就发 spawn，第一遍那个 claude
+     *  已经在飞了：cleanup 取消不掉（invoke 已发出），只能等它回来补杀（见 .then 的
+     *  disposed 分支），于是 dev 下每开一个 tab 白起一个 claude/node（外加一次
+     *  locate_claude 的子进程探测）。推到宏任务后再发：第一遍的定时器已被 cleanup
+     *  清掉，双起消失。生产环境只晚 ~1ms，无感；万一将来 StrictMode 不再同步双跑，
+     *  也只是退回今天的行为（起了再杀），不会更糟。
+     *
+     *  **别改成「用 ref / 模块级 Set 把第二遍的 spawn 挡掉」那种守卫**：StrictMode 的
+     *  第二遍 setup 是**必须**重新 spawn 的——第一遍那个进程已经被 cleanup 判死（id
+     *  还没回来就由 .then 的 disposed 分支补杀，回来了就由 cleanup 直接杀）。挡住第二
+     *  遍 = 这个 tab 在 dev 下彻底没有终端。要真做到「重启挂载不重启进程」，得把 PTY
+     *  会话的所有权从本组件的 effect 提到外面（App 层或模块级注册表，输出通道也要能
+     *  跨挂载重绑），那是另一件事，别顺手改。 */
+    const spawnTimer = window.setTimeout(() => {
+      if (disposed) return;
+      startClaude();
+    }, 0);
+
+    function startClaude() {
+      ptySpawnClaude({
+        cwd: tab.projectPath,
+        resumeSessionId: tab.resumeSessionId,
+        newSessionId: tab.newSessionId,
+        cols: Math.max(term.cols, 2),
+        rows: Math.max(term.rows, 1),
+        onData: (chunk) => {
+          if (disposed) return; // 关 tab 卸载后迟到的输出：term 已 dispose，不能再写
+          const now = Date.now();
+          const arr = chunkTimesRef.current;
+          arr.push(now);
+          if (arr.length > 16) arr.splice(0, arr.length - 16);
+          // 粗体补色（见 bold-bright.ts）：claude 的裸 ESC[1m 在 cmd/WT 里是"加亮白"，
+          // xterm 这边不补就与正文同色
+          term.write(boldBright.push(chunk));
+        },
+        onExit: (code) => {
+          // 迟到的退出事件（卸载触发的 kill → EOF → pty-exit）随卸载丢弃：term 已
+          // dispose 不能再写，tab 也已从清单移除，状态更新是空转
+          if (disposed) return;
+          exited = true;
+          term.write(`\r\n\x1b[2m── 进程已退出${code !== null ? `（code ${code}）` : ""} ──\x1b[0m\r\n`);
+          onStatusRef.current(tab.id, "exited", code);
+        },
+        // id 一到就接通输入通道并把排队中的输入（多半就是那条 DSR 应答）补发出去
+        // （退出监听此刻已注册好——它先于 invoke 注册，这里只抢「id 就位」这一步）
+        onSpawned: (id) => {
+          if (disposed) return; // 卸载时 cleanup 已经/即将按 ptyIdRef 杀，这里不再接管
+          ptyIdRef.current = id;
+          for (const d of pendingInput) void ptyWrite(id, d);
+          pendingInput.length = 0;
+        },
       })
-      .catch((e) => {
-        term.write(`\r\n\x1b[31m终端启动失败：${String(e)}\x1b[0m\r\n`);
-        onStatusRef.current(tab.id, "exited", null);
-      });
+        .then((id) => {
+          if (disposed) {
+            // 挂载后立即被卸载（用户秒关 tab）：进程刚起就杀掉
+            void ptyKill(id);
+            return;
+          }
+          // 已经在 spawn 应答前就退出了（退出事件由 lib/pty 补发、这里已收到）：
+          // 状态必须是 exited，不能被下面那句 running 覆盖
+          if (exited) return;
+          onStatusRef.current(tab.id, "running", null);
+          refit(); // spawn 期间布局可能已稳定出不同尺寸，补一次对齐
+        })
+        .catch((e) => {
+          // 与 onData/onExit 同一条规矩：卸载后到达的回调一律丢弃（term 已 dispose，
+          // 写进去会抛；异常还会逃出这个 catch 变成 unhandled rejection）
+          if (disposed) return;
+          term.write(`\r\n\x1b[31m终端启动失败：${String(e)}\x1b[0m\r\n`);
+          onStatusRef.current(tab.id, "exited", null);
+        });
+    }
 
     term.onData(sendInput);
 
@@ -451,6 +561,10 @@ export default function TerminalPane({ tab, onStatus, onTitle, probes, killers }
         // macOS 不走这条：Finder 复制文件放的是 furl，claude 的 osascript 路径路
         // 本就能读到，故直接发粘贴键（顺带省掉一次 IPC）。
         const path = isMac ? null : await clipboardImagePath();
+        // 这一趟 IPC 期间 tab 可能已被关掉（term 已 dispose）：与 onData/onExit 同一条
+        // 规矩，迟到的回调一律丢弃——term.paste() 打在已 dispose 的终端上会抛，而这个
+        // IIFE 是 void 掉的，异常会变成 unhandled rejection
+        if (disposed) return;
         if (path !== null) {
           // term.paste() 走 term.onData，pty id 未就位时同样会被 sendInput 排队
           term.paste(path);
@@ -477,6 +591,8 @@ export default function TerminalPane({ tab, onStatus, onTitle, probes, killers }
       killers?.current.delete(tab.id);
       settles.forEach((t) => window.clearTimeout(t));
       if (resizeTimer !== undefined) window.clearTimeout(resizeTimer);
+      if (webglTimer !== undefined) window.clearTimeout(webglTimer); // 排着的重挂别再跑（term 即将 dispose）
+      window.clearTimeout(spawnTimer); // 还没发出去的 spawn 直接掐掉（StrictMode 双跑 / 秒关 tab）
       const id = ptyIdRef.current;
       if (id !== null) void ptyKill(id);
       term.dispose();
