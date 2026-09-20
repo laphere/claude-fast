@@ -58,6 +58,51 @@
 1. **便携模式**：exe 所在目录向上（最多 6 级）查找含 `config.json` + `scripts/` 的目录（或旧标记 `claude-claude-fast.bat`）——开发目录、整体移动的文件夹、绿色版走此路径。
 2. **安装模式**：找不到时回退 `%APPDATA%\claude-fast`（macOS `~/Library/Application Support/claude-fast`），首次运行自动创建 `scripts/`。
 
+## Agent SDK 验证结论（2026-09-20 实测）
+
+app 内对话层改用官方 `@anthropic-ai/claude-agent-sdk` 前必须先确认的四条，已全部实测。环境：CLI `2.1.278`（`E:\DevTool\node18-global\node_modules\@anthropic-ai\claude-code\bin\claude.exe`）、SDK `0.3.278`（`claudeCodeVersion` 也标 2.1.278）。探针脚本在系统临时目录 `%TEMP%\plan-probe\`（基线）与 `%TEMP%\sdk-probe\`（SDK 对照），**不属源码库、不随分支提交**。
+
+### 1. `ExitPlanMode` / `AskUserQuestion` 能经 `canUseTool` 下发 —— 开关是 `--permission-prompt-tool stdio`
+
+- 裸 CLI `--print` 下工具表缺 **4 个交互工具**：`ExitPlanMode`、`AskUserQuestion`、`EnterPlanMode`、`DesignSync`。`--allowedTools ExitPlanMode`、`--allowedTools ExitPlanMode,AskUserQuestion`、`--permission-prompts host`、`--dangerously-skip-permissions`、先发 `control_request(initialize)` **都放不回来**；`initialize` 只让工具总数在 24/27/28 之间抖动（MCP 与插件工具加载数量波动所致，与交互工具无关，**别拿工具总数当判据**）。
+- **加 `--permission-prompt-tool stdio` 立即恢复**：同一组参数下 28（无）→ 27（有），`ExitPlanMode` / `AskUserQuestion` / `EnterPlanMode` 三个齐回工具表。
+- **SDK 只要传了 `canUseTool` 就自动补这个 flag**（`sdk.mjs` 的 transport `initialize()`：`if(canUseTool) q.push("--permission-prompt-tool","stdio")`）。实测 SDK 真实 spawn 参数：`--output-format stream-json --verbose --input-format stream-json --permission-prompt-tool stdio --permission-mode plan --include-partial-messages`。
+- 端到端确认：plan 模式下模型调 `ExitPlanMode`，`canUseTool("ExitPlanMode", { plan: "<markdown 方案正文>" })` 确实到达宿主机；`AskUserQuestion` 同样经 `canUseTool` 下发（input 为问题列表）。
+- **结论：方案审批做原生三选一，不再需要 Tauri 那套兜底触发。** 三档均已验证可实现：
+  - 「批准并自动接受编辑」= 在 `canUseTool` 里 `await q.setPermissionMode("acceptEdits")` 再返回 `{behavior:"allow"}`——实测热切成功、同一轮继续执行（19 轮），之后的 `Edit`/`Write` 不再进 `canUseTool`（已被 acceptEdits 自动批准）。⚠️ `PowerShell` 仍会进 `canUseTool`（acceptEdits 只自动批准文件编辑），UI 别承诺「批准后不再打扰」。
+  - 「批准逐个确认」= 直接 `{behavior:"allow"}`，模式不动。
+  - 「继续修改」= `{behavior:"deny", message: "<反馈>"}`。
+- ⚠️ 不过 `canUseTool` 的调用（acceptEdits / 白名单命中等）根本不会到宿主机；要逐工具过策略得用 `PreToolUse` hook。
+
+### 2. 会话落盘、`--resume`、`renameSession` 三者与终端互通
+
+- SDK 会话写**同一份** `~/.claude/projects/<mangled>/<sessionId>.jsonl`：实测 `cwd=C:\Users\laphe\AppData\Local\Temp\sdksess-XXXX` → `~/.claude/projects/C--Users-laphe-AppData-Local-Temp-sdksess-XXXX/<uuid>.jsonl`，与 `mangleProjectPath`（`:` `\` `/` `_` `.` → `-`）一致。
+- `claude --resume <sessionId> -p "…"` 能续 SDK 建的会话：实测上一轮让模型记住暗号 `ORANGE-7788`，resume 后原样答出，`session_id` 不变。
+- `renameSession()` 追加的行与 v2.0.0 的 `rename_session` **键值一致、键序不同、非字节一致**：
+  - SDK/CLI 写的：`{"type":"custom-title","customTitle":"探针标题·中文","sessionId":"afc29ea3-…"}`
+  - v2.0.0（Rust `serde_json::json!`，Cargo.toml 未开 `preserve_order`，键按字母序）：`{"customTitle":"探针标题·中文","sessionId":"afc29ea3-…","type":"custom-title"}`
+  - 两侧读取端都是 JSON 解析（顺序无关），**实际互通**；`electron/backend/sessions.ts` 的 `appendCustomTitle` 与 SDK 输出逐字节相同，可继续沿用。
+
+### 3. `settingSources` 默认值 —— **不传**才对得上终端
+
+- **不传**：SDK 不加 `--setting-sources`，CLI 用自身默认（user + project + local）——实测加载到用户的 `settings.json`（`ANTHROPIC_MODEL` 生效，模型就是终端那个）与项目 `CLAUDE.md`，能正常认证。
+- **传 `['user','project','local']`**：等于不传，只是显式加了 `--setting-sources=user,project,local`。
+- **传 `[]`（SDK isolation mode）**：SDK 加 `--setting-sources=`，**连认证一起丢**——实测报 `Not logged in · Please run /login`，模型回退成 `claude-opus-5[1m]`。**不要传 `[]`**。
+- ⚠️ **但「不传 settingSources」还不够**：SDK 默认会把 `--permission-mode default` 显式传给 CLI，**CLI 的 flag 压过 settings 的 `permissions.defaultMode`**。实测项目 `.claude/settings.json` 写 `permissions.defaultMode: "plan"`，SDK 默认起会话仍是 `default`。要复刻 v2.0.0「继承 settings 的 defaultMode」必须传**未出现在 `sdk.d.ts` 里的内部选项** `resolvePermissionModeInCli: true`（此时 SDK 不传该 flag，实测 `init.permissionMode` 变成 `plan`，`ExitPlanMode` 也随之进入工具表）；或自己用 SDK 导出的 `resolveSettings()` + `filterEscalatingDefaultMode()` 算好初始档位再显式传入。
+
+### 4. 打包：ESM 与 asar 两处必须处理，**真机打包未验**
+
+已验证的机制（本机 Node 22.22.2 + 项目 `tools/build-electron.mjs` 的 esbuild 配置）：
+
+- **不能把 SDK 打进主进程 bundle**。实测 `bundle:true / format:cjs / target:node20` 编译 1.6MB 产物「构建成功」但**载入即抛 `ERR_INVALID_ARG_VALUE`**——esbuild 把 `import.meta.url` 降级成占位对象，SDK 靠它定位平台原生二进制。→ esbuild 必须 `external: ["electron", "@anthropic-ai/claude-agent-sdk"]`。
+- **动态 `import()` 是稳妥写法**：external 后静态 import 会被编译成 `require("@anthropic-ai/claude-agent-sdk")`，在 Node 22 上靠 `require(esm)` 侥幸跑通（实测真实 query 成功、工具数 27），但这取决于运行时 Node 版本；动态 import 产物保留真 `import(...)`，实测同样跑通。
+- SDK 自带 CLI：`node_modules/@anthropic-ai/claude-agent-sdk-win32-x64/claude.exe`（237MB，与全局那份同版本）。`pathToClaudeCodeExecutable` 的指向实测：
+  - npm shim `E:\DevTool\node18-global\claude`（无扩展名 bash 脚本）→ 失败（`exists but failed to launch`）
+  - `…\claude.cmd` → 失败（`spawn EINVAL`，SDK 不启 shell）
+  - **`…\node_modules\@anthropic-ai\claude-code\bin\claude.exe` → 成功**，且模型/配置与终端一致（`model = deepseek-v4.1-flash[1m]`，即用户 settings 里的值）。→ 「跟随本机 Claude Code」要指到 `bin\claude.exe`，并保留「找不到就回退 SDK 自带」的分支。
+- asar：现有 electron-builder 配置（`files: ["dist/**","dist-electron/**"]`）会把生产依赖的 `node_modules` **打进** `app.asar`（实测解析 `release/win-unpacked/resources/app.asar` 头部，含 `node_modules/`），且未配 `asarUnpack`，`resources/` 下没有 `app.asar.unpacked`。SDK 的平台包（含 237MB `claude.exe`）必须 `asarUnpack`，或用上面的 `pathToClaudeCodeExecutable` 指到 app 包外。
+- **未验**：本机 `node_modules` 未装 `electron`（只有 61 个顶层包），所以「electron-builder 产物里真跑通 SDK」这条本轮**验不了**，留到打包阶段；同理「asar 内 spawn 必然失败」是 Electron 已知限制，本轮未在真实 Electron 运行时复现。
+
 ## 铁律
 
 - **绝不删除数据根的 `config.json` / `.bak`**——用户收藏在这里。`saveConfig` 三步保护：写临时文件 → 旧文件备份为 `.bak` → 原子替换；`loadConfig` 读主文件失败时自动从 `.bak` 回退。
