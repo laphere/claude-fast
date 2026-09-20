@@ -11,7 +11,8 @@
 | `src/` | 前端：React + TypeScript + Vite。`App.tsx` 状态管理；`src/components/` 15 个 UI 组件（对话框/列表/会话查看器等）；`src/lib/api.ts` 封装全部 preload 桥调用（`window.claudeFast`） |
 | `electron/main.ts` | Electron 主进程：窗口 / 托盘 / 单实例 / 关闭拦截 / 全部 IPC 命令注册 |
 | `electron/preload.ts` | `contextBridge` 白名单 API（渲染进程无 Node 权限，全部经 `ipcRenderer.invoke`） |
-| `electron/backend/` | 后端业务模块：`paths.ts`（数据根定位/内容校验/进程内缓存 + 项目目录）、`config.ts`（配置模型 + 三步保护 + 读改写 + 写串行化）、`mangle.ts`（目录名正反解析）、`sessions.ts`（会话列表/元数据/内容解析/重命名）、`trash.ts`（回收站）、`platform.ts`（启动/健康检查/resume/批量扫描/旧脚本迁移）、`scriptnames.ts`（脚本时代遗留，仅 `platform.ts` 引用它）、`text.ts`（标题清洗） |
+| `electron/backend/` | 后端业务模块：`paths.ts`（数据根定位/内容校验/进程内缓存 + 项目目录）、`config.ts`（配置模型 + 三步保护 + 读改写 + 写串行化）、`chat.ts`（**app 内对话层**：官方 Agent SDK 托管 + 流式事件翻译 + 多会话/权限/方案/提问/图片）、`provider.ts`（供应商切换，含 CC Switch SQL 导入）、`model-fetch.ts`（供应商模型列表拉取）、`usage-query.ts`（Coding Plan 用量）、`claude-update.ts`（本机 claude 版本检查与升级）、`usage-stats.ts`（全局用量台账）、`session-extra.ts`（会话搜索/进度轨/导出/失效项目数据清除/置顶清单）、`mangle.ts`（目录名正反解析）、`sessions.ts`（会话列表/元数据/内容解析/重命名）、`trash.ts`（回收站）、`platform.ts`（启动/健康检查/resume/批量扫描/旧脚本迁移）、`scriptnames.ts`（脚本时代遗留，仅 `platform.ts` 引用它）、`text.ts`（标题清洗） |
+| `electron/backend/chat.ts` | **对话层不用移植 `v2.0.0` 的 `chat.rs`**，改用官方 `@anthropic-ai/claude-agent-sdk`（0.3.278，与 CLI 2.1.278 同版）。运行时**动态 `import()`**（ESM-first，见下方「打包」），`import type` 拿类型（编译期擦除）。要点：懒启动、多会话并行、6 档权限（`manual`→CLI 的 `default`）、`canUseTool` 权限/方案/提问、`interrupt()` 中断、图片 base64（≤4.5MB）、`pathToClaudeCodeExecutable` 跟随本机 `bin\claude.exe` |
 | `tools/` | 构建脚本：`dev.mjs`（并行 vite + electron）、`build-electron.mjs`（esbuild 编译主进程） |
 | `build/` | 打包图标（icon.ico / icon.png / icon.icns） |
 | `README.md` | 使用说明、构建方法 |
@@ -123,6 +124,9 @@ app 内对话层改用官方 `@anthropic-ai/claude-agent-sdk` 前必须先确认
 - **渲染进程零 Node 权限**：新增后端能力时，在 `electron/main.ts` 注册 IPC handler + `electron/preload.ts` 白名单 API + `src/lib/electron-api.d.ts` 类型声明三处同步；不得在渲染层开 `nodeIntegration` 或放宽 contextIsolation。
 - ⚠️ **生产渲染层以 file:// 加载**：`vite.config.ts` 的 `base: './'` 是前提（默认 `/` 时资源 404 白屏），勿删。
 - ⚠️ **打包必须走 `npm run dist:*`**（= `npm run build` + electron-builder）：主进程由 esbuild 编译为 `dist-electron/*.cjs`，未构建直接 `electron .` 会找不到模块。
+- ⚠️ **Agent SDK 的两条打包约束**（都是实测踩出来的，改打包配置时别看漏）：
+  1. **`tools/build-electron.mjs` 必须把 `@anthropic-ai/claude-agent-sdk` 放在 `external`**：SDK 是 ESM-first，打进 CJS bundle 会让 esbuild 把 `import.meta.url` 降级成占位对象，而 SDK 靠它定位平台原生二进制——产物一载入就抛 `ERR_INVALID_ARG_VALUE`。对话层因此用运行时动态 `await import()`。
+  2. **`package.json` 的 `build.asarUnpack` 必须解包 SDK 的平台包**（`**/node_modules/@anthropic-ai/claude-agent-sdk*/**`）：它带着 237MB 的 `claude.exe`，而 asar 内的可执行文件**没法 spawn**（Electron 的 fs 能读 asar，`child_process` 要真实路径）。安装包因此会比以前大约 250MB。
 
 ## 开发命令
 
