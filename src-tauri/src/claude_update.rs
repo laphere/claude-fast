@@ -112,7 +112,7 @@ fn probe_local() -> Result<(String, PathBuf), String> {
 /// 定位命令行实际命中的 claude 可执行：Windows 用 `where claude`
 /// （过滤 Microsoft Store 的 App Execution Alias，防止误启动商店），
 /// macOS/Linux 用 `command -v`。
-fn locate_claude() -> Option<PathBuf> {
+pub(crate) fn locate_claude() -> Option<PathBuf> {
     #[cfg(windows)]
     let mut cmd = {
         let mut c = Command::new("where");

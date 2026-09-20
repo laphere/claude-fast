@@ -99,6 +99,9 @@ export const api = {
   // ---------- 会话管理 ----------
   listSessions: (projectPath: string) =>
     invoke<SessionInfo[]>("list_sessions", { projectPath }),
+  /** 单个会话的显示标题（按会话 id 定位文件，取法与列表一致）；文件还没出现返回 null */
+  sessionTitleFor: (projectPath: string, sessionId: string) =>
+    invoke<string | null>("session_title_for", { projectPath, sessionId }),
   /** 置顶会话清单（跨项目聚合；后端按 config 顺序实时解析元数据，失效文件自动跳过） */
   listPinnedSessions: () =>
     invoke<PinnedSessionInfo[]>("list_pinned_sessions"),
