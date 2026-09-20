@@ -232,7 +232,13 @@ export function listSessions(projectsDir: string, projectPath: string): SessionI
 }
 
 /** 校验会话文件路径：必须位于 Claude Code 项目目录下、名称为 <uuid>.jsonl。
- *  返回解析后的绝对路径与 session id。 */
+ *  返回解析后的绝对路径与 session id。
+ *
+ *  两道判断，顺序不能反：
+ *  ① **词法**作用域（`path.relative`）——挡住 `..`，且不碰文件系统，越界路径能给出准确报错；
+ *  ② **canonicalize** 后的作用域——词法比较挡不住「目录里有符号链接指到外面」，
+ *     realpath 之后才是真实落点。文件不存在时 realpath 失败即拒绝（本函数服务于
+ *     重命名/删除，文件本就必须存在）。 */
 export function validateSessionFile(
   file: string,
   projectsDir: string,
@@ -244,10 +250,22 @@ export function validateSessionFile(
   if (!isValidUuid(sessionId)) throw new Error("非法会话文件");
   // 组件级前缀比较（对齐 Rust Path::starts_with，非字符串前缀）
   const rel = path.relative(projectsDir, p);
-  if (rel.startsWith("..") || path.isAbsolute(rel)) {
+  if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel)) {
     throw new Error("会话文件不在 Claude Code 目录中");
   }
-  return { path: p, sessionId };
+  let real: string;
+  let realDir: string;
+  try {
+    real = fs.realpathSync(p);
+    realDir = fs.realpathSync(projectsDir);
+  } catch {
+    throw new Error("会话文件不存在");
+  }
+  const realRel = path.relative(realDir, real);
+  if (realRel === "" || realRel.startsWith("..") || path.isAbsolute(realRel)) {
+    throw new Error("会话文件不在 Claude Code 目录中");
+  }
+  return { path: real, sessionId };
 }
 
 /** 向会话 jsonl 追加 custom-title 行（与 Claude Code CLI 的 /rename 同机制，

@@ -24,6 +24,7 @@
     "dist:mac": "npm run build && electron-builder --mac"
   },
   "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.278",
     "dompurify": "^3.4.13",
     "marked": "^18.0.9",
     "react": "^18.3.1",
@@ -54,15 +55,26 @@
       "dist/**",
       "dist-electron/**"
     ],
+    "asarUnpack": [
+      "**/node_modules/@anthropic-ai/claude-agent-sdk*/**"
+    ],
     "extraResources": [
-      { "from": "build/icon.png", "to": "icon.png" },
-      { "from": "build/128x128@2x.png", "to": "icon128.png" }
+      {
+        "from": "build/icon.png",
+        "to": "icon.png"
+      },
+      {
+        "from": "build/128x128@2x.png",
+        "to": "icon128.png"
+      }
     ],
     "win": {
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "icon": "build/icon.ico"
@@ -73,7 +85,10 @@
       "allowToChangeInstallationDirectory": true,
       "installerIcon": "build/icon.ico",
       "uninstallerIcon": "build/icon.ico",
-      "installerLanguages": ["zh_CN", "en_US"],
+      "installerLanguages": [
+        "zh_CN",
+        "en_US"
+      ],
       "displayLanguageSelector": true,
       "artifactName": "Claude助手_${version}_x64-setup.${ext}"
     },
@@ -81,7 +96,10 @@
       "target": [
         {
           "target": "dmg",
-          "arch": ["x64", "arm64"]
+          "arch": [
+            "x64",
+            "arm64"
+          ]
         }
       ],
       "icon": "build/icon.icns",

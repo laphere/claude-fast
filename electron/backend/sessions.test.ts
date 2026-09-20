@@ -194,15 +194,23 @@ describe("validateSessionFile", () => {
   it("uuid.jsonl 通过并返回 id", () => {
     const file = path.join(projects, "D--demo", UUID + ".jsonl");
     fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, sampleHead());
     expect(validateSessionFile(file, projects).sessionId).toBe(UUID);
   });
 
   it("非 uuid / 非 jsonl / 越界路径拒绝", () => {
     expect(() => validateSessionFile(path.join(projects, "abc.jsonl"), projects)).toThrow();
     expect(() => validateSessionFile(path.join(projects, UUID), projects)).toThrow();
+    // 越界路径走**词法**作用域就拦下（不必碰文件系统，报错也更准）
     expect(() => validateSessionFile(path.join(tmp, UUID + ".jsonl"), projects)).toThrow(
       "会话文件不在 Claude Code 目录中",
     );
+  });
+
+  it("目录内的 uuid.jsonl 但文件不存在 → 拒绝（realpath 兜底要求文件真实存在）", () => {
+    const file = path.join(projects, "D--demo", UUID + ".jsonl");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    expect(() => validateSessionFile(file, projects)).toThrow("会话文件不存在");
   });
 });
 

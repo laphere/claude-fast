@@ -119,7 +119,10 @@ export function listTrashedSessionsIn(
 }
 
 /** 校验回收站备份文件路径：必须位于数据根 trash/sessions/ 下、名称为 <uuid>.jsonl。
- *  返回 (path, sessionId, mangled 项目目录名)。 */
+ *  返回 (path, sessionId, mangled 项目目录名)。
+ *
+ *  同 `validateSessionFile`：先词法作用域（不碰文件系统、报错准确），再 canonicalize
+ *  作用域（挡住指向外部的符号链接）；备份文件不存在时 realpath 失败即拒绝。 */
 export function validateTrashFile(
   file: string,
   root: string,
@@ -131,13 +134,25 @@ export function validateTrashFile(
   if (!isValidUuid(sessionId)) throw new Error("非法备份文件");
   const trashRoot = path.join(root, "trash", "sessions");
   const rel = path.relative(trashRoot, p);
-  if (rel.startsWith("..") || path.isAbsolute(rel)) {
+  if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel)) {
+    throw new Error("备份文件不在回收站中");
+  }
+  let real: string;
+  let realRoot: string;
+  try {
+    real = fs.realpathSync(p);
+    realRoot = fs.realpathSync(trashRoot);
+  } catch {
+    throw new Error("备份文件不存在");
+  }
+  const realRel = path.relative(realRoot, real);
+  if (realRel === "" || realRel.startsWith("..") || path.isAbsolute(realRel)) {
     throw new Error("备份文件不在回收站中");
   }
   // 备份路径结构：trash/sessions/<ts>/<mangled>/<uuid>.jsonl
-  const mangled = path.basename(path.dirname(p));
+  const mangled = path.basename(path.dirname(real));
   if (!mangled) throw new Error("非法备份文件");
-  return { path: p, sessionId, mangled };
+  return { path: real, sessionId, mangled };
 }
 
 /** 恢复会话的核心逻辑：移回 projects_root/<mangled>/。返回恢复后的路径。 */

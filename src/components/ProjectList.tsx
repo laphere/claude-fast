@@ -1,10 +1,12 @@
 import { useCallback, useState } from "react";
 import type { DragEvent } from "react";
 import type { Project, SessionInfo } from "../types";
+import { ChatIcon, FolderIcon, MoreIcon, PinIcon } from "./Icons";
 
 interface Props {
   items: Project[];
-  favorites: string[];
+  /** 已置顶会话的文件集合：置顶会话不在项目列表里重复显示 */
+  pinnedFiles: Set<string>;
   selectedKey: string | null;
   /** 当前展开会话列表的项目 key */
   expandedKey: string | null;
@@ -13,17 +15,18 @@ interface Props {
   /** 各项目的会话缓存：undefined = 未加载；null = 加载中；数组 = 已加载 */
   sessionsByKey: Record<string, SessionInfo[] | null | undefined>;
   onSelect: (key: string) => void;
-  onLaunch: (key: string) => void;
-  onToggleFav: (key: string) => void;
-  /** 收藏项拖拽排序：把 draggedKey 移动到 targetKey 之前/之后 */
-  onReorderFavorite: (draggedKey: string, targetKey: string, before: boolean) => void;
+  /** 全局拖拽排序：把 draggedKey 移动到 targetKey 之前/之后 */
+  onReorder: (draggedKey: string, targetKey: string, before: boolean) => void;
+  onTogglePin: (key: string, session: SessionInfo) => void;
   /** 是否启用拖拽排序（搜索过滤期间禁用） */
   dragEnabled: boolean;
   onToggleExpand: (key: string) => void;
-  onRenameSession: (key: string, session: SessionInfo) => void;
-  onDeleteSession: (key: string, session: SessionInfo) => void;
-  onOpenSession: (key: string, session: SessionInfo) => void;
-  onResumeSession: (key: string, session: SessionInfo) => void;
+  /** 会话行右键菜单（终端继续/重命名/置顶/删除收进菜单，行上不放按钮挤占标题宽度） */
+  onSessionContextMenu: (x: number, y: number, key: string, session: SessionInfo) => void;
+  /** app 内新开对话 */
+  onChatProject: (key: string) => void;
+  /** app 内继续已有会话（点击会话行 = 直接进入对话） */
+  onChatSession: (key: string, session: SessionInfo) => void;
   onContextMenu: (x: number, y: number, key: string) => void;
 }
 
@@ -41,26 +44,24 @@ function formatTime(ms: number): string {
 
 export default function ProjectList({
   items,
-  favorites,
+  pinnedFiles,
   selectedKey,
   expandedKey,
   activeSessionFile,
   sessionsByKey,
   onSelect,
-  onLaunch,
-  onToggleFav,
-  onReorderFavorite,
+  onReorder,
+  onTogglePin,
   dragEnabled,
   onToggleExpand,
-  onRenameSession,
-  onDeleteSession,
-  onOpenSession,
-  onResumeSession,
+  onSessionContextMenu,
+  onChatProject,
+  onChatSession,
   onContextMenu,
 }: Props) {
-  // ---------- 收藏拖拽排序（仅临时视觉状态，顺序真源在 App 的 favorites 数组）----------
+  // ---------- 全局拖拽排序（仅临时视觉状态，顺序真源在 App 的 order 数组）----------
 
-  /** 正在拖拽的收藏项 key */
+  /** 正在拖拽的项目 key */
   const [dragKey, setDragKey] = useState<string | null>(null);
   /** 悬停目标行 key */
   const [overKey, setOverKey] = useState<string | null>(null);
@@ -79,13 +80,9 @@ export default function ProjectList({
     setDragKey(key);
   };
 
-  const handleDragOver = (
-    e: DragEvent<HTMLDivElement>,
-    key: string,
-    isFav: boolean,
-  ) => {
-    if (!dragKey || !isFav) return; // 不 preventDefault → 此处不可放置（浏览器显示禁用光标）
-    e.preventDefault();
+  const handleDragOver = (e: DragEvent<HTMLDivElement>, key: string) => {
+    if (!dragKey) return;
+    e.preventDefault(); // 任意行都是合法目标
     e.dataTransfer.dropEffect = "move";
     const r = e.currentTarget.getBoundingClientRect();
     const pos = e.clientY < r.top + r.height / 2 ? "above" : "below";
@@ -100,27 +97,31 @@ export default function ProjectList({
     setOverKey(null);
   };
 
-  const handleDrop = (
-    e: DragEvent<HTMLDivElement>,
-    key: string,
-    isFav: boolean,
-  ) => {
-    if (!dragKey || !isFav) return;
+  const handleDrop = (e: DragEvent<HTMLDivElement>, key: string) => {
+    if (!dragKey) return;
     e.preventDefault();
     e.stopPropagation();
     const r = e.currentTarget.getBoundingClientRect();
     const before = e.clientY < r.top + r.height / 2; // 从事件重算，不依赖 state
     const dragged = dragKey;
     clearDragState();
-    onReorderFavorite(dragged, key, before);
+    onReorder(dragged, key, before);
   };
 
   if (items.length === 0) {
+    // 搜索中（dragEnabled=false 即搜索期）与「真的没有项目」是两种空态
+    const searching = !dragEnabled;
     return (
       <div className="empty">
-        <div className="empty-icon">🗂</div>
-        <div>没有找到匹配的项目</div>
-        <div className="empty-sub">点击「批量添加」扫描 Claude Code 项目，或「新建」手动添加</div>
+        <div className="empty-icon">
+          <FolderIcon size={34} />
+        </div>
+        <div>{searching ? "没有找到匹配的项目" : "还没有项目"}</div>
+        <div className="empty-sub">
+          {searching
+            ? "换个关键词试试，或清空搜索查看全部项目"
+            : "点击「批量添加」扫描 Claude Code 项目，或「新建」手动添加"}
+        </div>
       </div>
     );
   }
@@ -128,26 +129,27 @@ export default function ProjectList({
   return (
     <div className="list">
       {items.map((l) => {
-        const isFav = favorites.includes(l.key);
-        const canDrag = dragEnabled && isFav;
         const showDrop = overKey === l.key && l.key !== dragKey;
         const isSelected = l.key === selectedKey;
         const isExpanded = l.key === expandedKey;
         const sessions = sessionsByKey[l.key];
+        // 置顶会话不在项目里重复显示（置顶区单独列出）
+        const visibleSessions =
+          sessions?.filter((s) => !pinnedFiles.has(s.file)) ?? null;
         return (
           <div key={l.key} className={`row-wrap ${isExpanded ? "expanded" : ""}`}>
             <div
               className={`row ${isSelected ? "selected" : ""} ${
                 l.healthy === false ? "broken" : ""
-              } ${isFav ? "row-fav" : ""} ${l.key === dragKey ? "dragging" : ""} ${
+              } ${dragEnabled ? "row-draggable" : ""} ${l.key === dragKey ? "dragging" : ""} ${
                 showDrop ? (overPos === "above" ? "drop-above" : "drop-below") : ""
               }`}
-              draggable={canDrag}
+              draggable={dragEnabled}
               onDragStart={(e) => handleDragStart(e, l.key)}
               onDragEnd={clearDragState}
-              onDragOver={(e) => handleDragOver(e, l.key, isFav)}
+              onDragOver={(e) => handleDragOver(e, l.key)}
               onDragLeave={(e) => handleDragLeave(e, l.key)}
-              onDrop={(e) => handleDrop(e, l.key, isFav)}
+              onDrop={(e) => handleDrop(e, l.key)}
               onClick={() => {
                 onSelect(l.key);
                 onToggleExpand(l.key);
@@ -158,16 +160,6 @@ export default function ProjectList({
                 onContextMenu(e.clientX, e.clientY, l.key);
               }}
             >
-              <button
-                className={`star ${isFav ? "star-on" : ""}`}
-                title={isFav ? "取消收藏" : "收藏（置顶）"}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onToggleFav(l.key);
-                }}
-              >
-                ★
-              </button>
               <div className="row-body" title="展开/收起会话列表">
                 <div className="row-label">
                   {l.name}
@@ -178,6 +170,16 @@ export default function ProjectList({
               {l.healthy !== false && (
                 <div className="row-actions">
                   <button
+                    className="row-icon row-icon-chat"
+                    title="app 内对话（新建会话）"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onChatProject(l.key);
+                    }}
+                  >
+                    <ChatIcon size={15} />
+                  </button>
+                  <button
                     className="row-icon row-icon-more"
                     title="更多操作（与右键菜单相同）"
                     onClick={(e) => {
@@ -186,17 +188,7 @@ export default function ProjectList({
                       onContextMenu(e.clientX, e.clientY, l.key);
                     }}
                   >
-                    ⋯
-                  </button>
-                  <button
-                    className="row-icon row-icon-add"
-                    title="启动 Claude Code（新建会话）"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onLaunch(l.key);
-                    }}
-                  >
-                    +
+                    <MoreIcon size={15} />
                   </button>
                 </div>
               )}
@@ -209,16 +201,35 @@ export default function ProjectList({
                   <div className="session-empty">
                     暂无会话（Claude Code 未在本项目启动过）
                   </div>
+                ) : visibleSessions && visibleSessions.length === 0 ? (
+                  <div className="session-empty">会话已全部置顶（见顶部置顶会话）</div>
                 ) : (
-                  sessions.map((s) => (
+                  visibleSessions!.map((s) => (
                     <div
                       key={s.sessionId}
                       className={`session-row ${
                         s.file === activeSessionFile ? "active" : ""
                       }`}
-                      onClick={() => onOpenSession(l.key, s)}
-                      title="点击查看会话内容"
+                      onClick={() => onChatSession(l.key, s)}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        onSessionContextMenu(e.clientX, e.clientY, l.key, s);
+                      }}
+                      title={[s.title, s.summary, "点击在 app 内继续对话 · 右键更多操作"]
+                        .filter(Boolean)
+                        .join("\n")}
                     >
+                      <button
+                        className="session-pin"
+                        title="置顶（在顶部聚合区常驻显示）"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onTogglePin(l.key, s);
+                        }}
+                      >
+                        <PinIcon />
+                      </button>
                       <div className="session-body">
                         <div className="session-title">{s.title}</div>
                         <div className="session-meta">
@@ -226,36 +237,6 @@ export default function ProjectList({
                           {s.summary && ` · ${s.summary}`}
                         </div>
                       </div>
-                      <button
-                        className="session-rename session-resume"
-                        title="继续对话（resume）"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onResumeSession(l.key, s);
-                        }}
-                      >
-                        ▶
-                      </button>
-                      <button
-                        className="session-rename session-edit"
-                        title="重命名会话"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onRenameSession(l.key, s);
-                        }}
-                      >
-                        <span className="session-edit-icon">✏</span>
-                      </button>
-                      <button
-                        className="session-rename session-del"
-                        title="删除会话（移入回收站，可恢复）"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onDeleteSession(l.key, s);
-                        }}
-                      >
-                        🗑
-                      </button>
                     </div>
                   ))
                 )}

@@ -7,7 +7,11 @@ const common = {
   platform: "node",
   format: "cjs",
   target: "node20",
-  external: ["electron"],
+  // ⚠️ @anthropic-ai/claude-agent-sdk 必须 external：它是 ESM-first，
+  // 打进 CJS bundle 会让 esbuild 把 `import.meta.url` 降级成占位对象，
+  // 而 SDK 靠它定位平台原生二进制 → 产物一载入就抛 ERR_INVALID_ARG_VALUE
+  // （2026-09-20 实测）。对话层因此在运行时用动态 `await import()` 访问它。
+  external: ["electron", "@anthropic-ai/claude-agent-sdk"],
   sourcemap: false,
   logLevel: "info",
   outdir: "dist-electron",

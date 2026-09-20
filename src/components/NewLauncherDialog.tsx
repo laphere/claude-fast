@@ -15,10 +15,11 @@ export default function NewLauncherDialog({ onClose, onCreated }: Props) {
 
   const browse = async () => {
     const picked = await api.pickFolder("选择项目文件夹");
-    if (picked) setDir(picked);
+    if (typeof picked === "string") setDir(picked);
   };
 
   const submit = async () => {
+    if (busy) return; // Enter 键直调 submit，不经按钮的 disabled
     const d = dir.trim().replace(/^"+|"+$/g, "");
     if (!d) {
       setError("请输入或选择项目文件夹路径。");

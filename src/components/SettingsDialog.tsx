@@ -76,7 +76,7 @@ export default function SettingsDialog({ closeAction, onClose, onSave }: Props) 
               onChange={(e) => toggleAutoStart(e.target.checked)}
               style={{ marginRight: 8 }}
             />
-            <span style={{ fontWeight: 500 }}>登录系统后自动启动 Claude助手</span>
+            <span style={{ fontWeight: 500 }}>登录系统后自动启动 CC Desktop</span>
             <div style={{ fontSize: 12, opacity: 0.7, marginTop: 4, paddingLeft: 24 }}>
               {autoBusy
                 ? "正在设置…"
@@ -113,12 +113,12 @@ export default function SettingsDialog({ closeAction, onClose, onSave }: Props) 
           </div>
         </label>
       ))}
-      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+      <div className="form-actions">
         <button className="btn" onClick={onClose}>
           取消
         </button>
         <button
-          className="btn primary"
+          className="btn btn-primary"
           disabled={saving}
           onClick={async () => {
             setSaving(true);

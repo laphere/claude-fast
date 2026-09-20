@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "../lib/api";
 import type { TrashedSession } from "../types";
 import Modal from "./Modal";
+import { TrashIcon } from "./Icons";
 
 interface Props {
   onClose: () => void;
@@ -10,10 +11,15 @@ interface Props {
   onToast: (msg: string) => void;
 }
 
-/** 删除时间 YYYYMMDD_HHMMSS → YYYY-MM-DD HH:MM */
+/** 删除时间目录名（后端按 UTC 生成：YYYYMMDD_HHMMSS）→ 本地时间 YYYY-MM-DD HH:MM。
+ *  裸时间戳无时区标记，必须按 UTC 解析再转本地时区，否则东八区显示会差 8 小时 */
 function formatDeletedAt(ts: string): string {
   if (ts.length < 15) return ts;
-  return `${ts.slice(0, 4)}-${ts.slice(4, 6)}-${ts.slice(6, 8)} ${ts.slice(9, 11)}:${ts.slice(11, 13)}`;
+  const num = (i: number, n = 2) => Number(ts.slice(i, i + n));
+  const d = new Date(Date.UTC(num(0, 4), num(4) - 1, num(6), num(9), num(11), num(13)));
+  if (Number.isNaN(d.getTime())) return ts;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 /** 回收站：删除的会话备份在这里，可恢复或永久删除（永久删除需行内二次确认） */
@@ -58,6 +64,9 @@ export default function TrashDialog({ onClose, onChanged, onToast }: Props) {
     try {
       await api.purgeSession(item.file);
       onToast(`已永久删除会话「${item.title}」`);
+      // 彻底删除后后端会 prune 掉失效置顶条目（改的是磁盘 config），
+      // 宿主必须重新读盘同步置顶清单真源，否则下次保存会把死条目写回
+      onChanged();
       await load();
     } catch (e) {
       onToast("删除失败：" + String(e));
@@ -72,6 +81,7 @@ export default function TrashDialog({ onClose, onChanged, onToast }: Props) {
       const count = await api.purgeTrash();
       onToast(`已清空回收站（${count} 个会话已彻底删除）`);
       setConfirmPurgeAll(false);
+      onChanged(); // 同上：清空同样会 prune 失效置顶条目
       await load();
     } catch (e) {
       onToast("清空失败：" + String(e));
@@ -86,7 +96,9 @@ export default function TrashDialog({ onClose, onChanged, onToast }: Props) {
           <div className="session-empty">加载中…</div>
         ) : items.length === 0 ? (
           <div className="trash-empty">
-            <div className="empty-icon">🗑</div>
+            <div className="empty-icon">
+              <TrashIcon size={34} />
+            </div>
             <div>回收站是空的</div>
             <div className="empty-sub">删除的会话会移到这里，可随时恢复</div>
           </div>

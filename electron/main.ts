@@ -1,15 +1,20 @@
 // Electron 主进程：窗口 / 托盘 / 单实例 / 关闭拦截 / 全部 IPC 命令
-// （对齐原 Tauri 后端 lib.rs 的 run() + 22 个 commands）
+// （对齐 v2.0.0 后端 lib.rs 的 commands 面；对话层改用官方 Agent SDK，见 backend/chat.ts）
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Tray } from "electron";
+import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import {
   dropPinsForProjects,
   mutateConfig,
   loadConfig,
+  pruneDeadPins,
   updateConfig,
   type ConfigPatch,
 } from "./backend/config";
+import { ChatManager, defaultPermissionMode } from "./backend/chat";
+import { claudeRunUpgrade, claudeUpdateStatus } from "./backend/claude-update";
+import { fetchModels } from "./backend/model-fetch";
 import {
   addProject,
   checkClaude,
@@ -24,6 +29,18 @@ import {
   scriptsDirOf,
 } from "./backend/platform";
 import {
+  claudeConfigDir,
+  openUrl,
+  providerDeleteFrom,
+  providerImportCcswitchFrom,
+  providerListFrom,
+  providerQueryUsageFrom,
+  providerReadLiveFrom,
+  providerReorderFrom,
+  providerSaveFrom,
+  providerSwitchFrom,
+} from "./backend/provider";
+import {
   claudeProjectsDir,
   resolveRootDir,
   type RootResolution,
@@ -35,6 +52,13 @@ import {
   validateSessionFile,
 } from "./backend/sessions";
 import {
+  exportSession,
+  getSessionUserPrompts,
+  listPinnedSessions,
+  purgeClaudeProjectData,
+  searchSessionMessages,
+} from "./backend/session-extra";
+import {
   deleteSessionFile,
   listTrashedSessionsIn,
   purgeSessionBackup,
@@ -42,6 +66,7 @@ import {
   restoreTrashedFile,
   validateTrashFile,
 } from "./backend/trash";
+import { getUsageStats } from "./backend/usage-stats";
 import type { IpcContract } from "./ipc-contract";
 
 const DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL ?? "http://127.0.0.1:1420";
@@ -68,6 +93,17 @@ function projectsDir(): string {
 function trashRootDir(): string {
   return path.join(rootDir(), "trash", "sessions");
 }
+
+// ---------------- 对话层：ChathManager + 事件定向推送 ----------------
+
+/** 会话 id → 渲染层 token。事件只发给发起该会话的窗口/标签（多 tab 并行的 Divergence 防线） */
+const chatTokens = new Map<string, string>();
+
+const chatManager = new ChatManager((sessionId, event) => {
+  const token = chatTokens.get(sessionId);
+  if (!token || !mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.webContents.send(`chat:event:${token}`, event);
+});
 
 // ---------------- IPC 包装：后端抛错统一转为字符串（对齐 Tauri Err(String)） ----------------
 
@@ -181,9 +217,9 @@ function createWindow(): void {
   const { app: appIconPath } = appIcon();
   mainWindow = new BrowserWindow({
     title: "Claude助手",
-    width: 920,
-    height: 660,
-    minWidth: 680,
+    width: 1120,
+    height: 720,
+    minWidth: 800,
     minHeight: 500,
     center: true,
     resizable: true,
@@ -208,6 +244,13 @@ function createWindow(): void {
     mainWindow = null;
   });
 
+  // 窗口获得焦点（替代 Tauri 的 onFocusChanged）：终端里跑完 claude 回来、
+  // 托盘/单实例唤起时前端自动刷新会话列表
+  mainWindow.on("focus", () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    mainWindow.webContents.send("window:focused");
+  });
+
   // 防拖拽文件/链接导致页面导航（保持 HTML5 拖拽排序可用），并禁止弹新窗口
   mainWindow.webContents.on("will-navigate", (e) => e.preventDefault());
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
@@ -222,6 +265,16 @@ function createWindow(): void {
 
 // ---------------- IPC 注册 ----------------
 
+/** 把前端传来的过滤器整成 Electron 的 filters（`[{name, extensions}]`） */
+function toDialogFilters(
+  raw: { name: string; extensions: string[] }[] | undefined,
+): { name: string; extensions: string[] }[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((f) => f && typeof f.name === "string" && Array.isArray(f.extensions))
+    .map((f) => ({ name: f.name, extensions: f.extensions.map(String) }));
+}
+
 function registerIpc(): void {
   // ---------- 项目清单（去脚本化） ----------
   handle("list_projects", () =>
@@ -230,13 +283,12 @@ function registerIpc(): void {
   // 只覆盖 payload 里出现过的键，其余从磁盘读回——从参数重建会清掉未传字段
   handle("save_config", (p) => {
     const patch: ConfigPatch = {};
-    if (p.favorites !== undefined) patch.favorites = (p.favorites ?? []).map(String);
     if (p.order !== undefined) patch.order = (p.order ?? []).map(String);
+    if (p.pinnedSessions !== undefined) patch.pinnedSessions = p.pinnedSessions;
     if (p.projects !== undefined) patch.projects = (p.projects ?? []).map(String);
     if (p.excluded !== undefined) patch.excluded = (p.excluded ?? []).map(String);
     if (p.dark !== undefined) patch.dark = p.dark === true;
     if (p.closeAction !== undefined) patch.closeAction = p.closeAction;
-    if (p.pinnedSessions !== undefined) patch.pinnedSessions = p.pinnedSessions;
     return updateConfig(rootDir(), patch);
   });
   handle("add_project", (p) =>
@@ -262,17 +314,27 @@ function registerIpc(): void {
   handle("launch_project", (p) => launchProject(String(p.path)));
   handle("open_folder", (p) => openFolder(String(p.path)));
   handle("check_claude", () => checkClaude());
+  handle("claude_update_status", () => claudeUpdateStatus());
+  handle("claude_run_upgrade", () => claudeRunUpgrade());
   handle("check_projects", (p) =>
     checkLaunchers(Array.isArray(p.paths) ? p.paths.map(String) : []));
 
   // ---------- 批量添加 ----------
   handle("scan_claude_projects", () => scanClaudeProjects(projectsDir()));
   handle("get_claude_projects_dir", () => projectsDir());
+  handle("purge_claude_project_data", async (p) => {
+    const paths = Array.isArray(p.paths) ? p.paths.map(String) : [];
+    const removed = purgeClaudeProjectData(paths, projectsDir());
+    // 项目数据没了，其置顶会话条目必须一并撤掉（否则置顶区留下孤儿条目）
+    await mutateConfig(rootDir(), (cfg) => dropPinsForProjects(cfg, paths));
+    return removed;
+  });
 
   // ---------- 会话管理 ----------
   handle("list_sessions", (p) => listSessions(projectsDir(), String(p.projectPath)));
-  handle("rename_session", (p) =>
-    renameSession(String(p.file), String(p.newTitle), projectsDir()));
+  handle("list_pinned_sessions", () =>
+    listPinnedSessions(projectsDir(), loadConfig(rootDir()).pinnedSessions));
+  handle("rename_session", (p) => renameSession(String(p.file), String(p.newTitle), projectsDir()));
   handle("delete_session", (p) => {
     // 校验（限 projects 目录下 uuid.jsonl）后移入回收站（先备份再删除）
     const { path: fp } = validateSessionFile(String(p.file), projectsDir());
@@ -283,12 +345,83 @@ function registerIpc(): void {
     const { path: fp } = validateTrashFile(String(p.file), rootDir());
     return restoreTrashedFile(fp, projectsDir());
   });
-  handle("purge_session", (p) => purgeSessionBackup(String(p.file), rootDir()));
-  handle("purge_trash", () => purgeTrashIn(trashRootDir()));
+  handle("purge_session", async (p) => {
+    purgeSessionBackup(String(p.file), rootDir());
+    // 彻底删除后清掉会话文件已不存在的置顶条目（进回收站的删除不清，等恢复）
+    await mutateConfig(rootDir(), (cfg) => pruneDeadPins(cfg));
+  });
+  handle("purge_trash", async () => {
+    const n = purgeTrashIn(trashRootDir());
+    await mutateConfig(rootDir(), (cfg) => pruneDeadPins(cfg));
+    return n;
+  });
   handle("get_session_messages", (p) =>
     getSessionMessages(String(p.file), projectsDir(), toInt(p.offset)));
+  handle("search_session_messages", (p) =>
+    searchSessionMessages(String(p.file), String(p.keyword), projectsDir()));
+  handle("get_session_user_prompts", (p) => getSessionUserPrompts(String(p.file), projectsDir()));
+  handle("export_session", (p) =>
+    exportSession(String(p.file), String(p.destPath), String(p.format), projectsDir()));
   handle("resume_session", (p) =>
     resumeSession(String(p.file), String(p.projectPath), projectsDir()));
+
+  // ---------- app 内对话（官方 Agent SDK 托管） ----------
+  handle("chat_default_permission_mode", (p) => defaultPermissionMode(String(p.projectPath)));
+  handle("chat_start", (p) => {
+    const sessionFile = p.sessionFile ? String(p.sessionFile) : null;
+    // 续聊用 jsonl 文件名（去掉扩展名）当 CLI 会话 id；新对话自己生成一个 uuid
+    const resumeId = sessionFile ? path.basename(sessionFile).replace(/\.jsonl$/i, "") : undefined;
+    const sessionId = resumeId ?? crypto.randomUUID();
+    chatTokens.set(sessionId, String(p.token));
+    chatManager.start(sessionId, {
+      projectPath: String(p.projectPath),
+      resumeId,
+      // null = 跟随 settings.json 的 defaultMode（不传 --permission-mode）
+      initialMode: p.permissionMode ?? undefined,
+    });
+    return sessionId;
+  });
+  handle("chat_send", (p) =>
+    chatManager.send(String(p.sessionId), p.text === null ? null : String(p.text), p.images ?? []));
+  handle("chat_interrupt", (p) => chatManager.interrupt(String(p.sessionId)));
+  handle("chat_set_permission_mode", (p) =>
+    chatManager.setPermissionMode(String(p.sessionId), p.mode));
+  handle("chat_permission_response", (p) =>
+    chatManager.respondToPermission(
+      String(p.sessionId),
+      String(p.requestId),
+      p.allow
+        ? { kind: "allow", answers: p.answers, response: p.response }
+        : { kind: "deny", message: p.denyMessage ?? "用户拒绝了该操作" },
+    ));
+  handle("chat_close", (p) => {
+    const sid = String(p.sessionId);
+    chatTokens.delete(sid);
+    chatManager.close(sid);
+  });
+
+  // ---------- 供应商切换 ----------
+  handle("provider_list", () => providerListFrom(claudeConfigDir(), rootDir()));
+  handle("provider_save", (p) =>
+    providerSaveFrom(claudeConfigDir(), rootDir(), p.provider as never));
+  handle("provider_delete", (p) => providerDeleteFrom(claudeConfigDir(), rootDir(), String(p.id)));
+  handle("provider_reorder", (p) =>
+    providerReorderFrom(claudeConfigDir(), rootDir(), Array.isArray(p.ids) ? p.ids.map(String) : []));
+  handle("provider_switch", (p) => providerSwitchFrom(claudeConfigDir(), rootDir(), String(p.id)));
+  handle("provider_import_ccswitch", (p) =>
+    providerImportCcswitchFrom(rootDir(), String(p.filePath)));
+  handle("provider_read_live", () => providerReadLiveFrom(claudeConfigDir()));
+  handle("fetch_models_for_config", (p) => fetchModels(String(p.baseUrl), String(p.apiKey)));
+  handle("provider_query_usage", (p) => providerQueryUsageFrom(rootDir(), String(p.id)));
+  handle("open_url", (p) => openUrl(String(p.url)));
+
+  // ---------- 使用统计 ----------
+  handle("get_usage_stats", (p) =>
+    getUsageStats({
+      tzOffsetMinutes: toInt(p.tzOffsetMinutes) ?? 0,
+      projectsDir: projectsDir(),
+      dataRoot: rootDir(),
+    }));
 
   // ---------- 其他 ----------
   handle("get_data_root", () => {
@@ -317,11 +450,29 @@ function registerIpc(): void {
   handle("pick_folder", async (p) => {
     if (!mainWindow) return null;
     const r = await dialog.showOpenDialog(mainWindow, {
-      title: typeof p.title === "string" && p.title !== "" ? p.title : "选择项目文件夹",
+      title: typeof p.title === "string" && p.title !== "" ? p.title : "选择文件夹",
       properties: ["openDirectory", "dontAddToRecent"],
       buttonLabel: "选择此文件夹",
     });
     return r.canceled || r.filePaths.length === 0 ? null : r.filePaths[0];
+  });
+  handle("pick_file", async (p) => {
+    if (!mainWindow) return null;
+    const r = await dialog.showOpenDialog(mainWindow, {
+      title: typeof p.title === "string" && p.title !== "" ? p.title : "选择文件",
+      properties: ["openFile", "dontAddToRecent"],
+      filters: toDialogFilters(p.filters),
+    });
+    return r.canceled || r.filePaths.length === 0 ? null : r.filePaths[0];
+  });
+  handle("save_file", async (p) => {
+    if (!mainWindow) return null;
+    const r = await dialog.showSaveDialog(mainWindow, {
+      title: typeof p.title === "string" && p.title !== "" ? p.title : "另存为",
+      defaultPath: typeof p.defaultPath === "string" ? p.defaultPath : undefined,
+      filters: toDialogFilters(p.filters),
+    });
+    return r.canceled || !r.filePath ? null : r.filePath;
   });
   handle("window_hide", () => {
     mainWindow?.hide();
@@ -370,6 +521,8 @@ if (!gotSingleInstanceLock) {
 
   app.on("before-quit", () => {
     quitting = true;
+    // 退出前优雅关掉全部对话子进程（关 stdin，超时强杀由 ChatManager 内部处理）
+    chatManager.closeAll();
   });
 
   app.on("window-all-closed", () => {

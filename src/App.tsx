@@ -1,9 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./lib/api";
-import type { CloseAction, Project, SessionInfo } from "./types";
+import type {
+  CloseAction,
+  PinnedSession,
+  PinnedSessionInfo,
+  Project,
+  ProviderListState,
+  SessionInfo,
+} from "./types";
 import Header from "./components/Header";
-import Toolbar from "./components/Toolbar";
+import { MessageCircleIcon, SearchIcon, XIcon } from "./components/Icons";
 import ProjectList from "./components/ProjectList";
+import PinnedSessions from "./components/PinnedSessions";
 import StatusBar from "./components/StatusBar";
 import ContextMenu from "./components/ContextMenu";
 import NewLauncherDialog from "./components/NewLauncherDialog";
@@ -14,9 +22,25 @@ import SettingsDialog from "./components/SettingsDialog";
 import CloseChoiceDialog from "./components/CloseChoiceDialog";
 import RenameDialog from "./components/RenameDialog";
 import TrashDialog from "./components/TrashDialog";
-import SessionViewer from "./components/SessionViewer";
+import StatsDialog from "./components/StatsDialog";
+import ProviderDialog from "./components/ProviderDialog";
+import ChatView from "./components/ChatView";
+import ChatTabs from "./components/ChatTabs";
+import SessionContextMenu from "./components/SessionContextMenu";
 
 export type DialogKind = "new" | "batch" | "health" | null;
+
+/** 会话进行中 = 正在启动/思考中（"关闭其他会话"时跳过这类 tab） */
+function isBusyPhase(phase: string | undefined): boolean {
+  return phase === "thinking" || phase === "starting";
+}
+
+/** 窗口过窄自动收起左栏的阈值（40px 迟滞带防边界抖动）：
+ *  <980 收起——980-360(左栏)=620px 内容区，再窄会话内容/查看器局促，
+ *  收起后同宽度内容区大幅放宽；>1020 恢复。只恢复「被自动收起」的，
+ *  用户手动收起/展开的意图不被 resize 覆盖 */
+const SIDEBAR_COLLAPSE_BELOW = 980;
+const SIDEBAR_EXPAND_ABOVE = 1020;
 
 interface ConfirmState {
   title: string;
@@ -30,9 +54,23 @@ export default function App() {
   const [items, setItems] = useState<Project[]>([]);
   const [projectDirs, setProjectDirs] = useState<string[]>([]);
   const [excludedDirs, setExcludedDirs] = useState<string[]>([]);
-  const [favorites, setFavorites] = useState<string[]>([]);
+  const [order, setOrder] = useState<string[]>([]);
   const [dark, setDark] = useState(false);
   const [search, setSearch] = useState("");
+  /** 左栏搜索框是否展开（搜索入口收进了顶栏「搜索」按钮） */
+  const [searchOpen, setSearchOpen] = useState(false);
+  /** 左栏项目列表是否收起（收起后内容区占满全宽，仅内存态不落盘） */
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  /** 当前收起是否由「窗口过窄自动收起」触发（决定拉宽后要不要自动恢复） */
+  const autoCollapsedRef = useRef(false);
+  const sidebarCollapsedRef = useRef(sidebarCollapsed);
+  sidebarCollapsedRef.current = sidebarCollapsed;
+
+  /** 顶栏开关：手动切换即接管（自动收起标记清除，后续 resize 不再干预） */
+  const toggleSidebar = useCallback(() => {
+    setSidebarCollapsed((c) => !c);
+    autoCollapsedRef.current = false;
+  }, []);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [menu, setMenu] = useState<{ x: number; y: number; key: string } | null>(null);
   const [dialog, setDialog] = useState<DialogKind>(null);
@@ -43,21 +81,52 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [closeChoiceOpen, setCloseChoiceOpen] = useState(false);
   const [trashOpen, setTrashOpen] = useState(false);
-  // ---------- 会话管理（v2.0.0 阶段一） ----------
+  const [statsOpen, setStatsOpen] = useState(false);
+  // ---------- 供应商切换 ----------
+  const [providerState, setProviderState] = useState<ProviderListState | null>(null);
+  const [providerOpen, setProviderOpen] = useState(false);
+  // ---------- 会话管理 ----------
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
   const [sessionsByKey, setSessionsByKey] = useState<
     Record<string, SessionInfo[] | null | undefined>
   >({});
+  /** 置顶清单（config 真源，顺序即展示顺序） */
+  const [pinnedSessions, setPinnedSessions] = useState<PinnedSession[]>([]);
+  /** 置顶区展示数据：后端按清单实时解析的元数据（文件缺失的条目会被后端跳过） */
+  const [pinnedMeta, setPinnedMeta] = useState<PinnedSessionInfo[]>([]);
   const [renameTarget, setRenameTarget] = useState<{
     session: SessionInfo;
     key: string;
   } | null>(null);
-  // ---------- 会话内容（v2.0.0 阶段二） ----------
-  const [activeSession, setActiveSession] = useState<{
-    session: SessionInfo;
+  /** 会话行右键菜单（终端继续/重命名/置顶/删除） */
+  const [sessionMenu, setSessionMenu] = useState<{
+    x: number;
+    y: number;
     key: string;
-    projectPath: string | null;
+    session: SessionInfo;
   } | null>(null);
+  // ---------- app 内直接对话（多会话 tab 并行） ----------
+  const [chats, setChats] = useState<
+    Array<{
+      /** tab 唯一 id */
+      id: string;
+      projectPath: string;
+      title: string;
+      /** null = 新对话 */
+      session: SessionInfo | null;
+      /** 所属项目 key（关闭 tab 时刷新会话列表用） */
+      key: string;
+    }>
+  >([]);
+  const [activeChatId, setActiveChatId] = useState<string | null>(null);
+  /** 各 tab 的对话状态（思考中给 tab 打点） */
+  const [chatStatus, setChatStatus] = useState<Record<string, string>>({});
+  const nextChatTabId = useRef(`chat-1`);
+  const newChatTabId = () => {
+    const id = nextChatTabId.current;
+    nextChatTabId.current = `chat-${Number(id.slice(5)) + 1}`;
+    return id;
+  };
   const closeActionRef = useRef<CloseAction>(null);
   closeActionRef.current = closeAction;
 
@@ -66,6 +135,7 @@ export default function App() {
   // 拦截关闭：minimize → 隐藏到托盘；null（未设置）→ 弹窗询问；quit → 直接退出
   useEffect(() => {
     // 主进程拦截 close 后转发 window:close-requested，这里按当前设置分发
+    // （Electron 侧已经 preventDefault，渲染层只需决定「怎么办」）
     return api.onCloseRequested(async () => {
       const action = closeActionRef.current;
       if (action === "quit") {
@@ -81,20 +151,33 @@ export default function App() {
     });
   }, []);
 
+  // ---------- Toast ----------
+
+  const toastTimerRef = useRef<number | null>(null);
+  const showToast = useCallback((msg: string, duration = 2500) => {
+    // 清掉上一个计时器：否则连续 toast 时，前一条的定时器会提前清掉后一条
+    if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current);
+    setToast(msg);
+    toastTimerRef.current = window.setTimeout(() => {
+      toastTimerRef.current = null;
+      setToast(null);
+    }, duration);
+  }, []);
+
   const handleCloseChoice = useCallback(
     async (action: "quit" | "minimize", remember: boolean) => {
       setCloseChoiceOpen(false);
       if (remember) {
+        // 先落盘再改内存态：写失败时内存不领先磁盘
+        try {
+          await api.saveConfig(order, pinnedSessions, projectDirs, excludedDirs, dark, action);
+        } catch (e) {
+          // 失败必须留在窗口内报错：窗口一隐藏/退出，提示再没机会被看到，
+          // 用户会以为选择已记住。保持打开，可重试或去掉「记住」再关。
+          showToast("保存关闭行为失败：" + String(e));
+          return;
+        }
         setCloseAction(action);
-        await api
-          .saveConfig({
-            favorites,
-            projects: projectDirs,
-            excluded: excludedDirs,
-            dark,
-            closeAction: action,
-          })
-          .catch(() => {});
       }
       if (action === "minimize") {
         await api.hideWindow();
@@ -102,115 +185,176 @@ export default function App() {
         await api.quitApp();
       }
     },
-    [favorites, dark],
+    [order, pinnedSessions, projectDirs, excludedDirs, dark, showToast],
   );
 
   // ---------- 数据加载 ----------
 
+  /** load 竞态守卫：上一次 load 的回包可能晚于本次，过期结果不得覆盖新状态 */
+  const loadSeqRef = useRef(0);
+
   const load = useCallback(async () => {
+    const seq = ++loadSeqRef.current;
     try {
       const [list, cfg] = await Promise.all([api.listProjects(), api.loadConfig()]);
+      if (seq !== loadSeqRef.current) return;
       setItems(list);
-      setFavorites(cfg.favorites ?? []);
+      setOrder(cfg.order ?? []);
+      setPinnedSessions(cfg.pinnedSessions ?? []);
       setProjectDirs(cfg.projects ?? []);
       setExcludedDirs(cfg.excluded ?? []);
       setDark(cfg.dark ?? false);
       setCloseAction(cfg.closeAction ?? null);
       // 选中项可能已被删除，清理
       setSelectedKey((k) => (k && list.some((l) => l.key === k) ? k : null));
-      // 健康检查在后台异步执行（不阻塞列表渲染）；
-      // 路径不存在的结果回来后自动标记失效。
-      api
-        .checkProjects(list.map((l) => l.path))
-        .then((results) => {
-          setItems((prev) =>
-            prev.map((l, i) => ({ ...l, healthy: results[i] ?? false })),
-          );
-        })
-        .catch(() => {});
     } catch (e) {
       showToast("加载失败：" + String(e));
+    }
+  }, [showToast]);
+
+  /** 重新拉取置顶区数据（置顶/取消、重命名、删除、回收站恢复或清空后调用）。
+   *  后端按 config 清单实时解析元数据，已不存在的会话文件会被跳过。 */
+  const refreshPinned = useCallback(async () => {
+    try {
+      setPinnedMeta(await api.listPinnedSessions());
+    } catch {
+      // 拉取失败不打断主流程，置顶区保持上一次结果
     }
   }, []);
 
   useEffect(() => {
     load();
+    refreshPinned();
     api.checkClaude().then(setClaudeOk).catch(() => setClaudeOk(false));
-    // 安装模式首次启动：提示数据目录位置（scripts/config 实际存储处）
+    // 供应商清单（首次调用会把 live 配置收编为 default 供应商）；失败不阻塞主流程
+    api.providerList().then(setProviderState).catch(() => {});
+    // 安装模式首次启动：提示数据目录位置（config/台账/回收站实际存储处）
     api
       .getDataRoot()
       .then((info) => {
         if (info.installMode && !localStorage.getItem("cf-data-tip")) {
           localStorage.setItem("cf-data-tip", "1");
-          setToast(`数据目录：${info.path}（启动脚本 scripts/ 与收藏保存在此）`);
-          window.setTimeout(() => setToast(null), 5000);
+          showToast(`数据目录：${info.path}（项目清单与置顶会话保存在此）`, 5000);
         }
       })
       .catch(() => {});
-  }, [load]);
+  }, [load, refreshPinned]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = dark ? "dark" : "light";
   }, [dark]);
 
-  // ---------- Toast ----------
-
-  const showToast = useCallback((msg: string) => {
-    setToast(msg);
-    window.setTimeout(() => setToast(null), 2500);
-  }, []);
-
-  // ---------- 收藏 / 主题 ----------
-
+  // ---------- 配置持久化 / 主题 ----------
   const persistConfig = useCallback(
-    async (favs: string[], d: boolean, ca?: CloseAction) => {
+    async (
+      ord: string[],
+      pins: PinnedSession[],
+      d: boolean,
+      ca?: CloseAction,
+    ): Promise<boolean> => {
       try {
-        await api.saveConfig({
-          favorites: favs,
-          projects: projectDirs,
-          excluded: excludedDirs,
-          dark: d,
-          closeAction: ca === undefined ? closeAction : ca,
-        });
+        await api.saveConfig(
+          ord,
+          pins,
+          projectDirs,
+          excludedDirs,
+          d,
+          ca === undefined ? closeAction : ca,
+        );
+        return true;
       } catch (e) {
         showToast("保存配置失败：" + String(e));
+        return false;
       }
     },
     [showToast, closeAction, projectDirs, excludedDirs],
   );
 
-  const toggleFav = useCallback(
-    async (key: string) => {
-      const next = favorites.includes(key)
-        ? favorites.filter((f) => f !== key)
-        : [...favorites, key];
-      setFavorites(next);
-      await persistConfig(next, dark);
-    },
-    [favorites, dark, persistConfig],
-  );
-
-  /** 收藏拖拽排序：按 key 重排（非索引），对过滤/失效 key 天然安全 */
-  const reorderFavorites = useCallback(
-    async (draggedKey: string, targetKey: string, before: boolean) => {
-      if (draggedKey === targetKey) return;
-      if (!favorites.includes(draggedKey) || !favorites.includes(targetKey))
-        return;
-      const next = favorites.filter((k) => k !== draggedKey);
-      const to = next.indexOf(targetKey);
-      next.splice(before ? to : to + 1, 0, draggedKey);
-      if (next.every((k, i) => k === favorites[i])) return; // 位置未变，免写盘
-      setFavorites(next);
-      await persistConfig(next, dark);
-    },
-    [favorites, dark, persistConfig],
-  );
-
   const toggleTheme = useCallback(async () => {
     const next = !dark;
     setDark(next);
-    await persistConfig(favorites, next);
-  }, [dark, favorites, persistConfig]);
+    await persistConfig(order, pinnedSessions, next);
+  }, [dark, order, pinnedSessions, persistConfig]);
+
+  // ---------- 列表派生数据 ----------
+
+  /** 当前整条项目序列：order 收录项 + 其余按名称追加在后。
+   *  这样「拖一次」之后所有项目都有显式顺序，之后的排序不受名称影响。 */
+  const fullOrder = useCallback(() => {
+    const known = new Set(order);
+    return [
+      ...order,
+      ...items
+        .filter((l) => !known.has(l.key))
+        .sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"))
+        .map((l) => l.key),
+    ];
+  }, [order, items]);
+
+  /** 全局拖拽排序：把 draggedKey 插到 targetKey 之前/之后，整表落盘 */
+  const reorder = useCallback(
+    async (draggedKey: string, targetKey: string, before: boolean) => {
+      if (draggedKey === targetKey) return;
+      const base = fullOrder();
+      if (!base.includes(draggedKey) || !base.includes(targetKey)) return;
+      const next = base.filter((k) => k !== draggedKey);
+      const to = next.indexOf(targetKey);
+      next.splice(before ? to : to + 1, 0, draggedKey);
+      if (next.every((k, i) => k === base[i])) return; // 位置未变，免写盘
+      setOrder(next);
+      await persistConfig(next, pinnedSessions, dark);
+    },
+    [fullOrder, pinnedSessions, dark, persistConfig],
+  );
+
+  /** 右键「移到最前」：与拖拽同一套全序列语义，省去从列表底部拖到顶部 */
+  const moveTop = useCallback(
+    async (l: Project) => {
+      const base = fullOrder();
+      if (!base.includes(l.key)) return;
+      if (base[0] === l.key) {
+        showToast(`${l.name} 已经在最前`);
+        return;
+      }
+      const next = [l.key, ...base.filter((k) => k !== l.key)];
+      setOrder(next);
+      await persistConfig(next, pinnedSessions, dark);
+      showToast(`已把 ${l.name} 移到最前`);
+    },
+    [fullOrder, pinnedSessions, dark, persistConfig, showToast],
+  );
+
+  // ---------- 会话置顶（全局聚合区） ----------
+
+  const pinnedFiles = useMemo(
+    () => new Set(pinnedSessions.map((p) => p.file)),
+    [pinnedSessions],
+  );
+
+  /** 置顶 / 取消置顶。新置顶插在最前（置顶区不支持拖拽排序，顺序即置顶时间倒序） */
+  const togglePin = useCallback(
+    async (projectPath: string, session: SessionInfo) => {
+      const pinned = pinnedSessions.some((p) => p.file === session.file);
+      const next = pinned
+        ? pinnedSessions.filter((p) => p.file !== session.file)
+        : [{ file: session.file, projectPath }, ...pinnedSessions];
+      setPinnedSessions(next);
+      if (pinned) {
+        // 立刻从置顶区移除，避免等待后端往返
+        setPinnedMeta((prev) => prev.filter((s) => s.file !== session.file));
+      }
+      if (!(await persistConfig(order, next, dark))) {
+        // 落盘失败必须回滚：否则该会话被 pinnedFiles 从项目列表滤掉、又不在置顶区，
+        // 等于凭空消失。回到磁盘实际状态即可。
+        setPinnedSessions(pinnedSessions);
+        await refreshPinned();
+        return;
+      }
+      await refreshPinned();
+      showToast(pinned ? "已取消置顶" : "已置顶（见顶部置顶会话）");
+    },
+    [pinnedSessions, order, dark, persistConfig, refreshPinned, showToast],
+  );
 
   // ---------- 列表派生数据 ----------
 
@@ -222,18 +366,27 @@ export default function App() {
         l.name.toLowerCase().includes(q) ||
         l.path.toLowerCase().includes(q),
     );
-    // 收藏组按 favorites 数组顺序渲染（拖拽排序的真源；合并列表原始顺序与此无关）
+    // 按 order 数组顺序渲染（未收录的新项目按名称追加在后）
     const byKey = new Map(filtered.map((l) => [l.key, l]));
-    const fav = favorites
+    const knownKeys = new Set(order);
+    const known = order
       .map((k) => byKey.get(k))
       .filter((l): l is Project => !!l);
     const rest = filtered
-      .filter((l) => !favorites.includes(l.key))
+      .filter((l) => !knownKeys.has(l.key))
       .sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN"));
-    return [...fav, ...rest];
-  }, [items, favorites, search]);
+    return [...known, ...rest];
+  }, [items, order, search]);
 
   const missing = items.filter((l) => l.healthy === false);
+
+  // ---------- 搜索 ----------
+
+  /** 顶栏「搜索」按钮：展开左栏搜索框并聚焦；再次点击收起并清空关键词 */
+  const toggleSearch = useCallback(() => {
+    if (searchOpen) setSearch("");
+    setSearchOpen(!searchOpen);
+  }, [searchOpen]);
 
   // ---------- 操作 ----------
 
@@ -287,15 +440,41 @@ export default function App() {
         showToast("移除失败：" + String(e));
         return;
       }
-      const favs = favorites.filter((f) => f !== l.key);
-      if (favs.length !== favorites.length) {
-        setFavorites(favs);
-        await persistConfig(favs, dark);
+      // 排序去该项目、撤该项目置顶会话都由后端 remove_project 持久化完成，
+      // 此处严禁再用本地（过期）projectDirs/excludedDirs 走 persistConfig——
+      // 会把后端刚写入的排除清单覆盖回旧值，导致被移除的项目被扫描加回来。
+      // load() 会从磁盘带回新的 order / pinnedSessions / excluded。
+      // 展开态/会话缓存/该项目已打开的对话 tab 也要清：重新添加同一路径时不带旧数据复活
+      setExpandedKey((k) => (k === l.key ? null : k));
+      setSessionsByKey((prev) => {
+        if (!(l.key in prev)) return prev;
+        const next = { ...prev };
+        delete next[l.key];
+        return next;
+      });
+      // 该项目的对话 tab 直接移除（ChatView unmount 会优雅关闭托管进程），激活相邻 tab
+      const removedChatIds = new Set(
+        chats.filter((c) => c.key === l.key).map((c) => c.id),
+      );
+      if (removedChatIds.size > 0) {
+        const rest = chats.filter((c) => !removedChatIds.has(c.id));
+        setChats(rest);
+        setActiveChatId((cur) =>
+          cur !== null && removedChatIds.has(cur)
+            ? rest[rest.length - 1]?.id ?? null
+            : cur,
+        );
+        setChatStatus((prev) => {
+          const copy = { ...prev };
+          removedChatIds.forEach((id) => delete copy[id]);
+          return copy;
+        });
       }
+      await refreshPinned();
       await load();
       showToast(`已从列表移除 ${l.name}`);
     },
-    [favorites, dark, persistConfig, load, showToast],
+    [refreshPinned, load, showToast, chats],
   );
 
   const confirmRemove = useCallback(
@@ -311,7 +490,7 @@ export default function App() {
     [removeProject],
   );
 
-  // ---------- 会话管理（v2.0.0 阶段一） ----------
+  // ---------- 会话管理 ----------
 
   const toggleExpand = useCallback(
     async (key: string) => {
@@ -343,6 +522,13 @@ export default function App() {
       const { session, key } = renameTarget;
       await api.renameSession(session.file, newTitle); // 失败时向上抛给对话框显示
       setRenameTarget(null);
+      // 该会话已开着对话 tab 时同步 tab 标题与其 session，否则标签/头部停留在旧标题
+      setChats((prev) =>
+        prev.map((c) => {
+          if (!c.session || c.session.file !== session.file) return c;
+          return { ...c, session: { ...c.session, title: newTitle }, title: newTitle };
+        }),
+      );
       // 重命名后刷新该项目会话列表（若仍处于展开状态）
       if (expandedKey === key) {
         const l = items.find((x) => x.key === key);
@@ -351,9 +537,10 @@ export default function App() {
           if (list) setSessionsByKey((prev) => ({ ...prev, [key]: list }));
         }
       }
+      await refreshPinned(); // 置顶区标题同步
       showToast("已重命名");
     },
-    [renameTarget, expandedKey, items, showToast],
+    [renameTarget, expandedKey, items, refreshPinned, showToast],
   );
 
   const refreshSessions = useCallback(
@@ -366,21 +553,103 @@ export default function App() {
     [items],
   );
 
+  // ---------- 窗口过窄自动收起左栏 ----------
+
+  // 订阅一次、回调经 ref 取最新收起态；80ms 防抖让拖拽过程中只在停顿时落定。
+  // 挂载即检一次（窗口可能一开始就窄）
+  useEffect(() => {
+    let timer: number | undefined;
+    const apply = () => {
+      const w = window.innerWidth;
+      if (w < SIDEBAR_COLLAPSE_BELOW && !sidebarCollapsedRef.current) {
+        autoCollapsedRef.current = true;
+        setSidebarCollapsed(true);
+      } else if (w > SIDEBAR_EXPAND_ABOVE && sidebarCollapsedRef.current && autoCollapsedRef.current) {
+        autoCollapsedRef.current = false;
+        setSidebarCollapsed(false);
+      }
+    };
+    const onResize = () => {
+      if (timer !== undefined) window.clearTimeout(timer);
+      timer = window.setTimeout(apply, 80);
+    };
+    apply();
+    window.addEventListener("resize", onResize);
+    return () => {
+      window.removeEventListener("resize", onResize);
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, []);
+
+  // ---------- 窗口聚焦自动刷新 ----------
+
+  /** 刷新当前展开项目的会话列表 + 置顶区展示元数据（窗口聚焦 / 回收站变更的公共部分） */
+  const refreshVisibleLists = useCallback(() => {
+    if (expandedKey) refreshSessions(expandedKey);
+    void refreshPinned();
+  }, [expandedKey, refreshSessions, refreshPinned]);
+
+  /** 重新读盘同步**置顶清单真源**（config.pinnedSessions）。
+   *  必要性：彻底删除会话时后端 `prune_dead_pins` 直接改磁盘 config，而内存里的
+   *  `pinnedSessions` 是下次 `persistConfig` 的真源——不重新读盘，之后任意一次
+   *  保存（切主题/拖拽排序/置顶取消/保存设置）都会把已清掉的死条目写回
+   *  config.json，与后端 prune 形成「清了又回」。删除失效项目数据的路径同理
+   *  （后端 `drop_pins_for_projects`）。
+   *  注意 `refreshPinned` 只刷置顶区**展示元数据**（pinnedMeta），不碰真源清单，
+   *  两者不能互相替代。 */
+  const syncPinsFromConfig = useCallback(async () => {
+    try {
+      const cfg = await api.loadConfig();
+      setPinnedSessions(cfg.pinnedSessions ?? []);
+    } catch {
+      // 读盘失败就保持现有清单，不打断回收站/清理操作
+    }
+  }, []);
+
+  /** 回收站操作后的刷新：会话列表 + 置顶区 + 置顶清单真源（恢复会让被保留的
+   *  条目复活，彻底删除会让后端把死条目从磁盘清掉） */
+  const refreshAfterTrashChange = useCallback(() => {
+    refreshVisibleLists();
+    void syncPinsFromConfig();
+  }, [refreshVisibleLists, syncPinsFromConfig]);
+
+  // 终端里跑完 claude 回到 app：聚焦时刷新上面两处（新会话/新标题回来即见）。
+  // 查看器内容不自动重载——正在阅读的会话被追加内容会把滚动位置拽走，
+  // 保持过期优于打扰阅读（查看器自带刷新按钮）。
+  // 订阅一次、回调走 latest-ref：refreshSessions 随 items 变化，若放进 deps
+  // 会在每次清单/健康检查回填后重订阅（两次 IPC）且节流窗口被重置；
+  // 1.5s 节流防 alt-tab 抖动连刷。at 初值取订阅时刻，挡掉挂载后 1.5s 内到达的
+  // 聚焦事件——Electron 侧只在窗口 focus 时才发 window:focused（订阅时不回调），
+  // 所以这里挡的是启动后紧接着的真实聚焦；此时 expandedKey 恒为 null，
+  // 唯一可能重复的只有挂载 effect 已拉过一次的 refreshPinned()，无实际损失。
+  const visibleListsRef = useRef({ refresh: refreshVisibleLists, at: 0 });
+  useEffect(() => {
+    visibleListsRef.current.refresh = refreshVisibleLists;
+  });
+  useEffect(() => {
+    visibleListsRef.current.at = Date.now();
+    return api.onFocusChanged(() => {
+      const now = Date.now();
+      if (now - visibleListsRef.current.at < 1500) return;
+      visibleListsRef.current.at = now;
+      visibleListsRef.current.refresh();
+    });
+  }, []);
+
   const deleteSession = useCallback(
     async (key: string, session: SessionInfo) => {
       try {
         await api.deleteSession(session.file);
         await refreshSessions(key);
-        // 右侧正显示该会话 → 清空
-        setActiveSession((cur) =>
-          cur && cur.session.file === session.file ? null : cur,
-        );
+        // 置顶条目**保留**（后端亦然）：文件只是进了回收站，恢复回原路径即自动复活，
+        // 此处重拉后该会话因文件缺失暂时从置顶区消失
+        await refreshPinned();
         showToast(`已删除「${session.title}」，可在回收站恢复`);
       } catch (e) {
         showToast("删除失败：" + String(e));
       }
     },
-    [refreshSessions, showToast],
+    [refreshSessions, refreshPinned, showToast],
   );
 
   const confirmDeleteSession = useCallback(
@@ -396,29 +665,12 @@ export default function App() {
     [deleteSession],
   );
 
-  // ---------- 会话内容（v2.0.0 阶段二） ----------
-
-  const loadSessionMessages = useCallback(
-    async (key: string, session: SessionInfo) => {
-      const launcher = items.find((x) => x.key === key);
-      setActiveSession({
-        session,
-        key,
-        projectPath: launcher?.path ?? null,
-      });
-    },
-    [items],
-  );
-
   const resumeSession = useCallback(
     async (key: string, session: SessionInfo) => {
       const launcher = items.find((x) => x.key === key);
-      if (!launcher?.path) {
-        showToast("该项目未解析到路径，无法继续对话");
-        return;
-      }
       try {
-        await api.resumeSession(session.file, launcher.path);
+        // key 本身即项目绝对路径，items 里查不到（项目已不在列表）时用 key 兜底
+        await api.resumeSession(session.file, launcher?.path ?? key);
         showToast(`已打开「${session.title}」的继续对话窗口`);
       } catch (e) {
         showToast("启动失败：" + String(e));
@@ -426,6 +678,120 @@ export default function App() {
     },
     [items, showToast],
   );
+
+  // ---------- app 内直接对话（多会话 tab 并行） ----------
+
+  /** 打开一个对话 tab（已存在同会话的 tab 则只激活）。
+   *  id 必须在 updater 外生成、updater 保持纯函数——React（StrictMode 下）
+   *  会多次调用 updater，在内部生成 id / 写外部变量会导致 activeChatId
+   *  与 tab 实际 id 不一致（表现为第一个会话要点两次） */
+  const openChatTab = useCallback(
+    (tab: { projectPath: string; title: string; session: SessionInfo | null; key: string }) => {
+      // 续聊同一会话不允许开两个进程（会分叉历史），只激活已有 tab
+      const dup = tab.session
+        ? chats.find((c) => c.session?.file === tab.session!.file)
+        : undefined;
+      if (dup) {
+        setActiveChatId(dup.id);
+        return;
+      }
+      const id = newChatTabId();
+      setChats((prev) => [...prev, { id, ...tab }]);
+      setActiveChatId(id);
+    },
+    [chats],
+  );
+
+  /** 在 app 内新开对话（claude 工作目录 = 项目路径） */
+  const startInAppChat = useCallback(
+    (key: string) => {
+      const l = items.find((x) => x.key === key);
+      if (!l?.path) {
+        showToast("该项目未解析到路径，无法对话");
+        return;
+      }
+      if (l.healthy === false) {
+        showToast(`目录不存在，无法对话：${l.path}`);
+        return;
+      }
+      openChatTab({ projectPath: l.path, title: l.name, session: null, key });
+    },
+    [items, showToast, openChatTab],
+  );
+
+  /** 在 app 内继续已有会话 */
+  const continueInAppChat = useCallback(
+    (key: string, session: SessionInfo) => {
+      const l = items.find((x) => x.key === key);
+      if (!l?.path) {
+        showToast("该项目未解析到路径，无法对话");
+        return;
+      }
+      openChatTab({ projectPath: l.path, title: session.title, session, key });
+    },
+    [items, showToast, openChatTab],
+  );
+
+  /** 关闭对话 tab：卸载 ChatView（其 unmount 会优雅关闭进程）并刷新该项目会话列表 */
+  const closeChat = useCallback(
+    (tabId: string) => {
+      const tab = chats.find((c) => c.id === tabId);
+      if (tab) void refreshSessions(tab.key);
+      const rest = chats.filter((c) => c.id !== tabId);
+      setChats(rest);
+      // 关闭的是当前 tab → 激活相邻 tab
+      setActiveChatId((cur) =>
+        cur === tabId ? rest[rest.length - 1]?.id ?? null : cur,
+      );
+      setChatStatus((prev) => {
+        if (!(tabId in prev)) return prev;
+        const copy = { ...prev };
+        delete copy[tabId];
+        return copy;
+      });
+    },
+    [chats, refreshSessions],
+  );
+
+  /** 关闭除 keepId 外的其他会话；进行中（思考中/启动中）的会话跳过不关 */
+  const closeOtherChats = useCallback(
+    (keepId: string) => {
+      const closing = chats.filter(
+        (c) => c.id !== keepId && !isBusyPhase(chatStatus[c.id]),
+      );
+      if (closing.length === 0) return;
+      for (const c of closing) void refreshSessions(c.key);
+      const ids = new Set(closing.map((c) => c.id));
+      setChats((prev) => prev.filter((c) => !ids.has(c.id)));
+      // 当前 tab 被关（不可能，keepId 保留）→ 兜底激活保留的 tab
+      setActiveChatId((cur) => (cur && ids.has(cur) ? keepId : cur));
+      setChatStatus((prev) => {
+        const copy = { ...prev };
+        for (const c of closing) delete copy[c.id];
+        return copy;
+      });
+    },
+    [chats, chatStatus, refreshSessions],
+  );
+
+  /** 关闭全部会话；进行中（思考中/启动中）的会话跳过不关（与"关闭其他"同规则） */
+  const closeAllChats = useCallback(() => {
+    const closing = chats.filter((c) => !isBusyPhase(chatStatus[c.id]));
+    if (closing.length === 0) return;
+    for (const c of closing) void refreshSessions(c.key);
+    const ids = new Set(closing.map((c) => c.id));
+    const remaining = chats.filter((c) => !ids.has(c.id));
+    setChats(remaining);
+    // 当前 tab 被关闭 → 激活剩余的最后一个 tab（可能就是进行中被保留的那个）
+    setActiveChatId((cur) =>
+      cur && ids.has(cur) ? remaining[remaining.length - 1]?.id ?? null : cur,
+    );
+    setChatStatus((prev) => {
+      const copy = { ...prev };
+      for (const c of closing) delete copy[c.id];
+      return copy;
+    });
+  }, [chats, chatStatus, refreshSessions]);
 
   // ---------- 渲染 ----------
 
@@ -436,56 +802,133 @@ export default function App() {
         onToggleTheme={toggleTheme}
         claudeOk={claudeOk}
         missingCount={missing.length}
+        providerName={
+          providerState?.providers.find((p) => p.id === providerState?.currentId)?.name ?? null
+        }
         onHealth={() => setDialog("health")}
+        searchOpen={searchOpen}
+        sidebarCollapsed={sidebarCollapsed}
+        onToggleSidebar={toggleSidebar}
+        onToggleSearch={toggleSearch}
+        onNew={() => setDialog("new")}
+        onBatch={() => setDialog("batch")}
+        onTrash={() => setTrashOpen(true)}
+        onStats={() => setStatsOpen(true)}
+        onProviders={() => {
+          setProviderOpen(true);
+          // 打开时重新拉取：live 可能已被外部工具（CC Switch 等）改写，
+          // 后端 provider_list 顺带做标记重锚定，保证「当前」徽标是磁盘实况
+          api.providerList().then(setProviderState).catch((e) => {
+            // 从未加载成功过时弹窗无内容可渲染，收回打开态并提示
+            if (!providerState) setProviderOpen(false);
+            showToast("供应商清单加载失败：" + String(e));
+          });
+        }}
         onSettings={() => setSettingsOpen(true)}
       />
 
-      <Toolbar
-        search={search}
-        onSearch={setSearch}
-        onNew={() => setDialog("new")}
-        onBatch={() => setDialog("batch")}
-        onHealth={() => setDialog("health")}
-        onTrash={() => setTrashOpen(true)}
-      />
-
       <main className="main main-split">
-        <div className="main-left">
+        <div className={`main-left ${sidebarCollapsed ? "main-left-collapsed" : ""}`}>
+          {searchOpen && (
+            <div className="search-box left-search">
+              <span className="search-icon">
+                <SearchIcon size={15} />
+              </span>
+              <input
+                className="search-input"
+                placeholder="搜索项目名或路径…"
+                value={search}
+                autoFocus
+                spellCheck={false}
+                onChange={(e) => setSearch(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") toggleSearch();
+                }}
+              />
+              {search && (
+                <button className="search-clear" onClick={() => setSearch("")} title="清除">
+                  <XIcon size={12} />
+                </button>
+              )}
+            </div>
+          )}
+          <div className="left-scroll">
+            <PinnedSessions
+            items={pinnedMeta}
+            search={search}
+            activeSessionFile={activeChatId ? chats.find((c) => c.id === activeChatId)?.session?.file ?? null : null}
+            projects={items}
+            onOpenSession={continueInAppChat}
+            onTogglePin={togglePin}
+            onSessionContextMenu={(x, y, key, session) =>
+              setSessionMenu({ x, y, key, session })
+            }
+          />
           <ProjectList
             items={sorted}
-            favorites={favorites}
+            pinnedFiles={pinnedFiles}
             selectedKey={selectedKey}
             expandedKey={expandedKey}
-            activeSessionFile={activeSession?.session.file ?? null}
+            activeSessionFile={activeChatId ? chats.find((c) => c.id === activeChatId)?.session?.file ?? null : null}
             sessionsByKey={sessionsByKey}
             onSelect={setSelectedKey}
-            onLaunch={launch}
-            onToggleFav={toggleFav}
+            onReorder={reorder}
             dragEnabled={search.trim() === ""}
-            onReorderFavorite={reorderFavorites}
+            onTogglePin={togglePin}
             onToggleExpand={toggleExpand}
-            onRenameSession={(key, session) => setRenameTarget({ session, key })}
-            onDeleteSession={confirmDeleteSession}
-            onOpenSession={loadSessionMessages}
-            onResumeSession={resumeSession}
+            onSessionContextMenu={(x, y, key, session) =>
+              setSessionMenu({ x, y, key, session })
+            }
+            onChatProject={startInAppChat}
+            onChatSession={continueInAppChat}
             onContextMenu={(x, y, key) => setMenu({ x, y, key })}
           />
+          </div>
         </div>
-        <SessionViewer
-          session={activeSession?.session ?? null}
-          projectPath={activeSession?.projectPath ?? null}
-          onResume={() => {
-            if (activeSession) {
-              resumeSession(activeSession.key, activeSession.session);
-            }
-          }}
-          onToast={showToast}
-        />
+        <div className="chat-col">
+          {chats.length > 0 && (
+            <ChatTabs
+              tabs={chats.map((c) => ({ id: c.id, title: c.title }))}
+              activeId={activeChatId}
+              statusByTab={chatStatus}
+              onSelect={setActiveChatId}
+              onClose={closeChat}
+              onCloseOthers={closeOtherChats}
+              onCloseAll={closeAllChats}
+            />
+          )}
+          {chats.map((c) => (
+            <div
+              key={c.id}
+              className={c.id === activeChatId ? "chat-page chat-page-active" : "chat-page"}
+            >
+              <ChatView
+                projectPath={c.projectPath}
+                title={c.title}
+                session={c.session}
+                onToast={showToast}
+                onStatusChange={(phase) =>
+                  setChatStatus((prev) =>
+                    prev[c.id] === phase ? prev : { ...prev, [c.id]: phase },
+                  )
+                }
+              />
+            </div>
+          ))}
+          {chats.length === 0 && (
+            <div className="viewer-empty" style={{ flex: 1 }}>
+              <div className="empty-icon">
+                <MessageCircleIcon size={34} />
+              </div>
+              <div>点击项目行的对话图标新建对话，或点击会话直接继续</div>
+              <div className="empty-sub">可同时打开多个对话，标签页切换</div>
+            </div>
+          )}
+        </div>
       </main>
 
       <StatusBar
         total={items.length}
-        favCount={favorites.length}
         missingCount={missing.length}
         claudeOk={claudeOk}
       />
@@ -495,16 +938,26 @@ export default function App() {
           x={menu.x}
           y={menu.y}
           project={items.find((l) => l.key === menu.key) ?? null}
-          favorites={favorites}
           onClose={() => setMenu(null)}
-          onToggleFav={toggleFav}
+          onMoveTop={moveTop}
+          onLaunch={(l) => launch(l.key)}
           onOpenFolder={openFolder}
           onCopyPath={copyPath}
           onRemove={confirmRemove}
-          onHealth={() => {
-            setMenu(null);
-            setDialog("health");
-          }}
+        />
+      )}
+
+      {sessionMenu && (
+        <SessionContextMenu
+          x={sessionMenu.x}
+          y={sessionMenu.y}
+          session={sessionMenu.session}
+          sessionPinned={pinnedFiles.has(sessionMenu.session.file)}
+          onClose={() => setSessionMenu(null)}
+          onResumeTerminal={() => resumeSession(sessionMenu.key, sessionMenu.session)}
+          onRename={() => setRenameTarget({ session: sessionMenu.session, key: sessionMenu.key })}
+          onTogglePin={() => togglePin(sessionMenu.key, sessionMenu.session)}
+          onDelete={() => confirmDeleteSession(sessionMenu.key, sessionMenu.session)}
         />
       )}
 
@@ -524,8 +977,9 @@ export default function App() {
           onDone={async (count) => {
             setDialog(null);
             await load();
-            showToast(`批量添加完成：新增 ${count} 个启动脚本`);
+            showToast(`批量添加完成：新增 ${count} 个项目`);
           }}
+          onRefresh={() => void load()}
         />
       )}
 
@@ -534,9 +988,26 @@ export default function App() {
           items={items}
           claudeOk={claudeOk}
           onClose={() => setDialog(null)}
-          onDelete={async (items) => {
-            for (const l of items) await removeProject(l);
-            setDialog(null);
+          onDelete={(targets) => {
+            setConfirm({
+              title: "清除失效项目",
+              message:
+                `将清除以下 ${targets.length} 个失效项目：\n\n` +
+                targets.map((l) => `${l.name}\n${l.path}`).join("\n\n") +
+                "\n\n同时删除 Claude Code 用户数据里对应的会话记录\n（projects 数据目录下的残留数据，不可恢复）。继续？",
+              okText: "清除",
+              danger: true,
+              onOk: async () => {
+                for (const l of targets) await removeProject(l);
+                try {
+                  const n = await api.purgeClaudeProjectData(targets.map((l) => l.path));
+                  showToast(`已清除 ${targets.length} 个项目，删除 ${n} 份会话数据`);
+                } catch (e) {
+                  showToast("清除会话数据失败：" + String(e));
+                }
+                setDialog(null);
+              },
+            });
           }}
         />
       )}
@@ -561,10 +1032,19 @@ export default function App() {
           onClose={() => setSettingsOpen(false)}
           onSave={async (action) => {
             setCloseAction(action);
-            await persistConfig(favorites, dark, action);
+            await persistConfig(order, pinnedSessions, dark, action);
             setSettingsOpen(false);
             showToast("设置已保存");
           }}
+        />
+      )}
+
+      {providerOpen && providerState && (
+        <ProviderDialog
+          state={providerState}
+          onClose={() => setProviderOpen(false)}
+          onChanged={setProviderState}
+          toast={showToast}
         />
       )}
 
@@ -579,13 +1059,14 @@ export default function App() {
       {trashOpen && (
         <TrashDialog
           onClose={() => setTrashOpen(false)}
-          onChanged={() => {
-            // 回收站操作后刷新当前展开项目的会话列表
-            if (expandedKey) refreshSessions(expandedKey);
-          }}
+          // 恢复与彻底删除都要走这里：前者让被保留的置顶条目复活，后者要
+          // 重新读盘同步被后端 prune 掉的死条目（详见 refreshAfterTrashChange）
+          onChanged={refreshAfterTrashChange}
           onToast={showToast}
         />
       )}
+
+      {statsOpen && <StatsDialog onClose={() => setStatsOpen(false)} />}
 
       {closeChoiceOpen && (
         <CloseChoiceDialog
