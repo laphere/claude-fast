@@ -14,14 +14,14 @@ claude-fast/
 └── README.md
 ```
 
-> 本目录为**纯源码库**（与 GitHub 仓库一致）。程序本体通过**安装包**分发（Windows：`CC Desktop_<版本>_x64-setup.exe`；macOS：`.app` + `CC Desktop_<版本>_<架构>.dmg`）；用户数据（项目清单与收藏 `config.json`）在安装版数据目录 `%APPDATA%\claude-fast`（macOS 为 `~/Library/Application Support/claude-fast`）。
+> 本目录为**纯源码库**（与 GitHub 仓库一致）。程序本体通过**安装包**分发（Windows：`CC Desktop_<版本>_x64-setup.exe`；macOS：`.app` + `CC Desktop_<版本>_<架构>.dmg`）；用户数据（项目清单、排序与置顶会话 `config.json`）在安装版数据目录 `%APPDATA%\claude-fast`（macOS 为 `~/Library/Application Support/claude-fast`）。
 
 ## 使用
 
 双击桌面上的「CC Desktop」快捷方式（或开始菜单的 `CC Desktop`）打开图形界面。
 Tauri 应用为 GUI 程序，启动时**不会出现多余的 cmd 窗口**，关闭界面即完全退出。
 
-- **启动 Claude Code** → 点击项目行内的「**+**」按钮，新开终端窗口进入该项目目录并运行 claude（`/k` 模式，claude 退出后窗口保留可看输出）
+- **启动 Claude Code** → 项目行的「⋯」按钮（或右键项目行）打开菜单，选「在终端中启动 Claude Code」，新开终端窗口进入该项目目录并运行 claude（`/k` 模式，claude 退出后窗口保留可看输出）
 - **展开会话列表** → 点击项目行展开/收起其 Claude Code 会话列表（标题 + 时间 + 摘要，悬停可看完整标题）；点击会话行直接在 app 内继续对话，**右键会话行**打开操作菜单：▶ 在终端中继续对话、✎ 重命名（写入 jsonl 的 custom-title，Claude Code 官方 /rename 同机制，改名后官方 CLI 同样生效）、📌 置顶、🗑 删除（二次确认，删除后移入回收站）
 - **🗑 回收站** → 顶栏的回收站图标按钮；删除的会话在这里，可一键恢复（回到原项目，Claude Code 可继续 resume）或永久删除（需再次确认）
 - **📖 会话内容查看** → 点击会话行，右侧区域以聊天形式显示会话内容（用户/助手消息、思考过程折叠、工具调用与结果折叠、代码块等宽渲染；超过 500 条只显示最近部分；代码变更以 Claude Code 风格 diff 呈现——带行号的增删行高亮）；点会话内容区头部的「刷新」图标按钮可重新加载该会话的最新内容

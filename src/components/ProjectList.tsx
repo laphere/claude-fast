@@ -181,7 +181,7 @@ export default function ProjectList({
                   </button>
                   <button
                     className="row-icon row-icon-more"
-                    title="更多操作（与右键菜单相同：终端启动/打开文件夹/收藏等）"
+                    title="更多操作（与右键菜单相同）"
                     onClick={(e) => {
                       e.stopPropagation();
                       onSelect(l.key);
