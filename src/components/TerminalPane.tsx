@@ -12,6 +12,7 @@ import "@xterm/xterm/css/xterm.css";
 import { ptySpawnClaude, ptyWrite, ptyResize, ptyKill, clipboardImagePath } from "../lib/pty";
 import { createBoldBrightFilter } from "../lib/bold-bright";
 import { installTerminalWidthTable } from "../lib/term-unicode";
+import { installImeCaretAnchor } from "../lib/ime-anchor";
 import { sessionTitleFromOsc } from "../lib/term-title";
 import type { TabActivity, TerminalTab } from "../types";
 
@@ -306,6 +307,13 @@ export default function TerminalPane({ tab, onStatus, onTitle, probes, killers }
     term.loadAddon(fit);
     term.open(host);
     if (host.clientWidth > 0 && host.clientHeight > 0) fit.fit();
+    /* IME 候选窗锚点：claude 不用真光标画输入光标（`?25l` 藏起来 + 自画一格反显空格），
+     *  而 IME 只认真实光标 → 候选窗停在别处、流式输出时还跟着每帧重绘乱飘。这里把
+     *  xterm 摆 textarea 的两处（`_syncTextArea` / `updateCompositionElements`）接管成
+     *  「锚到 claude 画的那一格」。为什么、怎么量出来的、失败时怎么退回，全在
+     *  src/lib/ime-anchor.ts 头部。必须在 open() 之后装——那几个 DOM 与内部服务
+     *  都是 open 时才建出来的。 */
+    const disposeImeAnchor = installImeCaretAnchor(term);
 
     /* 会话名链路：claude 把会话名写进终端标题（OSC 0），xterm 解析后在这里回传宿主，
      *  宿主把 tab 标题换成它——系统终端里 tab 名跟着会话名走，靠的也是这条。
@@ -586,6 +594,7 @@ export default function TerminalPane({ tab, onStatus, onTitle, probes, killers }
     return () => {
       disposed = true;
       observer.disconnect();
+      disposeImeAnchor(); // 先还原 xterm 的两个定位函数，再 dispose 终端
       host.removeEventListener("keydown", onKeyDown, true);
       probes?.current.delete(tab.id);
       killers?.current.delete(tab.id);
