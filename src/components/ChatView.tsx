@@ -26,7 +26,6 @@ import {
 import {
   ArrowDownIcon,
   ArrowUpIcon,
-  ChevronDownIcon,
   DownloadIcon,
   FileIcon,
   MessageCircleIcon,
@@ -1439,15 +1438,16 @@ export default function ChatView({
       <div className="chat-head">
         <div className="chat-head-body">
           <div className="viewer-title">{title}</div>
-          <div className="viewer-meta">
-            {projectPath}
-            {total > 0 ? ` · 共 ${total} 条消息` : ""}
-          </div>
-          {stats && stats.messageCount > 0 && (
+          {(total > 0 || (stats && stats.messageCount > 0)) && (
             <div className="viewer-stats">
-              总计 {fmtTokens(stats.totalTokens)} · 输入 {fmtTokens(stats.inputTokens)} · 输出{" "}
-              {fmtTokens(stats.outputTokens)}
-              {stats.cacheReadTokens > 0 && ` · 缓存读取 ${fmtTokens(stats.cacheReadTokens)}`}
+              {total > 0 ? `${total} 条消息` : ""}
+              {stats && stats.messageCount > 0 && (
+                <>
+                  {total > 0 ? " · " : ""}总计 {fmtTokens(stats.totalTokens)} · 输入{" "}
+                  {fmtTokens(stats.inputTokens)} · 输出 {fmtTokens(stats.outputTokens)}
+                  {stats.cacheReadTokens > 0 && ` · 缓存读取 ${fmtTokens(stats.cacheReadTokens)}`}
+                </>
+              )}
             </div>
           )}
         </div>
@@ -1463,36 +1463,32 @@ export default function ChatView({
           {session && (
             <>
               <button
-                className="btn"
+                className={`icon-btn ${searchOpen ? "icon-btn-on" : ""}`}
                 onClick={() => {
                   setSearchOpen((v) => !v);
                   setExportMenuOpen(false);
                 }}
                 title="搜索消息内容与工具调用"
               >
-                <SearchIcon />
-                搜索
+                <SearchIcon size={15} />
               </button>
               <button
-                className="btn"
+                className={`icon-btn ${filesOpen ? "icon-btn-on" : ""}`}
                 onClick={() => setFilesOpen((v) => !v)}
-                title="本会话变更的文件列表"
+                title={`变更文件列表${changedFiles.length > 0 ? `（${changedFiles.length} 个）` : ""}`}
               >
-                <FileIcon />
-                文件{changedFiles.length > 0 ? ` (${changedFiles.length})` : ""}
+                <FileIcon size={15} />
               </button>
               <div className="export-wrap">
                 <button
-                  className="btn"
+                  className="icon-btn"
                   onClick={() => {
                     setExportMenuOpen((v) => !v);
                     setSearchOpen(false);
                   }}
-                  title="导出会话内容"
+                  title="导出会话（Markdown / JSONL）"
                 >
-                  <DownloadIcon />
-                  导出
-                  <ChevronDownIcon size={11} />
+                  <DownloadIcon size={15} />
                 </button>
                 {exportMenuOpen && (
                   <>
@@ -1505,13 +1501,12 @@ export default function ChatView({
                 )}
               </div>
               <button
-                className="btn"
+                className="icon-btn"
                 disabled={isBusy(status)}
                 onClick={refreshHistory}
                 title="重新读取会话记录（清空本页实时区，以 jsonl 为准）"
               >
-                <RefreshIcon />
-                刷新
+                <RefreshIcon size={15} />
               </button>
             </>
           )}

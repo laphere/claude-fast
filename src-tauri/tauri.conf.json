@@ -14,9 +14,9 @@
       {
         "label": "main",
         "title": "CC Desktop",
-        "width": 920,
-        "height": 660,
-        "minWidth": 680,
+        "width": 1120,
+        "height": 720,
+        "minWidth": 800,
         "minHeight": 500,
         "center": true,
         "resizable": true,

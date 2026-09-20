@@ -10,8 +10,7 @@ import type {
   SessionInfo,
 } from "./types";
 import Header from "./components/Header";
-import { MessageCircleIcon } from "./components/Icons";
-import Toolbar from "./components/Toolbar";
+import { MessageCircleIcon, SearchIcon, XIcon } from "./components/Icons";
 import ProjectList from "./components/ProjectList";
 import PinnedSessions from "./components/PinnedSessions";
 import StatusBar from "./components/StatusBar";
@@ -37,6 +36,13 @@ function isBusyPhase(phase: string | undefined): boolean {
   return phase === "thinking" || phase === "starting";
 }
 
+/** 窗口过窄自动收起左栏的阈值（40px 迟滞带防边界抖动）：
+ *  <980 收起——980-360(左栏)=620px 内容区，再窄会话内容/查看器局促，
+ *  收起后同宽度内容区大幅放宽；>1020 恢复。只恢复「被自动收起」的，
+ *  用户手动收起/展开的意图不被 resize 覆盖 */
+const SIDEBAR_COLLAPSE_BELOW = 980;
+const SIDEBAR_EXPAND_ABOVE = 1020;
+
 interface ConfirmState {
   title: string;
   message: string;
@@ -52,6 +58,20 @@ export default function App() {
   const [order, setOrder] = useState<string[]>([]);
   const [dark, setDark] = useState(false);
   const [search, setSearch] = useState("");
+  /** 左栏搜索框是否展开（搜索入口收进了顶栏「搜索」按钮） */
+  const [searchOpen, setSearchOpen] = useState(false);
+  /** 左栏项目列表是否收起（收起后内容区占满全宽，仅内存态不落盘） */
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  /** 当前收起是否由「窗口过窄自动收起」触发（决定拉宽后要不要自动恢复） */
+  const autoCollapsedRef = useRef(false);
+  const sidebarCollapsedRef = useRef(sidebarCollapsed);
+  sidebarCollapsedRef.current = sidebarCollapsed;
+
+  /** 顶栏开关：手动切换即接管（自动收起标记清除，后续 resize 不再干预） */
+  const toggleSidebar = useCallback(() => {
+    setSidebarCollapsed((c) => !c);
+    autoCollapsedRef.current = false;
+  }, []);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [menu, setMenu] = useState<{ x: number; y: number; key: string } | null>(null);
   const [dialog, setDialog] = useState<DialogKind>(null);
@@ -371,6 +391,14 @@ export default function App() {
 
   const missing = items.filter((l) => l.healthy === false);
 
+  // ---------- 搜索 ----------
+
+  /** 顶栏「搜索」按钮：展开左栏搜索框并聚焦；再次点击收起并清空关键词 */
+  const toggleSearch = useCallback(() => {
+    if (searchOpen) setSearch("");
+    setSearchOpen(!searchOpen);
+  }, [searchOpen]);
+
   // ---------- 操作 ----------
 
   const launch = useCallback(
@@ -535,6 +563,34 @@ export default function App() {
     },
     [items],
   );
+
+  // ---------- 窗口过窄自动收起左栏 ----------
+
+  // 订阅一次、回调经 ref 取最新收起态；80ms 防抖让拖拽过程中只在停顿时落定。
+  // 挂载即检一次（窗口可能一开始就窄）
+  useEffect(() => {
+    let timer: number | undefined;
+    const apply = () => {
+      const w = window.innerWidth;
+      if (w < SIDEBAR_COLLAPSE_BELOW && !sidebarCollapsedRef.current) {
+        autoCollapsedRef.current = true;
+        setSidebarCollapsed(true);
+      } else if (w > SIDEBAR_EXPAND_ABOVE && sidebarCollapsedRef.current && autoCollapsedRef.current) {
+        autoCollapsedRef.current = false;
+        setSidebarCollapsed(false);
+      }
+    };
+    const onResize = () => {
+      if (timer !== undefined) window.clearTimeout(timer);
+      timer = window.setTimeout(apply, 80);
+    };
+    apply();
+    window.addEventListener("resize", onResize);
+    return () => {
+      window.removeEventListener("resize", onResize);
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, []);
 
   // ---------- 窗口聚焦自动刷新 ----------
 
@@ -771,8 +827,18 @@ export default function App() {
         onToggleTheme={toggleTheme}
         claudeOk={claudeOk}
         missingCount={missing.length}
-        providerName={providerState?.providers.find((p) => p.id === providerState?.currentId)?.name ?? null}
+        providerName={
+          providerState?.providers.find((p) => p.id === providerState?.currentId)?.name ?? null
+        }
         onHealth={() => setDialog("health")}
+        searchOpen={searchOpen}
+        sidebarCollapsed={sidebarCollapsed}
+        onToggleSidebar={toggleSidebar}
+        onToggleSearch={toggleSearch}
+        onNew={() => setDialog("new")}
+        onBatch={() => setDialog("batch")}
+        onTrash={() => setTrashOpen(true)}
+        onStats={() => setStatsOpen(true)}
         onProviders={() => {
           setProviderOpen(true);
           // 打开时重新拉取：live 可能已被外部工具（CC Switch 等）改写，
@@ -786,18 +852,33 @@ export default function App() {
         onSettings={() => setSettingsOpen(true)}
       />
 
-      <Toolbar
-        search={search}
-        onSearch={setSearch}
-        onNew={() => setDialog("new")}
-        onBatch={() => setDialog("batch")}
-        onTrash={() => setTrashOpen(true)}
-        onStats={() => setStatsOpen(true)}
-      />
-
       <main className="main main-split">
-        <div className="main-left">
-          <PinnedSessions
+        <div className={`main-left ${sidebarCollapsed ? "main-left-collapsed" : ""}`}>
+          {searchOpen && (
+            <div className="search-box left-search">
+              <span className="search-icon">
+                <SearchIcon size={15} />
+              </span>
+              <input
+                className="search-input"
+                placeholder="搜索项目名或路径…"
+                value={search}
+                autoFocus
+                spellCheck={false}
+                onChange={(e) => setSearch(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") toggleSearch();
+                }}
+              />
+              {search && (
+                <button className="search-clear" onClick={() => setSearch("")} title="清除">
+                  <XIcon size={12} />
+                </button>
+              )}
+            </div>
+          )}
+          <div className="left-scroll">
+            <PinnedSessions
             items={pinnedMeta}
             search={search}
             activeSessionFile={activeChatId ? chats.find((c) => c.id === activeChatId)?.session?.file ?? null : null}
@@ -827,6 +908,7 @@ export default function App() {
             onChatSession={continueInAppChat}
             onContextMenu={(x, y, key) => setMenu({ x, y, key })}
           />
+          </div>
         </div>
         <div className="chat-col">
           {chats.length > 0 && (
