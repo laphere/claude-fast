@@ -91,6 +91,10 @@ pub enum ChatEvent {
     },
     /// 权限请求被 CLI 取消（control_cancel_request）
     PermissionCancelled { request_id: String },
+    /// 方案审批（control_request can_use_tool，tool_name=ExitPlanMode）：计划模式
+    /// 下 CLI 调此工具请求退出，plan 为方案正文。经 control_response 应答——
+    /// 允许 = 退出计划模式并在同一轮里继续执行，拒绝 = 留在计划模式
+    PlanApproval { request_id: String, plan: String },
     /// result：本轮结束（usage 为本轮总计）
     TurnEnd {
         is_error: bool,
@@ -179,11 +183,15 @@ fn build_set_permission_mode(request_id: &str, mode: &str) -> Value {
 
 /// 权限响应（allow/deny；deny 时 CLI 把拒绝作为 tool_result 喂回模型，不 abort）。
 /// allow 不带 updatedInput = CLI 使用原始 input 原样执行。
-fn build_permission_response(request_id: &str, allow: bool) -> Value {
+/// deny_message = None 用通用文案；方案审批传专属文案，模型才知道该接着等修改意见。
+fn build_permission_response(request_id: &str, allow: bool, deny_message: Option<&str>) -> Value {
     let inner = if allow {
         json!({ "behavior": "allow" })
     } else {
-        json!({ "behavior": "deny", "message": "用户在 claude-fast 中拒绝执行该工具" })
+        json!({
+            "behavior": "deny",
+            "message": deny_message.unwrap_or("用户在 claude-fast 中拒绝执行该工具"),
+        })
     };
     json!({
         "type": "control_response",
@@ -591,24 +599,42 @@ fn translate_result(msg: &Value) -> Vec<ChatEvent> {
     ]
 }
 
-/// control_request(can_use_tool) → 权限确认请求
+/// 方案审批工具名：计划模式下 CLI 调它请求退出计划模式，
+/// 方案正文在工具 input 的 plan 字段里
+const EXIT_PLAN_TOOL: &str = "ExitPlanMode";
+
+/// control_request(can_use_tool) → 权限确认请求；ExitPlanMode 单独走方案审批
+/// （否则会退化成一张把 {plan:"…"} 原样打成 JSON 的普通工具卡）
 fn translate_control_request(msg: &Value) -> Vec<ChatEvent> {
     let request = msg.get("request").cloned().unwrap_or(json!({}));
     if request.get("subtype").and_then(Value::as_str) != Some("can_use_tool") {
         return Vec::new();
     }
+    let request_id = msg
+        .get("request_id")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let tool_name = request
+        .get("tool_name")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let input = request.get("input").cloned().unwrap_or(json!({}));
+    if tool_name == EXIT_PLAN_TOOL {
+        return vec![ChatEvent::PlanApproval {
+            request_id,
+            // 缺 plan 字段（旧版本 CLI / 异常输入）→ 空串，前端回退成占位提示
+            plan: input
+                .get("plan")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+        }];
+    }
     vec![ChatEvent::PermissionRequest {
-        request_id: msg
-            .get("request_id")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string(),
-        tool_name: request
-            .get("tool_name")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string(),
-        input: request.get("input").cloned().unwrap_or(json!({})),
+        request_id,
+        tool_name: tool_name.to_string(),
+        input,
     }]
 }
 
@@ -1106,15 +1132,18 @@ pub async fn chat_set_permission_mode(
     write_stdin(&state, &session_id, payload).await
 }
 
-/// 权限确认响应（allow 不带 updatedInput = CLI 用原始 input）
+/// 权限确认响应（allow 不带 updatedInput = CLI 用原始 input）。
+/// deny_message 仅拒绝时生效（方案审批用它交代「为什么没批准」）
 #[tauri::command]
 pub async fn chat_permission_response(
     session_id: String,
     request_id: String,
     allow: bool,
+    deny_message: Option<String>,
     state: State<'_, ChatManager>,
 ) -> Result<(), String> {
-    let payload = build_permission_response(&request_id, allow).to_string();
+    let payload =
+        build_permission_response(&request_id, allow, deny_message.as_deref()).to_string();
     write_stdin(&state, &session_id, payload).await
 }
 
@@ -1354,18 +1383,28 @@ mod tests {
 
     #[test]
     fn permission_response_allow_and_deny() {
-        let allow = build_permission_response("req-1", true);
+        let allow = build_permission_response("req-1", true, None);
         assert_eq!(allow["type"], "control_response");
         assert_eq!(allow["response"]["subtype"], "success");
         assert_eq!(allow["response"]["request_id"], "req-1");
         assert_eq!(allow["response"]["response"]["behavior"], "allow");
 
-        let deny = build_permission_response("req-2", false);
+        let deny = build_permission_response("req-2", false, None);
         assert_eq!(deny["response"]["response"]["behavior"], "deny");
         assert!(deny["response"]["response"]["message"]
             .as_str()
             .unwrap()
             .contains("拒绝"));
+    }
+
+    #[test]
+    fn permission_response_deny_message_override() {
+        // 方案审批的拒绝文案由调用方给：模型据此知道该接着等修改意见
+        let deny = build_permission_response("req-3", false, Some("用户希望继续完善方案"));
+        assert_eq!(deny["response"]["response"]["message"], "用户希望继续完善方案");
+        // 允许与 deny_message 无关，不得带出 message 字段
+        let allow = build_permission_response("req-4", true, Some("不该出现"));
+        assert!(allow["response"]["response"].get("message").is_none());
     }
 
     // ---- 翻译层：流式序列 ----
@@ -1494,6 +1533,43 @@ mod tests {
         assert!(matches!(
             &events[0],
             ChatEvent::PermissionCancelled { request_id } if request_id == "r1"
+        ));
+    }
+
+    #[test]
+    fn translate_plan_approval_from_exit_plan_mode() {
+        // 计划模式：ExitPlanMode 走方案审批，不再退化成「把 {plan:"…"} 打成 JSON」的工具卡
+        let mut asm = StreamAssembler::new();
+        let events = asm.translate(
+            r#"{"type":"control_request","request_id":"r9","request":{"subtype":"can_use_tool","tool_name":"ExitPlanMode","input":{"plan":"1. 抽分支\n2. 接线"}}}"#,
+        );
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            &events[0],
+            ChatEvent::PlanApproval { request_id, plan }
+                if request_id == "r9" && plan == "1. 抽分支\n2. 接线"
+        ));
+    }
+
+    #[test]
+    fn translate_plan_approval_without_plan_field() {
+        // 缺 plan 字段 → 空串（前端占位提示）；事件仍须发出，否则 CLI 永远等应答
+        let mut asm = StreamAssembler::new();
+        let events = asm.translate(
+            r#"{"type":"control_request","request_id":"r10","request":{"subtype":"can_use_tool","tool_name":"ExitPlanMode","input":{}}}"#,
+        );
+        assert!(matches!(
+            &events[0],
+            ChatEvent::PlanApproval { request_id, plan }
+                if request_id == "r10" && plan.is_empty()
+        ));
+        // 其他工具名不受影响，仍走普通权限卡
+        let events = asm.translate(
+            r#"{"type":"control_request","request_id":"r11","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"ls"}}}"#,
+        );
+        assert!(matches!(
+            &events[0],
+            ChatEvent::PermissionRequest { tool_name, .. } if tool_name == "Bash"
         ));
     }
 

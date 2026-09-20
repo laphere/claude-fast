@@ -34,11 +34,6 @@ import {
   StopIcon,
   XIcon,
 } from "./Icons";
-import {
-  PlanChoices,
-  PlanOptionList,
-  parsePlanChoices,
-} from "./PlanChoices";
 import type {
   ChatEvent,
   ChatImage,
@@ -47,7 +42,6 @@ import type {
   ChatPermissionRequest,
   ChatUsage,
   ContentBlock,
-  PlanDecisionPoint,
   SessionInfo,
   SessionMessage,
   SessionSearchHit,
@@ -83,6 +77,16 @@ const MODE_OPTIONS: Array<{ value: string; label: string; title: string }> = [
   { value: "plan", label: "计划模式", title: "只读分析并给出计划，不执行修改" },
   { value: "bypassPermissions", label: "完全权限", title: "全部工具直接执行，不再确认（危险）" },
 ];
+
+/** 方案审批被拒时回给模型的话：讲清「不是不要这个方案，是要改」，
+ *  模型才会留在计划模式等修改意见（通用工具拒绝文案在这里不合用） */
+const PLAN_DENY_MESSAGE =
+  "用户暂未批准该方案，希望继续完善；请留在计划模式，等待用户提出修改意见。";
+
+/** 用户直接切走计划模式时用的话——与 PLAN_DENY_MESSAGE 区分开：那条说「请留在
+ *  计划模式等修改意见」，而这条路径下用户已经离开了，模型干等一份不会来的意见 */
+const PLAN_ABANDON_MESSAGE =
+  "用户已切换权限模式，放弃本次方案审批；请停止按该方案推进，等待用户的下一条指令。";
 
 /** settings.json 的 "default" 与 CLI flag 的 manual 同义，归一为 manual 显示 */
 function normalizeMode(raw: string | null | undefined): string | null {
@@ -198,18 +202,17 @@ export default function ChatView({
   const [permissions, setPermissions] = useState<ChatPermissionRequest[]>([]);
   const [usage, setUsage] = useState<ChatUsage | null>(null);
   const [realSessionId, setRealSessionId] = useState<string | null>(null);
-  /** 方案审批卡：进入计划模式前的权限模式（批准后切回；无记录回落 manual） */
-  const [planPrevMode, setPlanPrevMode] = useState<string | null>(null);
-  /** 方案审批卡：计划模式本轮产出结束后是否显示 */
-  const [planCardVisible, setPlanCardVisible] = useState(false);
-  /** 方案审批卡：批准动作进行中（按钮禁用/文案切换） */
+  /** 待审批的方案，两种来源：
+   *  - native：CLI 经 ExitPlanMode 下发（requestId 非空，应答走 control_response）
+   *  - heuristic：计划模式本轮产出结束时的兜底触发。**实测 `--print` 模式下 CLI 的
+   *    工具表里没有 ExitPlanMode**（28 个工具，交互类工具在非交互模式被裁掉），
+   *    所以当前实际生效的是这一条；原生分支留着，等 CLI 或 SDK 侧放开即自动接管
+   *  native 会阻塞在 control_request 上且不超时，任何路径都必须给出 allow/deny */
+  const [plan, setPlan] = useState<
+    { source: "native"; requestId: string; text: string } | { source: "heuristic"; text: string } | null
+  >(null);
+  /** 方案审批动作进行中（按钮禁用/文案切换） */
   const [planBusy, setPlanBusy] = useState(false);
-  /** 方案卡里用户对各决策点的选择（决策点标题 → "字母. 选项文字"） */
-  const [planAnswers, setPlanAnswers] = useState<Record<string, string>>({});
-  /** 侧信道结构化结果（null=未拿到，回退启发式/纯文本） */
-  const [planStructured, setPlanStructured] = useState<PlanDecisionPoint[] | null>(null);
-  /** 侧信道结构化请求进行中 */
-  const [planStructuring, setPlanStructuring] = useState(false);
 
   // ---------- 历史 jsonl ----------
   const [history, setHistory] = useState<SessionMessage[]>([]);
@@ -257,7 +260,7 @@ export default function ChatView({
   const sessionKeyRef = useRef<string | null>(null);
   /** 会话是否已启动（session_ready 上报过；未启动不弹方案审批卡） */
   const realSessionIdRef = useRef<string | null>(null);
-  /** 当前权限模式镜像（handleEvent 等无依赖回调里读取最新值） */
+  /** 当前权限模式镜像（handleEvent 等无依赖回调里读最新值） */
   const modeRef = useRef<string | null>(null);
   /** 当前阶段镜像（区分「确曾进入思考态后结束」的那次 idle） */
   const statusRef = useRef<"starting" | "thinking" | "idle" | "exited">("idle");
@@ -299,18 +302,16 @@ export default function ChatView({
                 : it,
             ),
           );
-          // 计划模式：本轮确曾产出（进入过思考态、无错误）→ 弹出方案审批卡
+          // 兜底触发：计划模式下本轮确曾产出（进入过思考态、无错误）→ 弹方案卡。
+          // 原生 ExitPlanMode 若已下发，则 native 卡优先，这里不覆盖它
           if (
             wasThinking &&
             modeRef.current === "plan" &&
             !lastTurnErrorRef.current &&
             realSessionIdRef.current
           ) {
-            setPlanCardVisible(true);
+            setPlan((p) => (p?.source === "native" ? p : { source: "heuristic", text: "" }));
             setPlanBusy(false);
-            // 新一轮产出 → 清掉上一轮的选择与结构化缓存
-            setPlanAnswers({});
-            setPlanStructured(null);
           }
         }
         break;
@@ -427,6 +428,15 @@ export default function ChatView({
         break;
       case "permission_cancelled":
         setPermissions((prev) => prev.filter((p) => p.requestId !== ev.requestId));
+        // 方案卡同样要收（用户在别处中断/CLI 自己撤销），否则卡会挂在没有请求的状态上
+        setPlan((p) =>
+          p?.source === "native" && p.requestId === ev.requestId ? null : p,
+        );
+        break;
+      case "plan_approval":
+        // 原生：模型调 ExitPlanMode 请求退出计划模式，出方案卡等应答（同一轮内继续）
+        setPlan({ source: "native", requestId: ev.requestId, text: ev.plan });
+        setPlanBusy(false);
         break;
       case "turn_end":
         lastTurnErrorRef.current = !!ev.isError;
@@ -436,6 +446,9 @@ export default function ChatView({
         setStatus({ phase: "exited", code: ev.code, stderrTail: ev.stderrTail });
         sessionKeyRef.current = null;
         startPromiseRef.current = null;
+        // 进程没了，方案卡再也应答不出去：收掉，别留一张按钮点不动的死卡
+        setPlan(null);
+        setPlanBusy(false);
         if (ev.code !== null && ev.code !== 0) {
           onToast(`claude 进程已退出（code ${ev.code}）`);
         }
@@ -471,6 +484,25 @@ export default function ChatView({
   useEffect(() => {
     statusRef.current = status.phase;
   }, [status.phase]);
+  /** 兜底卡出现时把正文快照下来（本轮最后一条已完成的助手文本），只快照一次：
+   *  卡片正文不该随后续 items 漂移——尤其「刷新」会清空 items，不快照的话正文会
+   *  退化成空占位，而三个审批按钮照旧可点 */
+  useEffect(() => {
+    if (plan?.source !== "heuristic" || plan.text) return;
+    let text = "";
+    for (let i = items.length - 1; i >= 0; i--) {
+      const it = items[i];
+      if (it.kind === "text" && !it.streaming && it.text.trim()) {
+        text = it.text.trim();
+        break;
+      }
+    }
+    if (!text) return;
+    const snapshot = text.length > 4000 ? `${text.slice(0, 4000)}…` : text;
+    setPlan((p) =>
+      p?.source === "heuristic" && !p.text ? { source: "heuristic", text: snapshot } : p,
+    );
+  }, [plan, items]);
 
   // 历史初始加载：默认取最后 500 条（会话切换或点「刷新」时重新加载）。
   // 依赖会话 file 而非 session 对象身份：重命名只改标题也会换对象
@@ -628,25 +660,58 @@ export default function ChatView({
 
   // ---------- 发送 / 停止 / 权限 / 模式 ----------
 
+  /** 拒绝一条原生方案请求（ExitPlanMode），返回是否送达。
+   *  CLI 阻塞在那条 control_request 上且不会超时，故失败必须让调用方保留卡片可重试——
+   *  三条触发路径（发送消息 / 切走计划模式 / 点「继续修改」）共用同一失败语义。 */
+  const denyPlan = useCallback(
+    async (requestId: string, message: string): Promise<boolean> => {
+      const key = sessionKeyRef.current;
+      if (!key) return false;
+      try {
+        await api.chatPermissionResponse(key, requestId, false, message);
+        return true;
+      } catch (e) {
+        onToast("方案应答失败：" + String(e));
+        return false;
+      }
+    },
+    [onToast],
+  );
+
   const send = useCallback(async () => {
     const text = input.trim();
     const images = pendingImages;
-    if ((!text && images.length === 0) || isBusy(status) || status.phase === "exited") return;
+    const pendingNative = plan?.source === "native" ? plan : null;
+    if (status.phase === "exited") return;
+    if (!text && images.length === 0) return;
+    // 原生方案请求在等应答时不按「忙碌」拦：那条路径下 status 停在 thinking（模型
+    // 阻塞在 ExitPlanMode 上，本轮没结束），但用户此刻正需要打字提修改意见
+    if (!pendingNative && isBusy(status)) return;
+    // 先应答再动 UI：deny 没送达就整条中止——输入与气泡都不动，用户可原样重试。
+    // 顺序也不能反：CLI 阻塞在那条 control_request 上，不先应答，发出去的消息要等
+    // 工具调用被解开之后才会被读到。planBusy 顺带按住卡上按钮，防同一 request_id
+    // 在 IPC 往返窗口里被应答第二次
+    if (pendingNative) {
+      setPlanBusy(true);
+      const ok = await denyPlan(pendingNative.requestId, PLAN_DENY_MESSAGE);
+      setPlanBusy(false);
+      if (!ok) return;
+    }
     setInput("");
     setPendingImages([]);
-    // 用户新开一轮 → 本轮审批卡不再适用（下一轮结束按需重新弹出）
-    setPlanCardVisible(false);
     setItems((prev) => [
       ...prev,
       { id: nextItemId++, kind: "user", text, images: images.length > 0 ? images : undefined },
     ]);
+    // 两种来源都一样：发出新消息即表示本轮方案卡不再适用
+    setPlan(null);
     try {
       const key = await ensureStarted();
       await api.chatSend(key, text, images);
     } catch (e) {
       onToast("发送失败：" + String(e));
     }
-  }, [input, pendingImages, status, ensureStarted, onToast]);
+  }, [input, pendingImages, status, plan, ensureStarted, denyPlan, onToast]);
 
   /** 追加图片附件（粘贴/拖拽共用；非图片文件静默忽略） */
   const addImages = useCallback(
@@ -692,12 +757,18 @@ export default function ChatView({
    *  spawn 时显式传 flag（覆盖配置默认） */
   const changeMode = useCallback(
     async (m: string) => {
-      // 记录进入计划模式前的模式（批准执行后切回）；离开计划模式时清空并收卡
-      if (m === "plan" && modeRef.current !== "plan") {
-        setPlanPrevMode(modeRef.current ?? null);
-      } else if (m !== "plan") {
-        setPlanPrevMode(null);
-        setPlanCardVisible(false);
+      // 离开计划模式时收掉方案卡。原生请求必须补一次 deny——CLI 阻塞在那条
+      // control_request 上且不会超时，光切模式解不开，会话会一直卡住；
+      // 兜底卡没有协议请求，直接收卡即可。deny 没送达就整体中止（保留卡片、不切模式），
+      // 否则会留下「模式已切走、请求仍悬空」且用户没有任何可点按钮的状态
+      if (m !== "plan" && plan) {
+        if (plan.source === "native") {
+          setPlanBusy(true);
+          const ok = await denyPlan(plan.requestId, PLAN_ABANDON_MESSAGE);
+          setPlanBusy(false);
+          if (!ok) return;
+        }
+        setPlan(null);
       }
       setMode(m);
       modeTouchedRef.current = true;
@@ -709,43 +780,57 @@ export default function ChatView({
         onToast("切换模式失败：" + String(e));
       }
     },
-    [onToast],
+    [onToast, plan, denyPlan],
   );
 
-  /** 「批准并执行」：切回计划前的权限模式，并给模型发执行指令。
-   *  失败 toast 提示、卡保留可重试（planBusy 期间按钮禁用防重复） */
-  const approvePlan = useCallback(async () => {
-    const key = sessionKeyRef.current;
-    if (!key) return;
-    // bypassPermissions / dontAsk 只能启动时启用（--dangerously-skip-permissions），
-    // 运行中热切换会被 CLI 拒绝（"Cannot set permission mode to bypassPermissions..."）。
-    // 批准时若目标是这两种，回退到 acceptEdits（自动允许文件编辑）并提示用户。
-    let nextMode =
-      planPrevMode && planPrevMode !== "plan" ? planPrevMode : "manual";
-    if (nextMode === "bypassPermissions" || nextMode === "dontAsk") {
-      nextMode = "acceptEdits";
-      onToast("bypass/无提示模式需启动时启用，批准后已切到 acceptEdits 执行");
-    }
-    setPlanBusy(true);
-    try {
-      await api.chatSetPermissionMode(key, nextMode as ChatPermissionMode);
-      setMode(nextMode);
-      modeTouchedRef.current = true;
-      setPlanCardVisible(false);
-      const answers = Object.entries(planAnswers);
-      const approveMsg = answers.length
-        ? `（已批准方案）我的选择：${answers
-            .map(([q, a]) => `${q} = ${a}`)
-            .join("；")}。请按上述选择开始执行。`
-        : "（已批准方案）请按上面的方案开始执行。";
-      await api.chatSend(key, approveMsg);
-    } catch (e) {
-      onToast("批准失败：" + String(e));
-      setPlanCardVisible(true);
-    } finally {
+  /** 方案审批应答，两种来源：
+   *  - 原生：批准 = allow（CLI 退出计划模式并在同一轮继续执行）→ 再按所选模式热切换；
+   *    继续修改 = deny，模型收到拒绝后留在计划模式等修改意见
+   *  - 兜底：批准 = 切模式 + 发一条执行指令（没有协议请求可应答）；
+   *    继续修改 = 只收卡（本轮已结束，用户直接打字即可）
+   *  原生请求阻塞在 control_request 上且不超时，应答没送达时卡要留着可重试。 */
+  const respondPlan = useCallback(
+    async (approve: boolean, nextMode?: string) => {
+      const req = plan;
+      const key = sessionKeyRef.current;
+      if (!req || !key) return;
+      setPlanBusy(true);
+      if (req.source === "native") {
+        if (!approve) {
+          // 拒绝：共用失败语义（没送达就保留卡片可重试），然后就此结束——
+          // 兜底路径「继续修改」只收卡，原生路径则把拒绝交给模型后留在计划模式
+          const ok = await denyPlan(req.requestId, PLAN_DENY_MESSAGE);
+          setPlanBusy(false);
+          if (ok) setPlan(null);
+          return;
+        }
+        try {
+          await api.chatPermissionResponse(key, req.requestId, true);
+        } catch (e) {
+          // 应答没送达 → 卡保留可重试（CLI 仍阻塞在这条请求上）
+          onToast("方案应答失败：" + String(e));
+          setPlanBusy(false);
+          return;
+        }
+      }
+      setPlan(null);
       setPlanBusy(false);
-    }
-  }, [planPrevMode, planAnswers, onToast]);
+      if (!approve || !nextMode) return;
+      try {
+        // 顺序要紧：原生路径先 allow 让 CLI 跑完 ExitPlanMode（它自己会恢复
+        // prePlanMode），再热切换覆盖成用户选的模式——反过来会被它的恢复动作盖掉
+        await api.chatSetPermissionMode(key, nextMode as ChatPermissionMode);
+        setMode(nextMode);
+        modeTouchedRef.current = true;
+        if (req.source === "heuristic") {
+          await api.chatSend(key, "（已批准方案）请按上面的方案开始执行。");
+        }
+      } catch (e) {
+        onToast("切换模式失败：" + String(e));
+      }
+    },
+    [plan, denyPlan, onToast],
+  );
 
   const respondPermission = useCallback(
     async (requestId: string, allow: boolean) => {
@@ -1239,67 +1324,6 @@ export default function ChatView({
    * 可展开组，遇到用户气泡或助手文本即收口（与终端 Ctrl+O 行为一致）。
    * data-msg-index（文本/用户气泡）与 data-block-idx（工具行）供搜索/文件跳转。
    */
-  /** 方案审批卡文本：本轮最后一条已完成的助手文本（完整显示，卡内可滚动） */
-  const planPreview = useMemo(() => {
-    if (!planCardVisible) return null;
-    for (let i = items.length - 1; i >= 0; i--) {
-      const it = items[i];
-      if (it.kind === "text" && !it.streaming && it.text.trim()) {
-        const t = it.text.trim();
-        // 显示完整方案，仅对超长内容做安全截断
-        return t.length > 4000 ? `${t.slice(0, 4000)}…` : t;
-      }
-    }
-    return null;
-  }, [planCardVisible, items]);
-
-  /** 解析用文本：末块文本能解析就直接用；否则把本轮所有文本块拼起来再试
-   *  （选项表格常出现在更早的文本块，末块只是收尾总结） */
-  const planParseText = useMemo(() => {
-    if (!planCardVisible) return null;
-    if (parsePlanChoices(planPreview ?? "").length > 0) return planPreview;
-    const parts: string[] = [];
-    for (let i = items.length - 1; i >= 0; i--) {
-      const it = items[i];
-      if (it.kind === "user") break;
-      if (it.kind === "text" && !it.streaming && it.text.trim()) {
-        parts.unshift(it.text.trim());
-      }
-    }
-    const joined = parts.join("\n\n");
-    return parsePlanChoices(joined).length > 0 ? joined : planPreview;
-  }, [planCardVisible, items, planPreview]);
-
-  /** 是否解析出「决策点/选项」结构（可点选则隐藏纯文本预览） */
-  const hasPlanChoices = useMemo(
-    () => !!planParseText && parsePlanChoices(planParseText).length > 0,
-    [planParseText],
-  );
-
-  // 侧信道结构化：卡片出现时把方案文本交供应商 API 整理成 决策点/选项 结构
-  // （不再依赖猜测模型措辞）；失败静默回退到启发式解析/纯文本审批
-  useEffect(() => {
-    if (!planCardVisible || !planPreview) return;
-    let cancelled = false;
-    setPlanStructuring(true);
-    setPlanStructured(null);
-    api
-      .planStructure(planPreview)
-      .then((points) => {
-        if (cancelled) return;
-        setPlanStructured(Array.isArray(points) && points.length > 0 ? points : null);
-      })
-      .catch(() => {
-        if (!cancelled) setPlanStructured(null);
-      })
-      .finally(() => {
-        if (!cancelled) setPlanStructuring(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [planCardVisible, planPreview]);
-
   const renderStream = () => {
     const nodes: ReactNode[] = [];
     if (hasMore) {
@@ -1687,49 +1711,43 @@ export default function ChatView({
         </div>
       )}
 
-      {mode === "plan" && status.phase === "idle" && planCardVisible && realSessionId && (
-          <div className="plan-approve">
-            <div className="plan-approve-title">📋 方案已就绪 · 计划模式</div>
-            {planStructuring ? (
-              <div className="plan-approve-preview plan-approve-loading">
-                正在整理方案选项…
-              </div>
-            ) : planStructured && planStructured.length > 0 ? (
-              <PlanOptionList points={planStructured} onChange={setPlanAnswers} />
-            ) : hasPlanChoices ? (
-              <PlanChoices text={planParseText ?? ""} onChange={setPlanAnswers} />
-            ) : (
-              <>
-                {planPreview && (
-                  <div className="plan-approve-parsefail">
-                    未能识别出可点选的决策点结构，可直接「批准并执行」或在输入框里调整方案
-                  </div>
-                )}
-                {planPreview && <div className="plan-approve-preview">{planPreview}</div>}
-              </>
-            )}
-            <div className="plan-approve-actions">
-              <button
-                className="btn btn-primary"
-                disabled={planBusy}
-                onClick={() => void approvePlan()}
-                title="退出计划模式并让模型按方案开始执行"
-              >
-                {planBusy ? "切换中…" : "批准并执行"}
-              </button>
-              <button
-                className="btn"
-                onClick={() => setPlanCardVisible(false)}
-                title="留在计划模式，直接在输入框提出修改意见"
-              >
-                继续修改
-              </button>
-            </div>
-            <div className="plan-approve-hint">
-              批准后将退出计划模式开始执行；点「继续修改」可留在计划模式继续调整方案
-            </div>
+      {plan && (
+        <div className="plan-approve">
+          <div className="plan-approve-title">方案已就绪 · 计划模式</div>
+          <div className="plan-approve-preview">
+            {plan.text.trim() || "（本轮未捕获到方案正文，可直接在输入框提修改意见）"}
           </div>
-        )}
+          <div className="plan-approve-actions">
+            <button
+              className="btn btn-primary"
+              disabled={planBusy}
+              onClick={() => void respondPlan(true, "acceptEdits")}
+              title="批准方案并退出计划模式；后续文件编辑自动放行"
+            >
+              批准并自动接受编辑
+            </button>
+            <button
+              className="btn"
+              disabled={planBusy}
+              onClick={() => void respondPlan(true, "manual")}
+              title="批准方案并退出计划模式；每个工具仍需手动确认"
+            >
+              批准，逐个确认
+            </button>
+            <button
+              className="btn"
+              disabled={planBusy}
+              onClick={() => void respondPlan(false)}
+              title="留在计划模式，在输入框提出修改意见"
+            >
+              继续修改
+            </button>
+          </div>
+          <div className="plan-approve-hint">
+            批准后退出计划模式并在本轮继续执行；点「继续修改」留在计划模式
+          </div>
+        </div>
+      )}
 
       {pendingImages.length > 0 && (
         <div className="chat-attachments">
@@ -1802,7 +1820,7 @@ export default function ChatView({
             }
           }}
         />
-        {isBusy(status) ? (
+        {isBusy(status) && plan?.source !== "native" ? (
           <button className="btn" onClick={() => void interrupt()} title="中断当前轮（等价 Esc）">
             <StopIcon />
             停止

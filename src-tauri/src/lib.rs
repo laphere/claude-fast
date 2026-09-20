@@ -10,7 +10,6 @@ pub mod provider;
 
 /// 拉取供应商可用模型列表
 pub mod model_fetch;
-pub mod plan_structure;
 
 /// Coding Plan 套餐用量查询
 pub mod usage_query;
@@ -861,15 +860,6 @@ fn fetch_models_for_config(
     api_key: String,
 ) -> Result<Vec<model_fetch::FetchedModel>, String> {
     model_fetch::fetch_models(&base_url, &api_key)
-}
-
-/// 方案结构化（侧信道 AskUserQuestion）：把方案文本交当前供应商 API 整理成
-/// 决策点/选项，供前端渲染可点选卡片；失败返回 Err（前端回退启发式解析/普通审批）
-#[tauri::command]
-fn plan_structure(
-    plan_text: String,
-) -> Result<Vec<plan_structure::PlanDecisionPoint>, String> {
-    plan_structure::structure_plan(&plan_text)
 }
 
 /// 查询供应商的 Coding Plan 用量（凭据取自其 settingsConfig.env；
@@ -5817,7 +5807,6 @@ pub fn run() {
             provider_import_ccswitch,
             provider_read_live,
             fetch_models_for_config,
-            plan_structure,
             provider_query_usage,
             open_url
         ])

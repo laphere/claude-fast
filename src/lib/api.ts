@@ -16,7 +16,6 @@ import type {
   ProviderInfo,
   ProviderListState,
   ProviderSwitchOutcome,
-  PlanDecisionPoint,
   PinnedSession,
   PinnedSessionInfo,
   SessionInfo,
@@ -130,14 +129,15 @@ export const api = {
   /** 运行中切换权限模式（等价终端 Shift+Tab；CLI 回执失败会以 error 事件浮出） */
   chatSetPermissionMode: (sessionId: string, mode: ChatPermissionMode) =>
     invoke("chat_set_permission_mode", { sessionId, mode }),
-  chatPermissionResponse: (sessionId: string, requestId: string, allow: boolean) =>
-    invoke("chat_permission_response", { sessionId, requestId, allow }),
+  /** 权限/方案审批应答；denyMessage 仅拒绝时生效（方案审批用专属文案） */
+  chatPermissionResponse: (
+    sessionId: string,
+    requestId: string,
+    allow: boolean,
+    denyMessage?: string,
+  ) => invoke("chat_permission_response", { sessionId, requestId, allow, denyMessage }),
   /** 关闭对话进程（关 stdin 优雅退出，超时强杀） */
   chatClose: (sessionId: string) => invoke("chat_close", { sessionId }),
-  /** 方案结构化（侧信道）：把方案文本交当前供应商整理成决策点/选项；
-   *  失败抛错——前端回退启发式解析或普通「批准/继续修改」 */
-  planStructure: (planText: string) =>
-    invoke<PlanDecisionPoint[]>("plan_structure", { planText }),
   // ---------- 供应商切换 ----------
   /** 供应商清单（首次调用自动把 live 配置收编为 default 供应商） */
   providerList: () => invoke<ProviderListState>("provider_list"),

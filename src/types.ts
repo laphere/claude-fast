@@ -196,6 +196,9 @@ export type ChatEvent =
   | { type: "message_complete"; usage: ChatUsage }
   | { type: "permission_request"; requestId: string; toolName: string; input: unknown }
   | { type: "permission_cancelled"; requestId: string }
+  /** ExitPlanMode 方案审批：plan 为方案正文；应答 = allow（退出计划模式继续执行）
+   *  / deny（留在计划模式） */
+  | { type: "plan_approval"; requestId: string; plan: string }
   | {
       type: "turn_end";
       isError: boolean;
@@ -228,18 +231,6 @@ export interface ChatPermissionRequest {
   requestId: string;
   toolName: string;
   input: unknown;
-}
-
-/** 方案结构化（侧信道 plan_structure）：供应商整理出的决策点选项 */
-export interface PlanChoiceOption {
-  key: string;
-  text: string;
-  recommended: boolean;
-}
-
-export interface PlanDecisionPoint {
-  title: string;
-  options: PlanChoiceOption[];
 }
 
 /** 排行条目（项目/模型）的单日用量，供前端按时间范围过滤 */
