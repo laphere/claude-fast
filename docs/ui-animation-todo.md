@@ -11,5 +11,5 @@
 ## 实现注意
 
 - 左栏动画：`.main-left` 是 `flex-basis 360px + display:none`，`display` 不能过渡——需改 width/max-width transition 或父级 grid-template-columns 过渡
-- 动画期间若有内嵌终端（embedded-terminal 分支），其 ResizeObserver 会连续触发 refit（已有 150ms 防抖），动画时长需与之对齐，避免中途反复 resize PTY 造成 claude TUI 抖动；主线无终端不受影响
+- 动画期间若有内嵌终端（原 Tauri `embedded-terminal` 分支，已移植进主线、该分支已退休），其 ResizeObserver 会连续触发 refit（已有 150ms 防抖），动画时长需与之对齐，避免中途反复 resize PTY 造成 claude TUI 抖动
 - 优先级建议：侧栏过渡 > 对话框/菜单 > toast > 其他；统一一个 easing/时长体系（如 150-200ms ease-out）保持手感一致

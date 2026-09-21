@@ -3,6 +3,12 @@
 > 2026-09-21 立。目标：**一个 app 两种交互模式**——内嵌终端（真 claude TUI，PTY + xterm.js）与页面内对话（已有，官方 Agent SDK）。终端那一套现在活在 Tauri 2 + Rust 的 `embedded-terminal` 分支上，要把它并进 Electron 主线，让两条线**共用同一份共享层代码**（现在共享层是 Rust/TS 各一份，任何共性改动都要写两遍——这就是本次迁移的动机）。
 >
 > 这份文档自包含，给**另一个会话里干活的 agent** 用，不需要读前一次对话的上下文。
+>
+> **2026-09-22 补记**：迁移已完成并落地（见「内嵌终端」两次提交），Tauri 线分支
+> `embedded-terminal` 随之**退休删除**（本地与远端都不在了）。本文里所有
+> `embedded-terminal` 的引用**一律改读本机 tag `embedded-terminal-final`**——
+> 例如 `git show embedded-terminal-final:src-tauri/src/pty.rs`。分支纪律那节已失效，
+> 见下。
 
 ---
 
@@ -10,13 +16,13 @@
 
 - 本分支 `CLAUDE.md`：项目约定、铁律、IPC 三处同步规则、打包约束
 - `docs/chat-behavior-spec.md`：**同类文档的写法范例**（逐条给证据、标明「已验证 / 未验证」）
-- Tauri 线（`git show embedded-terminal:<path>`，**不要切分支**）：
+- Tauri 线（`git show embedded-terminal-final:<path>`，**不要切分支**；该 tag 是退休后留下的本机存档）：
   - `docs/embedded-terminal-plan.md`：终端设计全程与实测踩坑（§6.x 逐条），**本次的验收基准**
   - `src/components/TerminalPane.tsx`、`src/lib/{pty,bold-bright,term-unicode,term-title,ime-anchor}.ts`
   - `src-tauri/src/pty.rs`、`src-tauri/src/clipboard_image.rs`
   - `docs/ime-anchor-probe/`：IME 锚点的回归探针（真 Chromium 里断言落点）
 
-**分支纪律**：所有工作在本分支 `claude-fast-electron` 上进行。**不要动 `main`**（与 `embedded-terminal` 同一提交，Tauri 线）、不要动 `embedded-terminal`、不要动本机 tag `v1.0.0-final` / `v2.0.0-final`。
+**分支纪律**（迁移期间有效，**已于 2026-09-22 履行完毕**）：所有工作在本分支 `claude-fast-electron` 上进行。**不要动 `main`**（与 `embedded-terminal` 同一提交，Tauri 线）、不要动 `embedded-terminal`、不要动本机 tag `v1.0.0-final` / `v2.0.0-final`。——`embedded-terminal` 现按迁移完成后的收尾惯例删除（内容在 `main` 上另有一份，本机另留 tag `embedded-terminal-final`）；`main` 与本机 tag **仍未动**。
 
 ---
 
@@ -52,7 +58,7 @@ harness 建议：一个最小 Electron app（**放在 gitignore 的工作目录�
 
 ## 3. 移植清单
 
-行数与位置为 2026-09-21 的审计结论（`embedded-terminal` 分支行号，逐条可核）。
+行数与位置为 2026-09-21 的审计结论（原 `embedded-terminal` 分支行号，逐条可核；该分支已退休，改读 tag `embedded-terminal-final`）。
 
 ### 3.1 几乎逐字可搬（≈1340 行，零改动）
 
