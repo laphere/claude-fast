@@ -3,6 +3,7 @@ import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { save } from "@tauri-apps/plugin-dialog";
 import { api } from "../lib/api";
+import { installMarkdownHighlighting } from "../lib/highlight";
 import {
   ArrowDownIcon,
   ArrowUpIcon,
@@ -35,6 +36,10 @@ interface Props {
   onResume: () => void;
   onToast: (msg: string) => void;
 }
+
+// 给全局 marked 装代码块高亮（幂等，见 lib/highlight.ts）。放模块顶层而非组件内：
+// marked.use 是全局副作用，且必须在首次 marked.parse 之前生效。
+installMarkdownHighlighting();
 
 /** 每页消息数（与后端 MAX_SESSION_MESSAGES 一致） */
 const PAGE_SIZE = 500;
