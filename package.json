@@ -45,7 +45,7 @@
   },
   "build": {
     "appId": "com.claudefast.launcher",
-    "productName": "Claude助手",
+    "productName": "CC Desktop",
     "electronDownload": {
       "mirror": "https://npmmirror.com/mirrors/electron/"
     },
@@ -91,7 +91,7 @@
         "en_US"
       ],
       "displayLanguageSelector": true,
-      "artifactName": "Claude助手_${version}_x64-setup.${ext}"
+      "artifactName": "CC Desktop_${version}_x64-setup.${ext}"
     },
     "mac": {
       "target": [

@@ -1,4 +1,4 @@
-# Claude助手
+# CC Desktop
 
 在任意项目目录中一键启动 Claude Code，无需手动进目录、开终端、敲命令。支持 Windows 与 macOS。
 
@@ -19,11 +19,11 @@ claude-fast/
 └── README.md
 ```
 
-> 本目录为**纯源码库**（与 GitHub 仓库一致）。程序本体通过**安装包**分发（Windows：`Claude助手_<版本>_x64-setup.exe`；macOS：`Claude助手_<版本>-arm64.dmg` / `-x64.dmg`）；用户数据（项目清单与收藏 `config.json`）在安装版数据目录 `%APPDATA%\claude-fast`（macOS 为 `~/Library/Application Support/claude-fast`）。
+> 本目录为**纯源码库**（与 GitHub 仓库一致）。程序本体通过**安装包**分发（Windows：`CC Desktop_<版本>_x64-setup.exe`；macOS：`CC Desktop-<版本>-arm64.dmg` / `-x64.dmg`）；用户数据（项目清单与收藏 `config.json`）在安装版数据目录 `%APPDATA%\claude-fast`（macOS 为 `~/Library/Application Support/claude-fast`）。
 
 ## 使用
 
-双击桌面上的「Claude助手」快捷方式（或开始菜单的 `Claude助手`）打开图形界面。
+双击桌面上的「CC Desktop」快捷方式（或开始菜单的 `CC Desktop`）打开图形界面。
 Electron 应用为 GUI 程序，启动时**不会出现多余的 cmd 窗口**，关闭界面按设置退出或最小化到托盘。
 
 - **启动 Claude Code** → 点击项目行内的「**+**」按钮，新开终端窗口进入该项目目录并运行 claude（`/k` 模式，claude 退出后窗口保留可看输出）
@@ -64,10 +64,10 @@ npm run dist:win
 npm run dist:mac
 ```
 
-构建产物（Windows）：`release/Claude助手_<版本>_x64-setup.exe`（NSIS 安装包，可选择安装目录、免管理员、中英双语界面）。
+构建产物（Windows）：`release/CC Desktop_<版本>_x64-setup.exe`（NSIS 安装包，默认装到 `C:\Program Files\CC Desktop`，可选择安装目录、免管理员、中英双语界面）。
 绿色版解包安装目录中的 exe，与 config.json/scripts 同层放置即为便携模式。
 
-构建产物（macOS）：`release/Claude助手-<版本>-arm64.dmg` / `...-x64.dmg`（安装镜像，拖入「应用程序」即可）。
+构建产物（macOS）：`release/CC Desktop-<版本>-arm64.dmg` / `...-x64.dmg`（安装镜像，拖入「应用程序」即可）。
 
 ### 架构要点
 

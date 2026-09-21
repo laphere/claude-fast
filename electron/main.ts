@@ -229,7 +229,7 @@ function quitApp(): void {
 
 function createTray(): void {
   tray = new Tray(trayImage());
-  tray.setToolTip("Claude助手");
+  tray.setToolTip("CC Desktop");
   const menu = Menu.buildFromTemplate([
     { label: "显示窗口", click: () => showMainWindow() },
     { label: "退出程序", click: () => quitApp() },
@@ -246,7 +246,7 @@ function createTray(): void {
 function createWindow(): void {
   const { app: appIconPath } = appIcon();
   mainWindow = new BrowserWindow({
-    title: "Claude助手",
+    title: "CC Desktop",
     width: 1120,
     height: 720,
     minWidth: 800,

@@ -1,4 +1,4 @@
-# Claude助手（claude-fast）
+# CC Desktop（claude-fast）
 
 一键在项目目录启动 Claude Code 的桌面应用：**Electron（Node.js 后端）+ React + TypeScript（前端）+ Vite**，Windows + macOS 双平台，不限定工作区目录。
 
@@ -140,4 +140,6 @@ npm run dist:win             # Windows NSIS 安装包（别名：npm run electro
 npm run dist:mac             # macOS dmg（x64 + arm64）
 ```
 
-构建产物：Windows 为 NSIS 安装包（`release/Claude助手_<版本>_x64-setup.exe`，`perMachine`、安装界面中英双语、免管理员、可换安装目录）；macOS 为 `release/Claude助手-<版本>-<arch>.dmg`（x64 + arm64 双架构）。绿色版取安装目录内容（asar 包内含 dist 与 dist-electron），与 config.json/scripts 同层放置即为便携模式。
+构建产物：Windows 为 NSIS 安装包（`release/CC Desktop_<版本>_x64-setup.exe`，`perMachine`、默认装到 `C:\Program Files\CC Desktop`、安装界面中英双语、免管理员、可换安装目录）；macOS 为 `release/CC Desktop-<版本>-<arch>.dmg`（x64 + arm64 双架构）。绿色版取安装目录内容（asar 包内含 dist 与 dist-electron），与 config.json/scripts 同层放置即为便携模式。
+
+> **app 名 vs 数据根**：应用显示名（`build.productName`、托盘、窗口标题）为 **CC Desktop**；`%APPDATA%\claude-fast` 这个**数据根目录名刻意保持 `claude-fast` 不变**（`paths.ts` 的 `appDataRoot` 与 `main.ts` 的 userData 隔离均硬编码）——改名会让老用户的数据根凭空换目录、清单看起来全丢。安装目录叶子名由 productName 决定（`productName` 全是 ASCII 时才用它，否则 electron-builder 回退到包名 `claude-fast`，这正是改名前 `C:\Program Files` 下是 `claude-fast` 的原因）。
