@@ -10,10 +10,10 @@
 
 | 文件 | 作用 |
 |---|---|
-| `src/` | 前端：React + TypeScript + Vite。`App.tsx` 状态管理；`src/components/` 15 个 UI 组件（对话框/列表/会话查看器等）；`src/lib/api.ts` 封装全部 preload 桥调用（`window.claudeFast`） |
+| `src/` | 前端：React + TypeScript + Vite。`App.tsx` 状态管理（项目清单 / 会话 / 对话 tab / 置顶 / 配置落盘）；`src/components/` 24 个 UI 组件（列表、各类对话框、`ChatView` / `ChatTabs` / `AskQuestionCard` / `StatsDialog` / `ProviderDialog` / `PinnedSessions` 等）；`src/lib/api.ts` 封装全部 preload 桥调用（`window.claudeFast`）；`src/config/claudeProviderPresets.ts` 是 88 个供应商预设常量 |
 | `electron/main.ts` | Electron 主进程：窗口 / 托盘 / 单实例 / 关闭拦截 / 全部 IPC 命令注册 |
 | `electron/preload.ts` | `contextBridge` 白名单 API（渲染进程无 Node 权限，全部经 `ipcRenderer.invoke`） |
-| `electron/backend/` | 后端业务模块：`paths.ts`（数据根定位/内容校验/进程内缓存 + 项目目录）、`config.ts`（配置模型 + 三步保护 + 读改写 + 写串行化）、`chat.ts`（**app 内对话层**：官方 Agent SDK 托管 + 流式事件翻译 + 多会话/权限/方案/提问/图片）、`provider.ts`（供应商切换，含 CC Switch SQL 导入）、`model-fetch.ts`（供应商模型列表拉取）、`usage-query.ts`（Coding Plan 用量）、`claude-update.ts`（本机 claude 版本检查与升级）、`usage-stats.ts`（全局用量台账）、`session-extra.ts`（会话搜索/进度轨/导出/失效项目数据清除/置顶清单）、`mangle.ts`（目录名正反解析）、`sessions.ts`（会话列表/元数据/内容解析/重命名）、`trash.ts`（回收站）、`platform.ts`（启动/健康检查/resume/批量扫描/旧脚本迁移）、`scriptnames.ts`（脚本时代遗留，仅 `platform.ts` 引用它）、`text.ts`（标题清洗） |
+| `electron/backend/` | 后端业务模块：`paths.ts`（数据根定位/内容校验/进程内缓存 + 项目目录）、`config.ts`（配置模型 + 三步保护 + 读改写 + 写串行化）、`chat.ts`（**app 内对话层**：官方 Agent SDK 托管 + 流式事件翻译 + 多会话/权限/方案/提问/图片）、`provider.ts`（供应商切换，含 CC Switch SQL 导入）、`model-fetch.ts`（供应商模型列表拉取）、`usage-query.ts`（Coding Plan 用量）、`claude-update.ts`（本机 claude 版本检查与升级）、`usage-stats.ts`（全局用量台账）、`session-extra.ts`（会话搜索/进度轨/导出/失效项目数据清除/置顶清单）、`mangle.ts`（目录名正反解析）、`sessions.ts`（会话列表/元数据/内容解析/重命名）、`trash.ts`（回收站）、`platform.ts`（启动/健康检查/resume/批量扫描/旧脚本迁移）、`scriptnames.ts`（脚本时代的转义工具，生产代码只剩 `shQuote` 在用，`parseCdPath` 只服务旧脚本迁移）、`text.ts`（标题清洗） |
 | `electron/backend/chat.ts` | **对话层不用移植 `v2.0.0` 的 `chat.rs`**，改用官方 `@anthropic-ai/claude-agent-sdk`（0.3.278，与 CLI 2.1.278 同版）。运行时**动态 `import()`**（ESM-first，见下方「打包」），`import type` 拿类型（编译期擦除）。要点：懒启动、多会话并行、6 档权限（`manual`→CLI 的 `default`）、`canUseTool` 权限/方案/提问、`interrupt()` 中断、图片 base64（≤4.5MB）、`pathToClaudeCodeExecutable` 跟随本机 `bin\claude.exe` |
 | `tools/` | 构建脚本：`dev.mjs`（并行 vite + electron）、`build-electron.mjs`（esbuild 编译主进程） |
 | `build/` | 打包图标（icon.ico / icon.png / icon.icns） |
@@ -21,22 +21,21 @@
 
 > 本目录为**纯源码库**（与 GitHub 仓库一致）：不含 exe、scripts、config.json——这些运行时产物/用户数据都在数据根目录（见「数据根目录」）。
 
-## 启动脚本约定
+## 启动脚本（已作废，仅剩一次性迁移）
 
-- 每个 `claude-*.bat`（Windows）/ `claude-*.sh`（macOS）内容固定：`cd` 到项目路径 → 检查 `claude` 命令 → 启动 `claude`，统一生成到数据根 `scripts/`。
-- Windows **必须写 `call claude` 而不是 `claude`**：`claude` 是 `claude.cmd` shim，批处理调用其他 .cmd 不加 `call` 时 cmd 不返回，错误处理不执行。bat 约定：UTF-8 编码、CRLF 换行、`chcp 65001` 后输出中文、出错 `pause` 保留窗口。
-- macOS `.sh` 模板（`genSh`）：`#!/bin/bash` + `fail()` 函数（提示+等回车）+ `cd "/路径" || fail` + `command -v claude` 检查 `|| fail` + `exec claude`；路径经 `shQuote` 转义（`\` `"` `$` 反引号）防注入；写脚本后自动 `chmod +x`。
-- 脚本里的目录路径是**绝对路径**（项目移动后需同步修改脚本）。
+**本分支不生成任何 `claude-*.bat` / `.sh`**：项目清单是**路径模型**（`config.json` 的 `order`/`projects` 存项目绝对路径），启动/继续对话直接开终端跑 `claude`，不经脚本文件（见「跨平台层」）。数据根 `scripts/` 只在启动时被读一次：`ensureProjectsMigrated`（`main.ts`）调 `legacyScriptPaths`（`platform.ts`）解析老版本的脚本、把其中的项目路径补进 `config.projects`（`parseCdPath` 兼容 `cd /d "…"` 与 `cd "…"` 两种写法），迁完即不再使用。`paths.ts` 的 `scriptExt()` / `legacyMarker()` 也只剩这套迁移在用。
+
+> 历史约定（**已不适用**，留着避免误读旧提交）：脚本内容固定为 `cd` 到项目 → 检查 `claude` → 启动 `claude`；bat 必须 UTF-8 + CRLF + `chcp 65001`；Windows 调 `claude.cmd` 这类 shim **必须写 `call claude`**，否则 cmd 不返回、错误处理不执行——这条**仍适用于**今天唯一还会调 .cmd 的地方：`claude-update.ts` 跑 `claude --version` / `claude update` 时走 `cmd /D /S /C call`。
 
 ## 跨平台层
 
-- `scriptExt()` 返回 bat/sh；`legacyMarker()` 兼容旧标记 `claude-claude-fast.<ext>`；`parseCdPath` 兼容 `cd /d` 与 `cd "/path"` 两种语法（现供旧脚本迁移解析用）。
+- `scriptExt()` 返回 bat/sh；`legacyMarker()` 兼容旧标记 `claude-claude-fast.<ext>`；`parseCdPath` 兼容 `cd /d` 与 `cd "/path"` 两种语法——三者现**只服务旧脚本迁移**（见上节），新代码不要再依赖它们。
 - **启动/resume 必须经 `cmd /c start` 链**（`spawnStartChain`）：`start "Claude Code" /d "<项目>" cmd /k claude [--resume <id>]`。⚠️ Electron GUI 主进程（无控制台）+ `stdio:"ignore"` 直接 spawn cmd 时，Windows **不分配新 console**（windowsHide/detached 均救不了；`detached` 反而触发 claude 2.x bash 探测弹多窗）——claude 拿不到 TTY 静默退出、无任何窗口（2026-09 实测根因）。`start` 用 CREATE_NEW_CONSOLE 新开终端、走系统默认终端委托；外层 cmd `/c` 无窗口立即退出。verbatim 传参仍必须（cmd 不认 MSVC 转义的 `\"`）。
 - `resumeSession(file, projectPath, projectsDir)`：新开终端窗口执行 `claude --resume <session-id>`。Windows 走 `buildResumeCmdline` 的 start 链；macOS 写临时 .sh 到系统临时目录再 `open -a Terminal`（无需 osascript 自动化权限）。共用 `validateResumePath`，平台规则不同：Windows 拒绝 cmd 元字符；macOS 路径经 `shQuote` 进 `cd "..."` 后元字符均为字面量，故仅拒控制字符 + 要求路径存在（避免误伤含 `( ) ' \` 的合法 mac 路径）。
   - Windows 口径：**只拒 `"` `%` `!`**（引号截断 / 变量展开 / 延迟展开）——`& | < > ^ ( )` 在双引号内都是字面量。这条与 `v2.0.0`/`v1.0.0` 逐字对齐（那边有回归测试断言含 `(x86) & test` 的合法目录必须放行），**别改回「一律拒 cmd 元字符」**：多拒会让 `C:\Program Files (x86)\…` 这类常见目录「启动能开、继续对话报错」。
   - `launchProject` 与 resume **共用同一校验**（`validateResumePath`），macOS 启动脚本走 `buildLaunchScript`——与 `buildResumeScript` 同为 `shQuote` 转义。（此前这两处是缺口，2026-09-21 修，见 `docs/chat-behavior-spec.md` §2 B4/B5。）
 - `openFolder`：explorer.exe / `open`；`checkClaude`：`where` / `sh -c "command -v claude"`（均 3 秒超时，Promise 不阻塞渲染）。
-- `checkClaude`/`checkLaunchers` 等 spawn 系函数 Windows 一律 `windowsHide: true`，防止后台命令闪黑窗（注意：这只影响探测类调用，启动终端必须走上面的 start 链）。
+- `checkClaude` / `checkProjects` / `claude_update_status` / 对话层的 `where claude` 探测等 spawn 系调用 Windows 一律 `windowsHide: true`，防止后台命令闪黑窗（注意：这只影响探测类调用，启动终端必须走上面的 start 链）。
 
 ## mangle / unmangle（Claude Code 项目目录名解析）
 
@@ -47,19 +46,32 @@
 ## 功能
 
 - **配置模型（`config.json`）**：`order`（项目显示顺序，项目绝对路径数组；未收录项按名称追加在后）、`projects`（手动添加的项目路径，与会话扫描结果取并集）、`excluded`（从列表移除的项目路径，扫描会重新发现它们，必须靠它排除）、`dark`、`closeAction`、`providers` / `currentProvider`（供应商切换）、`pinnedSessions`（置顶会话，条目 `{file, projectPath}`：`file` 是会话 jsonl 绝对路径作稳定锚点，`projectPath` 在置顶时刻记录）。
-  - **兼容层 `favorites`**：本分支历史上的「收藏置顶」（顺序即显示顺序）。保留读写是为了不给当前 UI 造成回归，读取时在 `order` **键缺失**的情况下用它当 `order` 初值（显式写出的空 `order` 不会被覆盖回来）。前端切到 `order` 后删除该字段。
-  - `providers` / `pinnedSessions` 目前只有**数据模型与清理助手**（`dropPinsForProjects` / `pruneDeadPins`），对应的命令与 UI 待实现。
-- **收藏置顶**（`favorites`）：点星标或右键收藏，金色置顶。已收藏项可**整行拖拽排序**（顺序即 `favorites` 数组顺序，松手后复用 `saveConfig` 落盘；按 key 重排非索引，失效 key 原位保留；搜索过滤期间禁用拖拽；未收藏行不可拖拽）。前端用原生 HTML5 DnD——主进程的 **`will-navigate` 拦截是前提**（Electron 渲染层默认拖文件/链接会导航离开页面，`main.ts` 里 `webContents.on("will-navigate", e => e.preventDefault())` 与 `setWindowOpenHandler` deny 保证页面内 dragover/drop 可用，勿当冗余代码删掉）。
-- **健康检查不阻塞启动**：`listLaunchers` 只解析脚本内容不做目录 stat（秒返回）；前端渲染后异步调 `checkLaunchers` 并行检查，失效目录自动标红；「健康检查」对话框打开时现场重新检查。
-- **批量添加**：扫描 Claude Code 项目目录，`unmangleCandidates` 反解出真实路径并验证存在性，失效项目（`missing`）不参与生成。命名**无工作区概念**：任何路径统一用叶子目录名（如 `myapp` → `claude-myapp.bat`）；同名自动加序号（`claude-myapp-2.bat`，`pickUniqueScriptPath`），**绝不覆盖**其他项目的脚本。
-- **会话管理**：点击项目行展开其 Claude Code 会话列表（异步加载不阻塞 UI）；会话行显示标题 + 相对时间 + 摘要，悬停出现 ✎ 重命名、🗑 删除。`listSessions(projectPath)` 用真实路径正向 mangle 定位 `<projects>/<mangled>/`，对每个 `.jsonl` 只读首尾各 64KB（`LITE_READ_BUF_SIZE`）提取元数据：标题回退链 customTitle > aiTitle > 首条用户消息；**命令消息（如 `/init`）被跳过——只执行命令、无实质对话的会话不进列表**；sidechain/纯元数据会话过滤；按 mtime 倒序。`renameSession(file, newTitle)` 安全校验（限 projects 目录下 uuid.jsonl）后向 jsonl **追加** `custom-title` 行（与 Claude Code `/rename` 同机制，不覆盖原文件）。
-- **回收站（删除 = 移入回收站）**：`deleteSession` 先备份到数据根 `trash/sessions/<时间戳>/<项目>/` 再删除；「🗑 回收站」对话框可 `restoreSession` 恢复（移回原目录，Claude Code 可继续 resume）或 `purgeSession` / `purgeTrash` 永久删除（行内二次确认）。
-- **会话内容查看**：左右分栏（左 320px 项目/会话列表，右内容区）。`getSessionMessages(file)` 全量读 jsonl 提取 user/assistant 消息（text/thinking/tool_use/tool_result 块，`MAX_SESSION_MESSAGES=500` 截断，过滤 sidechain/isMeta/命令消息），前端聊天式渲染（思考/工具调用/工具结果 `<details>` 折叠、围栏代码块等宽）。
+  - **兼容层 `favorites`**：本分支历史上的「收藏置顶」，**已不驱动任何 UI**（页面上没有星标/收藏入口）。保留读写只为不给老配置造成回归：仅在 `order` **键缺失**时拿它当 `order` 初值（显式写出的空 `order` 不会被覆盖回来）。
+- **顶栏与左栏布局（单行顶栏 + 可收起左栏）**：工具栏整行已撤，功能入口全在顶栏右侧（搜索 / 新建 / 批量添加 / 回收站 / 统计，纯图标 + title），品牌区已移除（应用名只在窗口/任务栏标题）。顶栏右端还有两个状态胶囊：供应商（未配置显示「默认配置」）与健康检查（「检查中…」/「claude 可用」/「claude 未找到」，有失效项目时变红并带「N 失效」角标）。搜索框收在左栏顶部、默认隐藏，由顶栏搜索按钮展开（Esc 或再点即收起并清空），常驻不被列表滚走。左栏可手动收起（顶栏最左 panel-left 开关，收起后内容区占满全宽）；窄于 980 自动收起、宽于 1020 才恢复（40px 迟滞带 + resize 80ms 防抖），**只恢复「被自动收起」的那次**——手动切换会清掉 `autoCollapsedRef`，此后 resize 不再干预；收起态仅内存、不落盘。默认窗口 1120×720、最小 800×500。⚠️ 顶栏那个按钮的 title 仍写「新建启动项」，弹窗实际标题是「添加项目」（文案不一致，待统一）。
+- **全局拖拽排序（`order`）**：项目行整行可拖拽调序（拖到目标行上半/下半 = 插到它前/后；松手写回 `order` 落盘；位置没变不写盘），起手必须 `setData("text/plain", key)`（WebKit 下不带 data 的拖拽根本不启动）；搜索过滤期间禁用拖拽；右键菜单「移到最前」是同一套全序列语义的快捷入口。前端用原生 HTML5 DnD——主进程的 **`will-navigate` 拦截是前提**（Electron 渲染层默认拖文件/链接会导航离开页面，`main.ts` 里 `webContents.on("will-navigate", e => e.preventDefault())` 与 `setWindowOpenHandler` deny 保证页面内 dragover/drop 可用，勿当冗余代码删掉）。
+- **置顶会话聚合区（`pinnedSessions`）**：会话行左侧图钉按钮置顶/取消置顶，置顶项聚到左栏顶部**跨项目**区域（无置顶项时整块不渲染；带项目名徽标消歧）。`listPinnedSessions` 按清单顺序**实时**解析元数据（不存快照），文件缺失的条目静默跳过；**已置顶会话不再在项目列表中重复显示**（前端按 file 过滤；某项目会话全被置顶时展开区提示「会话已全部置顶」）。语义：新置顶插最前、不支持拖拽排序；**删除会话保留条目**（恢复后自动复活），只有彻底删除才清理——`purgeSession` / `purgeTrash` 后 `pruneDeadPins`，`removeProject` / `purgeClaudeProjectData` 按 projectPath 撤条目（`dropPinsForProjects`）。⚠️ **后端这四个入口改的是磁盘 config，前端内存里的 `pinnedSessions` 必须重新读盘同步**（`syncPinsFromConfig`）——它是下次保存的真源，不同步则之后任意一次保存（切主题/拖拽排序/置顶取消）都会把已清掉的死条目写回；`refreshPinned` 只刷展示元数据、与真源清单不可互相替代。
+- **app 内直接对话（官方 Agent SDK）**：`electron/backend/chat.ts` 用 `@anthropic-ai/claude-agent-sdk`（运行时动态 `import()`）托管 CLI 子进程，事件翻译成 `ChatEvent` 经 IPC 推给 `ChatView` 流式渲染。要点：
+  - **懒启动**：首条消息才 spawn；失败可重试（以 `query` 为成功标志，`starting` 兼作并发去重）。多会话 tab 并行，切 tab 只切 `display`、**不中断流**（非激活页继续后台流式）；同一会话不允许开两个进程（只激活已有 tab）。
+  - **权限 6 档**：`manual`（= CLI 的 `default`，每工具都问）/ `auto` / `acceptEdits` / `plan` / `bypassPermissions` / `dontAsk`（不进下拉，配置里配了才以原始名动态加入）。初始档位跟随 settings（项目 `settings.local.json` > 项目 `settings.json` > 用户级，`CLAUDE_CONFIG_DIR` 优先）；未改选时必须用内部选项 `resolvePermissionModeInCli: true`，否则会被 SDK 的 `--permission-mode default` 压过（见下面「Agent SDK 验证结论」第 3 条）。
+  - **三类卡片**：权限确认（`canUseTool` → `permission_request` → 允许/拒绝）、提问 `AskUserQuestion`（⚠️ 应答必须带 `updatedInput.answers`，key 用题目**完整文本**；只回 `allow` 会**静默失效**）、方案审批 `ExitPlanMode`（原生 `plan_approval` 事件 + 计划模式下本轮结束的兜底触发，三选一：批准并自动接受编辑 / 批准逐个确认 / 继续修改）。切走计划模式时必须补一次 deny——CLI 阻塞在 `control_request` 上且**不会超时**。
+  - **中断**：`chat_interrupt` → `query.interrupt()`（UI 的「停止」按钮在忙碌且无原生方案卡时替换发送键）。
+  - **图片**：PNG/JPEG/GIF/WebP、单图 ≤4.5MB（前后端各拦一次），粘贴与拖入共用同一路，支持纯图无文本发送。
+  - **进度轨**：会话页左侧 58px 用户发言导航（悬停波浪 + 气泡预览、点击跳转、高亮跟随滚动）。
+  - **落盘**：与终端**同一份** `~/.claude/projects/<mangled>/<sessionId>.jsonl`（新对话自生成 uuid，续聊走 `--resume`），对话完自动进会话列表、终端可 resume；重命名用 `sdk.renameSession`。
+  - **关闭进程**：关 stdin 让 CLI 自己收尾落盘、最多等 3s（`GRACEFUL_CLOSE_MS`），超时才强杀；退出 app 时 `quit_app` 与 `before-quit` 都先 `closeAll()`（整体 3s 上限，超时统一 kill）。
+- **会话页 = 对话 + 内容查看二合一（`ChatView`）**：外层左右分栏（左栏 360px 固定 + 右侧占满）；会话页内部 = 58px 进度轨 + 消息区 + 可选 220px 变更文件面板。历史 jsonl 段（`getSessionMessages`，默认取最后 500 条，向上/向下分页带窗口世代号防乱序）与本次实时段合成**一条统一渲染流**：活动组**跨消息合并**（一轮工具循环折成一行摘要「思考 · 读取 2 个文件 · 执行 1 条命令」，遇用户气泡或助手文本收口），思考/工具调用/工具结果 `<details>` 折叠、围栏代码块等宽。顶部按钮：搜索（防抖全文搜 text 块与 tool_use 输入，命中跨分页跳转）、变更文件（聚合 `Edit`/`Write`/`MultiEdit`，历史条目可定位、实时条目不可定位）、导出（Markdown / JSONL）、刷新（重读 jsonl 并清空实时区，进行中禁用）；头部左侧是「N 条消息 · 总计…」token 统计、右侧是「本次 X tok」。
   - **相邻同 `message.id` 的行合并成一条**：一次响应被拆成多行落盘（代理多段迭代共用一个 id），不合并会让消息数虚高一截（真实会话实测 +30~80%），连带 Markdown 导出的「## 消息 N」与分页覆盖的轮次都失真。
-  - **头部 token 统计**（`SessionMessages.stats`）在**切片前**对全量消息聚合，翻页不影响数字；每条消息的 `usage` 按 id 取**代表行**——**收尾行（带 `stop_reason`）优先**，同优先级取 token 更大者。⚠️ **不能取首行**：当代 jsonl 的首行 usage 恒为 0，实测某会话取首行 3.44M vs 收尾行 258.84M（差 75 倍）；也**不能逐行相加**（成倍虚高）。这条口径与用量台账**共用同一个函数**（`usage-stats.ts` 的 `betterUsageRow`），两处必须同源——本就为「头部数字与统计仪表盘对不上」埋过雷。
-- **单实例**（`app.requestSingleInstanceLock()`）：重复启动不新建进程，`second-instance` 回调里 show + restore + focus + `setAlwaysOnTop` 开关（对抗 Windows 前台锁定，勿当冗余代码删掉）把已有窗口调到前台。
-- **关闭行为**：主进程拦截窗口 `close`（`e.preventDefault()` + 向渲染层发 `window:close-requested`），前端按 `closeAction` 分发：`quit` → `destroyWindow`（绕过拦截）、`minimize` → `hideWindow`（托盘）、未设置 → 弹窗询问。托盘菜单「退出程序」与 `quitApp` IPC 走 `quitting` 标志绕过拦截直接退出。
-- 其他：深色主题（`dark`）、搜索过滤、右键菜单、新建/删除启动脚本、开机自启动（`app.setLoginItemSettings`：Windows 注册表 Run 项 / macOS 登录项）、系统托盘（左键显示窗口/右键菜单：显示窗口+退出；**不能用 `setContextMenu`**——Windows 上设置后左键单击也会弹菜单，会顶掉「左键显示窗口」）。状态存 `config.json`。
+  - **token 统计**（`SessionMessages.stats`）在**切片前**对全量消息聚合，翻页不影响数字；每条消息的 `usage` 按 id 取**代表行**——**收尾行（带 `stop_reason`）优先**，同优先级取 token 更大者。⚠️ **不能取首行**：当代 jsonl 的首行 usage 恒为 0，实测某会话取首行 3.44M vs 收尾行 258.84M（差 75 倍）；也**不能逐行相加**（成倍虚高）。这条口径与用量台账**共用同一个函数**（`usage-stats.ts` 的 `betterUsageRow`），两处必须同源。
+- **会话管理**：点击项目行展开其会话列表（异步加载不阻塞 UI）；**点击会话行 = 在 app 内继续对话**（「在终端中继续对话」在右键菜单里）。`listSessions(projectPath)` 用真实路径正向 mangle 定位 `<projects>/<mangled>/`，对每个 `.jsonl` 只读首尾各 64KB（`LITE_READ_BUF_SIZE`）提取元数据：标题回退链 customTitle > aiTitle > **首条非命令用户消息**；**命令消息（如 `/init`）被跳过**——只执行命令、无实质对话的会话不进列表；sidechain / 纯元数据会话过滤；按 mtime 倒序。`renameSession(file, newTitle)` 安全校验（限 projects 目录下 uuid.jsonl，先 realpath 再组件级前缀判断）后向 jsonl **追加** `custom-title` 行（与 Claude Code `/rename` 同机制，不覆盖原文件）。**会话行上不放操作按钮**：重命名/删除/置顶/终端继续都收进右键菜单，行内图标**常显**（不靠 hover）。
+- **回收站（删除 = 移入回收站）**：`deleteSession` 先备份到数据根 `trash/sessions/<时间戳>/<项目>/` 再删除；「回收站」对话框可 `restoreSession` 恢复（移回原目录，Claude Code 可继续 resume）或 `purgeSession` / `purgeTrash` 永久删除（行内二次确认）。恢复时目标已存在必须拒绝（防覆盖）；删除进回收站**不清置顶条目**（等恢复时复活），彻底删除才 `pruneDeadPins`。
+- **批量添加**：扫描 Claude Code 项目目录（`CLAUDE_CONFIG_DIR` > `~/.claude/projects` > macOS 的 Claude Desktop 后备目录），`unmangleCandidates` 反解出真实路径并验证存在性；失效项目展示但**禁选**（路径加删除线 + `[已失效]` 前缀），可「删除失效数据」——**二次点击确认**，递归删整个 `<projects>/<mangled>/`（不进回收站、无备份），三道防线防误删（必须是 projects 直接子目录 / 真实项目路径仍存在则跳过 / 目标目录必须精确存在）。**本分支不生成任何启动脚本**：启动是直接开终端跑 `claude`（见「跨平台层」），`scripts/` 只被一次性迁移读取。
+- **健康检查 / 本地环境检查**：顶栏胶囊 → 弹窗，检查三项：`claude` 是否在 PATH、各项目目录是否存在、Claude Code 版本 vs npm 最新版（可一键升级，见 `claude-update.ts`）。⚠️ **清单里的 `missing` 标记来自 `list_projects` 扫描时的同步 stat**（不是打开弹窗才发现），失效项目在左栏标「失效」、状态栏常驻「N 个失效」；`claude` 可用性与版本是渲染后异步查（3s / 10s / 15s 超时），不阻塞启动。弹窗里也能「清除失效项目」（先移除再删数据，二次确认）。
+- **窗口聚焦自动刷新**：主进程 `BrowserWindow` 的 `focus` 事件 → IPC `window:focused`（**不是** DOM `visibilitychange`）→ 刷新当前展开项目的会话列表 + 置顶区展示元数据，1.5s 节流防 alt-tab 连刷。**不刷新**正在阅读的会话内容（「保持过期优于打扰阅读」，会话页自带刷新按钮）。
+- **使用统计仪表盘**：顶栏统计按钮 → 弹窗，数据来自数据根 `stats-ledger.json` 台账（增量扫描：mtime + size + 时区一致即跳过；`LEDGER_VERSION` 或时区变化触发全量重扫）。范围三档（近 7 天 / 近 30 天 / 全部，默认 7 天）；趋势图是**自绘 div 堆叠**（无图表库），按模型堆叠、9 色上限、超出并「其他」并带「未归属」兜底段，日窗口按天、`all` 按月；另有汇总卡、项目排行（可按 token / 会话数排序）与模型分布。口径：只统计 token（订阅版 jsonl 无 costUSD）、`<synthetic>` 占位消息整条跳过、按本地时区归属日期、**已删会话仍计入**。刷新按钮只重扫有变更的文件（不强制全量、不清缓存）。
+- **供应商切换（移植自 cc-switch）**：清单存 `config.json` 的 `providers`（条目含整份 `settingsConfig`）+ `currentProvider`；切换 = 把目标条目整份写入 live `settings.json`（原子写 + `.bak` 备份），并把离任供应商的 live 内容回填进清单（指纹不符则跳过并提示）。表单以 **JSON 文本为唯一事实来源**（结构化字段与它双向同步，JSON 非法时只更新输入框、不动文本），JSON 区沉底为最后一个 textarea；预设模板是前端常量（88 个）。CC Switch 导入读用户选中的 `.sql` 备份（按列名解析 `INSERT INTO providers`，只取 `app_type='claude'`，id 沿用原值）。⚠️ 切换**不通知对话层**，已开着的会话不受影响（新开会话才生效）。
+- **Coding Plan 用量查询**：支持 Kimi / 智谱 GLM / MiniMax / ZenMux / OpenCode Go 五家；key 取自该供应商配置的 `env`（`ANTHROPIC_AUTH_TOKEN` 否则 `ANTHROPIC_API_KEY`）；非已知厂商静默隐藏（`supported:false`）。前端 5 分钟内存缓存 + 打开弹窗自动查一次 + 手动刷新，无定时轮询；失败把后端 error 串原样回显。
+- **UI 约定**：图标只用 `Icons.tsx` 的 Lucide 风格线性组件（会话内容渲染里的 `💭`/`🖼️` 等是文本占位、不是按钮图标），**禁止用字符/emoji 当按钮图标**；主按钮类名是 **`btn btn-primary`**（写 `btn primary` 会静默降级成描边）；新增按钮类**必须做墨迹居中补偿**（不对称 padding，注释写「墨迹补偿，勿改对称」）。`styles.css` 里 `.chat-head` 与 `.viewer-head` 是同一套规则的两份（`.viewer-head` 本身已无引用 = 死 CSS，`.viewer-*` 子类仍在用），**改一处要同步另一处**。
+- **其他**：单实例（`app.requestSingleInstanceLock()`：重复启动不新建进程，`second-instance` 回调里 show + restore + focus + `setAlwaysOnTop` 开关对抗 Windows 前台锁定，勿当冗余代码删掉）、关闭行为（主进程拦截 `close`：`e.preventDefault()` + 发 `window:close-requested`；前端按 `closeAction` 三态分发——`quit` → destroyWindow / `minimize` → hideWindow / 未设置 → 弹窗询问；托盘「退出程序」与 `quit_app` 走 `quitting` 标志绕过拦截）、系统托盘（左键显示窗口、右键菜单；**不能用 `setContextMenu`**——Windows 上设置后左键单击也会弹菜单，会顶掉「左键显示窗口」）、深色主题（`dark`）、开机自启动（`app.setLoginItemSettings`，仅 win32/darwin 显示该项）、`pick_file`/`pick_folder`/`save_file` 三个原生对话框（分别只用于 CC Switch 导入 / 添加项目选目录 / 会话导出）、`open_url`（只放行 http/https，仅供应商表单外链用）。
 
 ## 数据根目录（双模式）
 
@@ -141,7 +153,7 @@ app 内对话层改用官方 `@anthropic-ai/claude-agent-sdk` 前必须先确认
 ```bash
 npm install                  # 依赖（国内可设 ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ 加速）
 npm run dev                  # 开发模式（vite 热更新 + electron，主进程改动自动重启）
-npm test                     # 后端单元测试（316 个：路径解析/脚本生成/配置/扫描/根目录定位/会话管理/mangle/回收站/对话层/用量台账）
+npm test                     # 后端单元测试（329 个：路径解析/配置/扫描/根目录定位/会话管理/mangle/回收站/对话层/用量台账）
 npm run typecheck            # 类型检查（前端 tsc + electron tsc）
 npm run build                # 生产构建（typecheck + vite build + esbuild 编译主进程）
 npm run dist:win             # Windows NSIS 安装包（别名：npm run electron:build）
