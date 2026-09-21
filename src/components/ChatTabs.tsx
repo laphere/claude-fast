@@ -10,12 +10,8 @@
 import { useRef } from "react";
 import type { WheelEvent } from "react";
 import { TerminalIcon, XIcon } from "./Icons";
+import { isBusyPhase } from "../App";
 import type { ContentTab } from "../App";
-
-/** 进行中 = 正在启动/思考中（这类会话在"关闭其他"时跳过） */
-function isBusyPhase(phase: string | undefined): boolean {
-  return phase === "thinking" || phase === "starting";
-}
 
 interface Props {
   tabs: ContentTab[];

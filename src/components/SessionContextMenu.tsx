@@ -8,8 +8,8 @@ interface Props {
   /** 该会话当前是否已置顶（决定置顶项文案） */
   sessionPinned: boolean;
   onClose: () => void;
-  /** 在终端中继续对话（新开终端窗口 resume） */
-  onResumeTerminal: () => void;
+  /** 在系统终端窗口里继续该会话（resume） */
+  onResumeSystem: () => void;
   onRename: () => void;
   /** 置顶 / 取消置顶（顶部聚合区常驻显示） */
   onTogglePin: () => void;
@@ -17,14 +17,15 @@ interface Props {
   onDelete: () => void;
 }
 
-/** 会话行右键菜单：点击行 = app 内继续对话；终端继续/重命名/置顶/删除收进这里 */
+/** 会话行右键菜单：点行 = 只读查看（不起进程），起会话的两条路收在这里
+ *  （内嵌终端 / 系统终端），另有重命名 / 置顶 / 删除 */
 export default function SessionContextMenu({
   x,
   y,
   session,
   sessionPinned,
   onClose,
-  onResumeTerminal,
+  onResumeSystem,
   onRename,
   onTogglePin,
   onDelete,
@@ -58,15 +59,22 @@ export default function SessionContextMenu({
         <span className="context-title-text">{session.title}</span>
       </div>
       <div className="context-sep" />
+      {/* 起会话只留系统终端一条：app 内的两条路由点击（只读查看）与只读页上的
+          「继续对话」承担，不进菜单 */}
       <button
         className="context-item"
         onClick={() => {
-          onResumeTerminal();
+          onResumeSystem();
           onClose();
         }}
       >
-        在终端中继续对话
+        在系统终端中继续对话
       </button>
+      <div className="context-sep" />
+      {/* ⚠️ 别在菜单项里加 ✎ / 📌 / 🗑 这类字符当图标：它们与 Icons.tsx 的线性
+          SVG 图标不是一套（字重、基线、配色都对不上，深浅主题下更是），
+          本仓铁律「禁止用字符/emoji 当按钮图标」。要加图标就从 Icons.tsx 取
+          （PencilIcon / PinIcon / TrashIcon）；删除项的危险语义由 .context-danger 承担 */}
       <button
         className="context-item"
         onClick={() => {
@@ -74,7 +82,7 @@ export default function SessionContextMenu({
           onClose();
         }}
       >
-        ✎ 重命名
+        重命名
       </button>
       <button
         className="context-item"
@@ -83,7 +91,7 @@ export default function SessionContextMenu({
           onClose();
         }}
       >
-        📌 {sessionPinned ? "取消置顶" : "置顶（顶部聚合区常驻）"}
+        {sessionPinned ? "取消置顶" : "置顶（顶部聚合区常驻）"}
       </button>
       <div className="context-sep" />
       <button
@@ -93,7 +101,7 @@ export default function SessionContextMenu({
           onClose();
         }}
       >
-        🗑 删除（移入回收站）
+        删除（移入回收站）
       </button>
     </div>
   );

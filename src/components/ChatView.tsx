@@ -9,7 +9,15 @@
  * - 历史与实时合成一条统一渲染流，活动组跨消息合并（Claude Code 终端风格）
  * 渲染体系复用 MessageParts；新对话写入 ~/.claude/projects 原生 jsonl。
  */
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MutableRefObject,
+  type ReactNode,
+} from "react";
 import { Channel } from "../lib/channel";
 import { api } from "../lib/api";
 import AskQuestionCard, {
@@ -32,6 +40,7 @@ import {
   DownloadIcon,
   FileIcon,
   MessageCircleIcon,
+  PlayIcon,
   RefreshIcon,
   SearchIcon,
   StopIcon,
@@ -62,6 +71,27 @@ interface Props {
   onToast: (msg: string) => void;
   /** 对话状态变化上报（多会话 tab 的进行中标记） */
   onStatusChange?: (phase: ChatStatus["phase"]) => void;
+  /** 新对话首轮落盘后回传（App 据此把 tab 升级成续聊态：标题同步 + 统计/按钮 +
+   *  左栏会话列表补条目）；续聊 tab 自带 session，不走这里 */
+  onSessionReady?: (meta: { file: string; title: string }) => void;
+  /** 只读会话页（点会话行进来的默认形态）：只渲染历史，不给输入框、**绝不启动进程**。
+   *  历史会话要不要继续得先看一眼，误触 resume 会写 jsonl、把旧会话顶到列表最前 */
+  readOnly?: boolean;
+  /** 只读页上点「继续对话」→ 交给宿主按「默认交互方式」继续（页面对话就地变可发言 /
+   *  内嵌终端开终端 tab），两条都不会立刻起进程 */
+  onContinue?: () => void;
+  /** 「继续对话」按钮的 title（按设置的默认方式措辞，让用户知道会落到哪）；禁用时被
+   *  continueBlocked 覆盖 */
+  continueHint?: string;
+  /** 「继续对话」不可用的原因（如该会话正跑在另一个 tab 里）；有值时按钮禁用并显示它 */
+  continueBlocked?: string | null;
+  /** 本 tab 的 id（与 killers 配套，见下） */
+  tabId?: string;
+  /** 就地击杀注册表（与 TerminalPane 同一套）：宿主「删除会话」时先 await 它拿到
+   *  「对话进程确实已退出」的时刻，再动会话文件。卸载路径的 chatClose 是
+   *  fire-and-forget，宿主等不到；不等就会让仍在收尾的 claude 把最后一条消息写进
+   *  已被移走的文件，或在原路径把这份会话「重新建出来」。挂载时注册、卸载时删除。 */
+  killers?: MutableRefObject<Map<string, () => Promise<void>>>;
 }
 
 /** 每页历史消息数（与后端 MAX_SESSION_MESSAGES 一致） */
@@ -189,6 +219,13 @@ export default function ChatView({
   session,
   onToast,
   onStatusChange,
+  onSessionReady,
+  readOnly = false,
+  onContinue,
+  continueHint,
+  continueBlocked = null,
+  tabId,
+  killers,
 }: Props) {
   // ---------- 实时流（本次 sitting 的消息） ----------
   const [items, setItems] = useState<ChatItem[]>([]);
@@ -202,6 +239,9 @@ export default function ChatView({
   /** 用户是否手动改选过模式——改选过才在 spawn 时显式传 flag，否则跟随配置 */
   const modeTouchedRef = useRef(false);
   const [status, setStatus] = useState<ChatStatus>({ phase: "idle" });
+  /** 本次 sitting 的消息数（发送 +1、每条 assistant 消息完成 +1）：新对话收编后
+   *  没有 jsonl 快照，头部统计行用实时累计兜底（见 statLine） */
+  const [liveMsgs, setLiveMsgs] = useState(0);
   const [permissions, setPermissions] = useState<ChatPermissionRequest[]>([]);
   const [usage, setUsage] = useState<ChatUsage | null>(null);
   const [realSessionId, setRealSessionId] = useState<string | null>(null);
@@ -419,6 +459,7 @@ export default function ChatView({
         break;
       case "message_complete": {
         const u = ev.usage;
+        setLiveMsgs((n) => n + 1);
         setUsage((prev) =>
           prev
             ? {
@@ -529,7 +570,16 @@ export default function ChatView({
   // 历史初始加载：默认取最后 500 条（会话切换或点「刷新」时重新加载）。
   // 依赖会话 file 而非 session 对象身份：重命名只改标题也会换对象
   // （App 侧同步 tab 标题），按对象重载会把阅读位置与搜索状态一起冲掉
+  /** 押下一次 session?.file 触发的历史加载（新对话收编用：不改渲染数据源，
+   *  见下方「新对话落盘收编」）。放在 effect 前声明只为可读性 */
+  const skipNextHistoryLoadRef = useRef(false);
   useEffect(() => {
+    // 收编触发的 session?.file 变化：渲染数据源保持实时区，不改走 jsonl
+    // （正在流式的消息只存在于 items，此刻加载历史会把已画过的再画一遍）
+    if (skipNextHistoryLoadRef.current) {
+      skipNextHistoryLoadRef.current = false;
+      return;
+    }
     if (!session) {
       setHistory([]);
       setStats(null);
@@ -633,13 +683,56 @@ export default function ChatView({
     }
   }, [session, historyLoading, total, onToast]);
 
-  /** 「刷新」：重读 jsonl 并清空实时区（jsonl 为唯一事实来源；对话进行中禁用） */
+  /** 「刷新」：重读 jsonl 并清空实时区（jsonl 为唯一事实来源；对话进行中禁用）。
+   *  收编后的 sitting 一直走实时区渲染，「刷新」是它切回 jsonl 口径的入口 */
   const refreshHistory = useCallback(() => {
     if (!session || isBusy(status)) return;
     setItems([]);
     setUsage(null);
+    setLiveMsgs(0);
     setReloadKey((k) => k + 1);
   }, [session, status]);
+
+  // ---------- 新对话落盘收编（续聊态） ----------
+
+  /** 新对话收编：session_ready 给出真实会话 id 后轮询 jsonl（首条消息落盘才出现，
+   *  正常一两秒内），拿到标题那一刻文件必然存在，立即回调 App——tab 标题同步、
+   *  右上角按钮/搜索/导出可用、左栏会话列表补条目。
+   *  ⚠️ 收编**不动渲染数据**（skipNextHistoryLoadRef 押后历史加载）：整个 sitting
+   *  沿用「历史为空 + 实时区」模型，头部统计走实时累计（statLine），「刷新」或
+   *  下次挂载才切回 jsonl 口径。onSessionReady 走 ref（App 传的是内联箭头，进
+   *  依赖会让轮询反复重启）。 */
+  const onSessionReadyRef = useRef(onSessionReady);
+  onSessionReadyRef.current = onSessionReady;
+  useEffect(() => {
+    if (!realSessionId || session) return;
+    let disposed = false;
+    let timer: number | undefined;
+    let tries = 0;
+    const tick = async () => {
+      tries++;
+      try {
+        const meta = await api.chatSessionMeta(projectPath, realSessionId);
+        if (disposed) return;
+        if (meta) {
+          skipNextHistoryLoadRef.current = true;
+          onSessionReadyRef.current?.(meta);
+          return; // 收编完成：session 落上后 effect 依赖变化，自行清理定时器
+        }
+      } catch {
+        /* 读失败（瞬态）：下一轮再试 */
+      }
+      // **不设次数上限**：放弃等于这个 tab 整个 sitting 都缺统计/按钮、左栏也不出
+      // 这条会话（effect 依赖此后不再变化，没有第二次机会）。先快步再转慢步，
+      // 兼顾正常路径的及时性与异常时的开销——与终端 tab 的标题补挂同策略。
+      if (!disposed) timer = window.setTimeout(() => void tick(), tries < 10 ? 800 : 3000);
+    };
+    void tick();
+    return () => {
+      disposed = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [realSessionId, session, projectPath]);
 
   // ---------- 进程生命周期 ----------
 
@@ -651,8 +744,28 @@ export default function ChatView({
     [],
   );
 
-  /** 懒启动对话进程（首次发送时调用） */
+  /** 注册「就地击杀」：宿主删会话前先 await 它，拿到的是「对话进程已退出」的时刻
+   *  （chat_close 关 stdin 让 CLI 自己收尾，最多等 3s 才强杀），随后才动会话文件。
+   *  从未启动过（只读页、或开了 tab 还没发消息）时是空操作——那种 tab 本来就没有
+   *  进程在写文件，宿主也不必等。 */
+  useEffect(() => {
+    if (!killers || !tabId) return;
+    const map = killers.current;
+    map.set(tabId, async () => {
+      const key = sessionKeyRef.current;
+      if (!key) return;
+      // 关完即摘掉：随后的卸载路径（removeTabs → cleanup）按空跳过，不二次 close
+      sessionKeyRef.current = null;
+      await api.chatClose(key).catch(() => {});
+    });
+    return () => {
+      map.delete(tabId);
+    };
+  }, [killers, tabId]);
+
+  /** 懒启动对话进程（首次发送时调用）。只读页永远走不到这里（send 已拦）。 */
   const ensureStarted = useCallback((): Promise<string> => {
+    if (readOnly) return Promise.reject(new Error("只读会话页不会启动进程"));
     if (sessionKeyRef.current) return Promise.resolve(sessionKeyRef.current);
     if (!startPromiseRef.current) {
       setStatus({ phase: "starting" });
@@ -678,7 +791,7 @@ export default function ChatView({
         });
     }
     return startPromiseRef.current;
-  }, [projectPath, session, mode, handleEvent]);
+  }, [projectPath, session, mode, handleEvent, readOnly]);
 
   // ---------- 发送 / 停止 / 权限 / 模式 ----------
 
@@ -748,6 +861,7 @@ export default function ChatView({
     const text = input.trim();
     const images = pendingImages;
     const pendingNative = plan?.source === "native" ? plan : null;
+    if (readOnly) return; // 只读页绝不发消息（兜底：composer 本就不渲染）
     if (status.phase === "exited") return;
     if (!text && images.length === 0) return;
     // 原生方案请求在等应答时不按「忙碌」拦：那条路径下 status 停在 thinking（模型
@@ -773,6 +887,7 @@ export default function ChatView({
       ...prev,
       { id: nextItemId++, kind: "user", text, images: images.length > 0 ? images : undefined },
     ]);
+    setLiveMsgs((n) => n + 1);
     // 两种来源都一样：发出新消息即表示本轮方案卡不再适用
     setPlan(null);
     try {
@@ -781,7 +896,7 @@ export default function ChatView({
     } catch (e) {
       onToast("发送失败：" + String(e));
     }
-  }, [input, pendingImages, status, plan, ensureStarted, denyPlan, onToast]);
+  }, [input, pendingImages, status, plan, ensureStarted, denyPlan, onToast, readOnly]);
 
   /** 追加图片附件（粘贴/拖拽共用；非图片文件静默忽略） */
   const addImages = useCallback(
@@ -1369,10 +1484,23 @@ export default function ChatView({
     [toolNames, items],
   );
 
-  // 状态变化上报给 tab 栏（多会话并行的进行中标记）
+  // 只读页点「继续对话」→ 输入框一出来就把光标送进去：刚点完按钮还要再点一次
+  // 输入框才打得出字，是那种「明明点了却没反应」的手感
+  const wasReadOnlyRef = useRef(readOnly);
   useEffect(() => {
-    onStatusChange?.(status.phase);
-  }, [status.phase, onStatusChange]);
+    if (wasReadOnlyRef.current && !readOnly) inputRef.current?.focus();
+    wasReadOnlyRef.current = readOnly;
+  }, [readOnly]);
+
+  // 状态变化上报给 tab 栏（多会话并行的进行中标记）。
+  // ⚠️ 回调走 ref：宿主传的是内联箭头（每次渲染都是新函数），放进依赖会让本 effect
+  // 在**每次 App 渲染**后重跑 → updateChatPhase → updateTabs → setState → 再渲染，
+  // 自激成一圈。与 TerminalPane 的 onStatus/onTitle 同一处理（那边的注释就是为这个）。
+  const onStatusChangeRef = useRef(onStatusChange);
+  onStatusChangeRef.current = onStatusChange;
+  useEffect(() => {
+    onStatusChangeRef.current?.(status.phase);
+  }, [status.phase]);
 
   const statusLabel = useMemo(() => {
     switch (status.phase) {
@@ -1389,6 +1517,29 @@ export default function ChatView({
         return realSessionId ? "已连接" : "";
     }
   }, [status, realSessionId]);
+
+  /** 头部统计行：jsonl 口径（stats）优先——挂载/刷新后它覆盖全量历史；新对话
+   *  收编后的整个 sitting 没有 jsonl 快照，用实时累计兜底（liveMsgs + 每条
+   *  assistant 消息的 usage 累加，与 jsonl 代表行求和同口径），长轮次中途也有数可看 */
+  const statLine = useMemo(() => {
+    if (stats && stats.messageCount > 0) {
+      return {
+        count: total > 0 ? `${total} 条消息` : "",
+        detail: `总计 ${fmtTokens(stats.totalTokens)} · 输入 ${fmtTokens(stats.inputTokens)} · 输出 ${fmtTokens(stats.outputTokens)}${
+          stats.cacheReadTokens > 0 ? ` · 缓存读取 ${fmtTokens(stats.cacheReadTokens)}` : ""
+        }`,
+      };
+    }
+    if (liveMsgs > 0 && usage && usage.inputTokens + usage.outputTokens > 0) {
+      return {
+        count: `${liveMsgs} 条消息`,
+        detail: `总计 ${fmtTokens(
+          usage.inputTokens + usage.outputTokens + usage.cacheReadInputTokens + usage.cacheCreationInputTokens,
+        )} · 输入 ${fmtTokens(usage.inputTokens)} · 输出 ${fmtTokens(usage.outputTokens)}`,
+      };
+    }
+    return null;
+  }, [stats, total, liveMsgs, usage]);
 
   /**
    * 统一渲染：活动组跨消息合并——连续的思考/工具/孤儿结果条目折进同一个
@@ -1533,21 +1684,16 @@ export default function ChatView({
       <div className="chat-head">
         <div className="chat-head-body">
           <div className="viewer-title">{title}</div>
-          {(total > 0 || (stats && stats.messageCount > 0)) && (
+          {statLine && (
             <div className="viewer-stats">
-              {total > 0 ? `${total} 条消息` : ""}
-              {stats && stats.messageCount > 0 && (
-                <>
-                  {total > 0 ? " · " : ""}总计 {fmtTokens(stats.totalTokens)} · 输入{" "}
-                  {fmtTokens(stats.inputTokens)} · 输出 {fmtTokens(stats.outputTokens)}
-                  {stats.cacheReadTokens > 0 && ` · 缓存读取 ${fmtTokens(stats.cacheReadTokens)}`}
-                </>
-              )}
+              {statLine.count}
+              {statLine.count && statLine.detail ? " · " : ""}
+              {statLine.detail}
             </div>
           )}
         </div>
         <div className="chat-head-actions">
-          {usage && usage.outputTokens + usage.inputTokens > 0 && (
+          {stats && usage && usage.outputTokens + usage.inputTokens > 0 && (
             <span className="chat-usage">
               本次 {fmtTokens(usage.inputTokens + usage.outputTokens)} tok
             </span>
@@ -1604,6 +1750,20 @@ export default function ChatView({
                 <RefreshIcon size={15} />
               </button>
             </>
+          )}
+          {/* 只读会话页的唯一入口，摆在刷新旁边。用 ▶ 而不是对话气泡：这个会话此刻
+              是「停着」的（只读页没有进程在跑），点它就是让它接着跑——播放键比气泡
+              更贴近这层意思。橙底（.icon-btn-primary）让它从同行四个中性图标里跳出来，
+              那四个只是查看器的工具，这个是唯一的动作 */}
+          {readOnly && (
+            <button
+              className="icon-btn icon-btn-primary"
+              disabled={continueBlocked !== null}
+              title={continueBlocked ?? continueHint ?? "继续对话"}
+              onClick={onContinue}
+            >
+              <PlayIcon size={15} />
+            </button>
           )}
         </div>
       </div>
@@ -1698,7 +1858,13 @@ export default function ChatView({
               <div className="empty-icon">
                 <MessageCircleIcon size={34} />
               </div>
-              <div>{session ? "继续这个对话，输入第一条消息" : "输入消息，开始新对话"}</div>
+              <div>
+                {readOnly
+                  ? "这个会话没有可显示的内容"
+                  : session
+                    ? "继续这个对话，输入第一条消息"
+                    : "输入消息，开始新对话"}
+              </div>
               <div className="empty-sub">对话记录保存到 Claude Code 会话目录，终端里也能继续</div>
             </div>
           ) : (
@@ -1849,6 +2015,9 @@ export default function ChatView({
         </div>
       )}
 
+      {/* 只读态整条 footer 都不渲染（输入框、图片拖放、权限下拉一并消失——只读就是
+          只读）；入口是头部刷新按钮旁那颗「继续对话」 */}
+      {!readOnly && (
       <div
         className="chat-composer"
         onDragOver={(e) => {
@@ -1920,6 +2089,7 @@ export default function ChatView({
           </button>
         )}
       </div>
+      )}
     </div>
   );
 }

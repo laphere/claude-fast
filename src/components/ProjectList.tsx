@@ -168,8 +168,8 @@ export default function ProjectList({
                 <div className="row-path">{l.path}</div>
               </div>
               {/* 行内两枚按钮的图标与左右顺序对齐 v1.0.0：先是「更多操作」（⋯），
-                  再是 PlusIcon（+）。⚠️ v1.0.0 的 + 是「起终端跑 claude」，这里仍是
-                  「app 内新建对话」——只是外观对齐，别按 v1.0.0 的语义去改它。 */}
+                  再是 PlusIcon（+）。+ 按「默认交互方式」开新会话 tab（页面对话或
+                  内嵌终端，设置里可切）；两种 tab 共存，互不影响。 */}
               {l.healthy !== false && (
                 <div className="row-actions">
                   <button
@@ -185,7 +185,7 @@ export default function ProjectList({
                   </button>
                   <button
                     className="row-icon row-icon-add"
-                    title="app 内对话（新建会话）"
+                    title="新建会话"
                     onClick={(e) => {
                       e.stopPropagation();
                       onChatProject(l.key);

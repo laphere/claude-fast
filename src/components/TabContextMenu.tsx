@@ -1,21 +1,29 @@
 /**
- * 内容区 tab 右键菜单（关闭其他/所有会话）。移植自 Tauri 线 App 的 tabMenuView：
- * 可关闭项 = 对话不在 thinking/starting + 终端已退出或探针判空闲；忙碌/未识别的
- * 只报数、不列进菜单（关 tab = 结束其进程）。全部基于**打开菜单那一刻**的快照
- * （activity 由 App 现算传入——终端探针不轮询、不缓存）。
+ * 内容区 tab 右键菜单（关闭其他/所有会话）。移植自 Tauri 线 App 的 tabMenuView。
+ *
+ * ⚠️ **纯渲染，不含任何可关性判断**：能关哪些、跳过几个、为什么跳过，全部由 App
+ * 在打开菜单那一刻按同一份快照算好传进来（策略只有 App 一处，见其 openTabMenu）。
+ * 本组件曾经自己重写一遍「对话非 thinking/starting + 终端已退出或判空闲」，
+ * 与 App 各判各的——阈值或状态集一改就漂移成「这菜单敢关的，App 那边不肯关」。
  */
 import { useEffect, useRef } from "react";
-import type { ContentTab } from "../App";
-import type { TabActivity } from "../types";
 
 interface Props {
   x: number;
   y: number;
-  /** 右键命中的 tab（null = 点在 tab 栏背景上） */
+  /** 右键命中的 tab（null = 点在 tab 栏背景上，「关闭其他会话」只是不渲染）；
+   *  仅用于「关闭其他」这个**动作**，显示用的标题见 title */
   tabId: string | null;
-  tabs: ContentTab[];
-  /** 打开菜单时刻的终端忙/闲快照（对话 tab 不在其中，按 phase 判断） */
-  activity: Record<string, TabActivity>;
+  /** 右键命中的 tab 标题（快照里的值，不跟着实时清单变） */
+  title: string | null;
+  /** 「关闭其他会话」会关掉几个（tabId 非空时必然有值） */
+  otherCount: number | null;
+  /** 「关闭所有会话」会关掉几个（0 = 禁用） */
+  allCount: number;
+  /** 会被跳过（在跑/未识别）的会话数 */
+  skippedCount: number;
+  /** 跳过原因分项，如「2 个干活中」（空数组 = 不显示提示行） */
+  why: string[];
   onClose: () => void;
   /** 关闭除指定 tab 外的其他会话（在跑的不在关闭范围） */
   onCloseOthers: (id: string) => void;
@@ -23,22 +31,15 @@ interface Props {
   onCloseAll: () => void;
 }
 
-/** 进行中 = 正在启动/思考中（与 ChatTabs 同一口径） */
-function isBusyPhase(phase: string | undefined): boolean {
-  return phase === "thinking" || phase === "starting";
-}
-
-/** 终端 tab 能否安全关闭（与 App 的 termTabClosable 同口径：已退出或判空闲） */
-function termClosable(t: Extract<ContentTab, { kind: "term" }>, activity: Record<string, TabActivity>) {
-  return t.status === "exited" || activity[t.id] === "idle";
-}
-
 export default function TabContextMenu({
   x,
   y,
   tabId,
-  tabs,
-  activity,
+  title,
+  otherCount,
+  allCount,
+  skippedCount,
+  why,
   onClose,
   onCloseOthers,
   onCloseAll,
@@ -60,26 +61,7 @@ export default function TabContextMenu({
     };
   }, [onClose]);
 
-  const closable = (t: ContentTab): boolean =>
-    t.kind === "chat" ? !isBusyPhase(t.phase) : termClosable(t, activity);
-
-  const otherTabs = tabId ? tabs.filter((t) => t.id !== tabId) : tabs;
-  const otherClosable = otherTabs.filter(closable);
-  const allClosable = tabs.filter(closable);
-
-  // 分开写清楚"为什么没关"，否则只看得到 0、没法判断是探测问题还是真有在跑的
-  const kept = otherTabs.filter((t) => !closable(t));
-  const keptBusyChat = kept.filter((t) => t.kind === "chat").length;
-  const keptTerm = kept.filter((t): t is Extract<ContentTab, { kind: "term" }> => t.kind === "term");
-  const keptBusyTerm = keptTerm.filter((t) => activity[t.id] === "busy").length;
-  const keptSilent = keptTerm.filter((t) => activity[t.id] === undefined).length;
-  const keptUnknown = keptTerm.length - keptBusyTerm - keptSilent;
-  const why: string[] = [];
-  if (keptBusyChat + keptBusyTerm > 0) why.push(`${keptBusyChat + keptBusyTerm} 个干活中`);
-  if (keptUnknown > 0) why.push(`${keptUnknown} 个没识别出空闲态`);
-  if (keptSilent > 0) why.push(`${keptSilent} 个还没探测到`);
-
-  const rightTab = tabId ? tabs.find((t) => t.id === tabId) : null;
+  const skipTip = skippedCount > 0 ? "进行中的会话不会关闭" : undefined;
 
   return (
     <div
@@ -90,42 +72,42 @@ export default function TabContextMenu({
         top: Math.min(y, window.innerHeight - 150),
       }}
     >
-      {rightTab && (
+      {tabId !== null && title !== null && (
         <>
           <div className="context-title">
-            <span className="context-title-text">{rightTab.title}</span>
+            <span className="context-title-text">{title}</span>
           </div>
           <div className="context-sep" />
         </>
       )}
-      {tabId && (
+      {tabId !== null && (
         <button
           className="context-item"
-          disabled={otherClosable.length === 0}
-          title={kept.length > 0 ? "进行中的会话不会关闭" : undefined}
+          disabled={otherCount === 0}
+          title={skipTip}
           onClick={() => {
             onCloseOthers(tabId);
             onClose();
           }}
         >
-          关闭其他会话{otherClosable.length > 0 ? `（${otherClosable.length}）` : ""}
+          关闭其他会话{otherCount !== null && otherCount > 0 ? `（${otherCount}）` : ""}
         </button>
       )}
       <button
         className="context-item"
-        disabled={allClosable.length === 0}
-        title={kept.length > 0 ? "进行中的会话不会关闭" : undefined}
+        disabled={allCount === 0}
+        title={skipTip}
         onClick={() => {
           onCloseAll();
           onClose();
         }}
       >
-        关闭所有会话{allClosable.length > 0 ? `（${allClosable.length}）` : ""}
+        关闭所有会话{allCount > 0 ? `（${allCount}）` : ""}
       </button>
       {why.length > 0 && (
         <>
           <div className="context-sep" />
-          <div className="context-note">跳过 {kept.length} 个：{why.join(" · ")}</div>
+          <div className="context-note">跳过 {skippedCount} 个：{why.join(" · ")}</div>
         </>
       )}
     </div>

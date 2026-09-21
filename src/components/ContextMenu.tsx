@@ -8,7 +8,7 @@ interface Props {
   onClose: () => void;
   /** 把项目移到列表最前 */
   onMoveTop: (l: Project) => void;
-  /** 在终端中启动 Claude Code（原项目行「+」按钮收进菜单） */
+  /** 在**系统终端**（新窗口）里新建会话 */
   onLaunch: (l: Project) => void;
   onOpenFolder: (l: Project) => void;
   onCopyPath: (l: Project) => void;
@@ -46,7 +46,7 @@ export default function ContextMenu({
     };
   }, []);
 
-  // 防止菜单超出窗口右/下边缘
+  // 防止菜单超出窗口右/下边缘（预留高度要盖住实际菜单：标题 + 5 项 + 2 条分隔）
   const style: React.CSSProperties = {
     left: Math.min(x, window.innerWidth - 210),
     top: Math.min(y, window.innerHeight - 260),
@@ -64,6 +64,8 @@ export default function ContextMenu({
           <button className="context-item" onClick={() => { onMoveTop(project); onClose(); }}>
             移到最前
           </button>
+          {/* app 内那条不出现在菜单里：新建会话走项目行「+」（跟随「默认交互方式」），
+              菜单只留系统终端这一条 */}
           {project.healthy !== false && (
             <button
               className="context-item"
@@ -72,7 +74,7 @@ export default function ContextMenu({
                 onClose();
               }}
             >
-              在终端中启动 Claude Code
+              在系统终端中新建会话
             </button>
           )}
           <button className="context-item" onClick={() => { onOpenFolder(project); onClose(); }}>

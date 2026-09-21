@@ -1635,16 +1635,14 @@ mark {
   font-weight: 600;
 }
 
-/* ⚠️ 标题上色是用户明确要的；但**实测 TUI 的标题没有颜色**（只是加粗，那一块像素全灰阶）。
-   想严格对齐 TUI 就把这两行 color 删掉。 */
+/* 标题不上色（2026-09-21 用户定稿）：大号加粗蓝字太扎眼——正文黑，标题也黑。
+   （当年上色是想对齐 TUI 的 suggestion 蓝，实测 TUI 的标题其实没颜色，只是加粗） */
 .md-body h1 {
   font-size: 1.35em;
-  color: var(--code);
 }
 
 .md-body h2 {
   font-size: 1.2em;
-  color: var(--code);
 }
 
 .md-body h3 {
@@ -1776,15 +1774,18 @@ mark {
   display: block;
 }
 
+/* 表格边框取 --muted（比 --border 深两档）：1px 的浅灰细线在浅底上糊成一片，
+   行列关系读不出来（2026-09-21 用户反馈「边框太细可读性差」） */
 .md-body th,
 .md-body td {
-  border: 1px solid var(--border);
+  border: 1px solid var(--muted);
   padding: 4px 10px;
 }
 
-/* 表头：TUI 是「加粗、无填充」，白底去掉 */
+/* 表头：加粗 + 浅底衬出表头行，扫读更容易 */
 .md-body th {
   font-weight: 600;
+  background: var(--panel-2);
 }
 
 .md-body a {
@@ -2868,6 +2869,7 @@ mark {
 .chat-composer .btn {
   height: 34px;
 }
+
 
 .chat-input {
   flex: 1;
