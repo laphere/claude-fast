@@ -41,20 +41,32 @@ describe("validateResumePath", () => {
     expect(validateResumePath(tmp, "win32")).toBe(tmp);
   });
 
-  it("Windows 拒绝 cmd 元字符", () => {
-    const mk = (name: string) => {
-      const d = path.join(tmp, "d1");
-      fs.mkdirSync(d, { recursive: true });
-      return validateResumePath(path.join(d, name), "win32");
+  it("Windows 只拒引号内仍有效的 \" % !（& | < > ^ ( ) 是字面量，必须放行）", () => {
+    const d1 = path.join(tmp, "d1");
+    fs.mkdirSync(d1, { recursive: true });
+    /** 是否**被字符规则**拒掉——放行时校验会继续走到「路径不存在」，故不能一概用
+     *  `toThrow()`（`< > |` 在 Windows 上根本建不出同名目录）。 */
+    const charRejected = (name: string): boolean => {
+      try {
+        validateResumePath(path.join(d1, name), "win32");
+        return false;
+      } catch (e) {
+        return String(e).includes("非法字符");
+      }
     };
-    expect(() => mk('a"b')).toThrow();
-    expect(() => mk("a&b")).toThrow();
-    expect(() => mk("a|b")).toThrow();
-    expect(() => mk("a<b")).toThrow();
-    expect(() => mk("a^b")).toThrow();
-    expect(() => mk("a%b")).toThrow();
-    expect(() => mk("a!b")).toThrow();
-    expect(() => mk("a(b")).toThrow();
+    // 引号截断 / 变量展开 / 延迟展开
+    expect(charRejected('a"b')).toBe(true);
+    expect(charRejected("a%b")).toBe(true);
+    expect(charRejected("a!b")).toBe(true);
+    // 双引号内均为字面量：多拒它们会让 `C:\Program Files (x86)\…` 下的项目
+    // 「启动能开、继续对话报错」（v2.0.0 / v1.0.0 有回归测试断言必须放行）
+    for (const name of ["a&b", "a|b", "a<b", "a>b", "a^b", "a(b", "a)b"]) {
+      expect([name, charRejected(name)]).toEqual([name, false]);
+    }
+    // 端到端：真实存在的 `Program Files (x86) & test` 目录必须原样通过
+    const tricky = path.join(d1, "Program Files (x86) & test");
+    fs.mkdirSync(tricky, { recursive: true });
+    expect(validateResumePath(tricky, "win32")).toBe(tricky);
   });
 
   it("macOS 不额外拒字符（shQuote 已转义），但拒绝控制字符", () => {
@@ -75,8 +87,11 @@ describe("buildResumeCmdline / buildResumeScript", () => {
     expect(cmd).toContain(`cmd /k claude --resume ${UUID}`);
   });
 
-  it("Windows 非法路径先被校验拦截", () => {
-    expect(() => buildResumeCmdline("D:\\a&b", UUID, "win32")).toThrow();
+  it("Windows 非法路径先被校验拦截（只拦 \" % !）", () => {
+    expect(() => buildResumeCmdline("D:\\a%b", UUID, "win32")).toThrow("非法字符");
+    expect(() => buildResumeCmdline("D:\\a!b", UUID, "win32")).toThrow("非法字符");
+    // `&` 不再是非法字符：拼进双引号内是字面量（校验会继续走到「路径不存在」）
+    expect(() => buildResumeCmdline("D:\\a&b", UUID, "win32")).toThrow("项目路径不存在");
   });
 
   it("macOS 临时脚本：shQuote 转义 + exec claude --resume", () => {

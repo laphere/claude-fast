@@ -92,7 +92,11 @@ export async function checkLaunchers(paths: string[]): Promise<boolean[]> {
 
 /** 校验 resume 的项目路径（防命令注入，两平台共用）：
  *  空路径拒绝；控制字符一律拒绝；路径必须真实存在。
- *  Windows：cmd 引号较弱，`%VAR%` `^` `& | < > ( )` 等即使双引号内仍有作用，故显式拒绝。
+ *  Windows：路径最终进 `cd /d "<...>"` 双引号内，`& | < > ^ ( )` 在这里都是**字面量**、
+ *  不构成注入，故只拒引号内仍有效的三个字符——`"`（截断引号）、`%`（变量展开）、
+ *  `!`（延迟展开）。⚠️ 这条宽严口径与 v2.0.0 / v1.0.0 **逐字对齐**（那边有回归测试
+ *  断言含 `(x86) & test` 的合法目录必须放行），别改回「一律拒 cmd 元字符」——
+ *  多拒会让 `C:\Program Files (x86)\…` 这类常见目录「启动能开、继续对话报错」。
  *  macOS：路径经 shQuote 转义后放进 `cd "..."`，双引号内 `$ ` \ "` 之外的特殊字符
  *  均为字面量，故不再额外拒字符——避免误伤含 `(` `)` `'` `\` 等的合法 mac 路径。 */
 export function validateResumePath(
@@ -102,7 +106,7 @@ export function validateResumePath(
   const proj = projectPath.trim();
   if (proj === "") throw new Error("项目路径不能为空");
   if (platform === "win32") {
-    const forbidden = ['"', "&", "|", "<", ">", "^", "%", "!", "(", ")"];
+    const forbidden = ['"', "%", "!"];
     for (const c of forbidden) {
       if (proj.includes(c)) throw new Error("项目路径包含非法字符");
     }
