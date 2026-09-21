@@ -3,6 +3,8 @@
 > 2026-09-20 立。写完 `v2.0.0` 那一版原生方案审批之后，确认 `ExitPlanMode` 在当前 CLI 的 `--print` 模式下不下发，遂决定转向：**以 `claude-fast-electron`（Node/Electron）为主线**，功能追平 `v2.0.0`，其中对话一层改用官方 `@anthropic-ai/claude-agent-sdk` 重新实现——不再手写 CLI stream-json + control 协议。
 >
 > 这份文档是给**在另一个会话里干活的 agent** 的交接简报：它自包含，不需要读本次对话的上下文。
+>
+> **2026-09-22 补记**：本文写于分支重组之前，其中「分支纪律」与 `main` / `v1.0.0` 的关系**已作废**——`claude-fast-electron` 已退休成 `dev`（留本机 tag `claude-fast-electron-final`），`main` 同日改指主线；文里 `claude-fast-electron` 一律当 `dev` 读。
 
 ---
 

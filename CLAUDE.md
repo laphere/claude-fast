@@ -4,7 +4,7 @@
 
 > **版本线**：仓库已重新规划，当前全部代码为 **v1.0.0**（`package.json` 版本号）。历史上的 PowerShell/WinForms 版、Tauri/Rust 版与 v2.x/v3.x 旧版号均已作废，代码中不要再按旧版本号理解。
 >
-> **引用提示**：本文多处拿 **`v2.0.0`**（Tauri 2 + Rust、含 app 内 GUI 对话的那条线）当行为对照——该分支**已于 2026-09-21 删除**（本地与远端都不在了，只剩本机 tag `v2.0.0-final`），那些引用只作历史标注、事后查不到代码。同日 Tauri 的另一条线 **`v1.0.0`（查看器/启动器 + 内嵌终端）也删了**：内容先 ff 进 `embedded-terminal`（两者本就同内容），再删 `v1.0.0` 的本地与远端分支（留本机 tag `v1.0.0-final`）。**Tauri 线的最后一条分支 `embedded-terminal` 于 2026-09-22 退休删除**（内嵌终端已移植进本分支并落地，该分支与 `main` 本就是同一提交、零独有内容；按同一惯例留本机 tag `embedded-terminal-final`，`docs/embedded-terminal-port-brief.md` 里那些 `git show embedded-terminal:<path>` 的取码命令改读该 tag）。**如今只剩两支**：本分支 `claude-fast-electron`（**当前主线**）与 `main`（= 退休时的 Tauri 线快照）；一条线一个分支，不再有版本号命名的分支。
+> **引用提示**：本文多处拿 **`v2.0.0`**（Tauri 2 + Rust、含 app 内 GUI 对话的那条线）当行为对照——该分支**已于 2026-09-21 删除**（本地与远端都不在了，只剩本机 tag `v2.0.0-final`），那些引用只作历史标注、事后查不到代码。同日 Tauri 的另一条线 **`v1.0.0`（查看器/启动器 + 内嵌终端）也删了**：内容先 ff 进 `embedded-terminal`（两者本就同内容），再删 `v1.0.0` 的本地与远端分支（留本机 tag `v1.0.0-final`）。**Tauri 线的最后一条分支 `embedded-terminal` 于 2026-09-22 退休删除**（内嵌终端已移植进本分支并落地，该分支与 `main` 本就是同一提交、零独有内容；按同一惯例留本机 tag `embedded-terminal-final`，`docs/embedded-terminal-port-brief.md` 里那些 `git show embedded-terminal:<path>` 的取码命令改读该 tag）。**2026-09-22 再收一次**：`claude-fast-electron` 末态拉出 `dev` 作为工作分支，原分支同日退休删除（留本机 tag `claude-fast-electron-final`）。**如今只剩两支**：`dev`（**当前主线**，日常工作都在这上面）与 `main`（仓库默认分支，同日**强制指向与 `dev` 相同的提交**——它此前装的是 Tauri 线快照，那份快照现只在本机 tag `embedded-terminal-final` 里）。一条线一个分支，不再有版本号命名的分支。
 >
 > 对话层的行为规格与**本分支的待补齐缺口清单（B1–B16）见 `docs/chat-behavior-spec.md`**。
 

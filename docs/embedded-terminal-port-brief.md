@@ -22,7 +22,7 @@
   - `src-tauri/src/pty.rs`、`src-tauri/src/clipboard_image.rs`
   - `docs/ime-anchor-probe/`：IME 锚点的回归探针（真 Chromium 里断言落点）
 
-**分支纪律**（迁移期间有效，**已于 2026-09-22 履行完毕**）：所有工作在本分支 `claude-fast-electron` 上进行。**不要动 `main`**（与 `embedded-terminal` 同一提交，Tauri 线）、不要动 `embedded-terminal`、不要动本机 tag `v1.0.0-final` / `v2.0.0-final`。——`embedded-terminal` 现按迁移完成后的收尾惯例删除（内容在 `main` 上另有一份，本机另留 tag `embedded-terminal-final`）；`main` 与本机 tag **仍未动**。
+**分支纪律**（迁移期间有效，**已于 2026-09-22 履行完毕**）：所有工作在当时的 `claude-fast-electron`（现 `dev`）上进行。**不要动 `main`**（与 `embedded-terminal` 同一提交，Tauri 线）、不要动 `embedded-terminal`、不要动本机 tag `v1.0.0-final` / `v2.0.0-final`。——`embedded-terminal` 现按迁移完成后的收尾惯例删除（内容在 `main` 上另有一份，本机另留 tag `embedded-terminal-final`）；随后 `claude-fast-electron` 也退休成 `dev`（留 tag `claude-fast-electron-final`），`main` 同日改指主线。
 
 ---
 
