@@ -3,6 +3,9 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { isValidUuid, mangleProjectPath } from "./mangle";
 import { blockText, cleanSummary, cleanTitle, extractXmlTag } from "./text";
+// 同一 message.id 的代表行取舍规则与用量台账**共用同一个函数**（收尾行优先）：
+// 会话头部的 token 统计必须与统计仪表盘对上，两处各写一份必然漂移。
+import { betterUsageRow, type UsageRow } from "./usage-stats";
 
 /** 会话内容渲染的最大消息数（防止超大 jsonl 拖垮 UI） */
 export const MAX_SESSION_MESSAGES = 500;
@@ -41,6 +44,25 @@ export interface ContentBlock {
   data?: string | null;
 }
 
+/** 单条 assistant 消息的 token 用量（jsonl usage 的两种格式已归一） */
+export interface Usage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+}
+
+/** 会话级 token 统计（对**全量**消息聚合，分页切片不影响准确性） */
+export interface SessionUsageStats {
+  messageCount: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  /** 总 token（输入 + 输出 + 缓存读取 + 缓存写入） */
+  totalTokens: number;
+}
+
 export interface SessionMessage {
   /** user | assistant */
   kind: string;
@@ -48,6 +70,8 @@ export interface SessionMessage {
   timestamp?: string | null;
   /** assistant 的模型名 */
   model?: string | null;
+  /** assistant 的 token 用量（user 消息、以及同 id 的后续段为 null） */
+  usage?: Usage | null;
 }
 
 export interface SessionMessages {
@@ -57,6 +81,8 @@ export interface SessionMessages {
   total: number;
   /** 本批起始位置（0 = 从最早一条开始） */
   offset: number;
+  /** 会话级 token 统计（全量聚合，与本次切片无关） */
+  stats: SessionUsageStats;
 }
 
 type Json = Record<string, unknown>;
@@ -391,6 +417,12 @@ export function parseContentBlocks(
  *  只提取 user/assistant 消息，过滤元数据行 / sidechain / isMeta / 命令消息。 */
 export function parseSessionMessages(content: string): SessionMessage[] {
   const messages: SessionMessage[] = [];
+  /** 上一条已入列消息的 `message.id` */
+  let lastMsgId: string | null = null;
+  /** message.id → 该 id 的**代表行** usage（收尾行优先，与用量台账同口径） */
+  const bestUsage = new Map<string, UsageRow>();
+  /** message.id → 它的首个存活消息下标（代表行的 usage 最终落到这条上） */
+  const idToIndex = new Map<string, number>();
   for (const line of content.split("\n")) {
     const t = line.trim();
     if (t === "") continue;
@@ -411,14 +443,118 @@ export function parseSessionMessages(content: string): SessionMessage[] {
     if (role !== "user" && role !== "assistant") continue;
     const blocks = parseContentBlocks(msg.content, role);
     if (blocks.length === 0) continue;
+    const msgId = asString(msg.id);
+    const usage = parseUsage(msg.usage);
+    // 同 id 的多行是**一次响应的流式快照**：首行 usage 恒为 0（或只有占位），真实值在
+    // 带 stop_reason 的收尾行上；而逐行相加又会成倍虚高。故按 id 收敛出代表行
+    // （收尾行优先，同优先级取 token 更大者）——复用台账的 betterUsageRow，别在这里
+    // 另写一份：两处口径漂移过一次（台账 v3 前取首行，实测只统计到真实值的 1.3%）。
+    if (msgId !== null && usage) {
+      const row: UsageRow = {
+        finalRow: asString(msg.stop_reason) !== null,
+        tokens:
+          usage.inputTokens +
+          usage.outputTokens +
+          usage.cacheReadInputTokens +
+          usage.cacheCreationInputTokens,
+        usage,
+        model: asString(msg.model) ?? "unknown",
+        date: null,
+      };
+      const cur = bestUsage.get(msgId);
+      if (!cur || betterUsageRow(row, cur)) bestUsage.set(msgId, row);
+    }
+    // 相邻同 id：代理多段迭代共用一个 `message.id`，后段是同一响应的续块，
+    // 并入上一条而不是各自成条——否则消息数虚高一截（真实会话实测 +30~80%），
+    // 连带 Markdown 导出的「## 消息 N」小节数与 500 条分页覆盖的轮次都失真。
+    if (msgId !== null && msgId === lastMsgId) {
+      const last = messages[messages.length - 1];
+      if (last) {
+        last.blocks.push(...blocks);
+        continue;
+      }
+    }
     messages.push({
       kind: role,
       blocks,
       timestamp: asString(v.timestamp),
       model: asString(msg.model),
+      // 先留空，循环结束后按 id 落代表行；无 id 的行无从收敛（罕见），
+      // 直接记自己那一行的 usage——宁可多算也不静默丢
+      usage: msgId === null ? usage : null,
     });
+    if (msgId !== null && !idToIndex.has(msgId)) {
+      idToIndex.set(msgId, messages.length - 1);
+    }
+    lastMsgId = msgId;
+  }
+  // 第二遍：代表行的 usage 落到该 id 的首个存活消息上（收尾行可能在很后面，
+  // 单遍扫描时还不知道它长什么样）
+  for (const [id, row] of bestUsage) {
+    const idx = idToIndex.get(id);
+    if (idx !== undefined) messages[idx].usage = row.usage;
   }
   return messages;
+}
+
+/** 防御式解析 usage 字段：旧格式各字段是数字，新格式 `input_tokens` 是
+ *  `{input, cache_read, cache_creation}` 嵌套对象。无 usage 返回 null。 */
+export function parseUsage(v: unknown): Usage | null {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return null;
+  const obj = v as Json;
+  /** 非负整数才计入（对应 v2 线的 as_u64：负数/NaN/字符串一律当 0） */
+  const norm = (x: unknown): number =>
+    typeof x === "number" && Number.isFinite(x) && x > 0 ? Math.floor(x) : 0;
+  const num = (k: string): number => norm(obj[k]);
+  const it = obj.input_tokens;
+  let inputTokens: number;
+  let cacheRead: number;
+  let cacheCreation: number;
+  if (typeof it === "number") {
+    inputTokens = norm(it);
+    cacheRead = num("cache_read_input_tokens");
+    cacheCreation = num("cache_creation_input_tokens");
+  } else if (it && typeof it === "object" && !Array.isArray(it)) {
+    const o = it as Json;
+    const read = (k: string): number => norm(o[k]);
+    inputTokens = read("input");
+    // 新格式嵌套字段缺省时回退到顶层（部分版本两层都有）
+    cacheRead = Math.max(read("cache_read"), num("cache_read_input_tokens"));
+    cacheCreation = Math.max(read("cache_creation"), num("cache_creation_input_tokens"));
+  } else {
+    inputTokens = num("input_tokens");
+    cacheRead = num("cache_read_input_tokens");
+    cacheCreation = num("cache_creation_input_tokens");
+  }
+  return {
+    inputTokens,
+    outputTokens: num("output_tokens"),
+    cacheReadInputTokens: cacheRead,
+    cacheCreationInputTokens: cacheCreation,
+  };
+}
+
+/** 对**全量**消息聚合 token 统计（usage 在解析时就保留，分页切片不影响准确性）。
+ *  同 id 的后续段 usage 为 null，故不会重复累加。 */
+export function aggregateUsage(messages: SessionMessage[]): SessionUsageStats {
+  const stats: SessionUsageStats = {
+    messageCount: messages.length,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    totalTokens: 0,
+  };
+  for (const m of messages) {
+    if (!m.usage) continue;
+    stats.inputTokens += m.usage.inputTokens;
+    stats.outputTokens += m.usage.outputTokens;
+    stats.cacheReadTokens += m.usage.cacheReadInputTokens;
+    stats.cacheCreationTokens += m.usage.cacheCreationInputTokens;
+  }
+  stats.totalTokens =
+    stats.inputTokens + stats.outputTokens + stats.cacheReadTokens + stats.cacheCreationTokens;
+  return stats;
 }
 
 /** 向上分页切片：默认返回**最后** limit 条（打开会话时焦点在最新）；
@@ -428,12 +564,14 @@ export function sliceMessages(
   offset?: number,
   limit?: number,
 ): SessionMessages {
+  // stats 在切片**前**对全量聚合——分页只影响 messages，不影响头部统计
+  const stats = aggregateUsage(all);
   const total = all.length;
   const lim = Math.min(2000, Math.max(1, limit ?? MAX_SESSION_MESSAGES));
   const start = offset !== undefined ? Math.min(offset, total) : Math.max(0, total - lim);
   const end = Math.min(start + lim, total);
   const messages = start < end ? all.slice(start, end) : [];
-  return { messages, hasMore: start > 0, total, offset: start };
+  return { messages, hasMore: start > 0, total, offset: start, stats };
 }
 
 /** 读取会话内容（只读查看用，向上分页） */

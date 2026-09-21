@@ -5,6 +5,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
+  aggregateUsage,
   appendCustomTitle,
   extractFirstPrompt,
   getSessionMessages,
@@ -12,6 +13,7 @@ import {
   parseContentBlocks,
   parseJsonLines,
   parseSessionMessages,
+  parseUsage,
   readHeadTail,
   renameSession,
   sessionMetaFromLite,
@@ -295,6 +297,99 @@ describe("parseSessionMessages", () => {
     expect(r[0].blocks[0].text).toBe("正常的对话");
   });
 
+  it("相邻同 message.id 的 assistant 行合并为一条（消息数不虚高）", () => {
+    // 真实 jsonl 里一轮工具循环会拆成多条共用一个 message.id 的 assistant 行
+    const jsonl = [
+      '{"type":"assistant","message":{"id":"msg_1","role":"assistant","content":[{"type":"thinking","thinking":"先想"}]}}',
+      '{"type":"assistant","message":{"id":"msg_1","role":"assistant","content":[{"type":"text","text":"再答"}]}}',
+      '{"type":"assistant","message":{"id":"msg_2","role":"assistant","content":[{"type":"text","text":"另一轮"}]}}',
+    ].join("\n");
+    const r = parseSessionMessages(jsonl);
+    expect(r.length).toBe(2);
+    expect(r[0].blocks.map((b) => b.kind)).toEqual(["thinking", "text"]);
+    expect(r[1].blocks[0].text).toBe("另一轮");
+  });
+
+  it("同 id 的流式快照取**收尾行**：首行是占位 0，真实用量在带 stop_reason 的那行", () => {
+    // 真实 jsonl 的形状（本机实测）：一次响应拆成多行，首行 usage 全 0、
+    // 收尾行才是最终值——取首行会把整条消息记成 0（台账当年就是这么错的）
+    const jsonl = [
+      '{"type":"assistant","message":{"id":"msg_1","role":"assistant","content":[{"type":"thinking","thinking":"想"}],"usage":{"input_tokens":0,"output_tokens":0}}}',
+      '{"type":"assistant","message":{"id":"msg_1","role":"assistant","content":[{"type":"text","text":"答"}],"usage":{"input_tokens":0,"output_tokens":0}}}',
+      '{"type":"assistant","message":{"id":"msg_1","role":"assistant","content":[{"type":"tool_use","id":"t","name":"Bash","input":{}}],"stop_reason":"tool_use","usage":{"input_tokens":1200,"output_tokens":300,"cache_read_input_tokens":9000,"cache_creation_input_tokens":40}}}',
+    ].join("\n");
+    const r = parseSessionMessages(jsonl);
+    expect(r.length).toBe(1); // 相邻同 id 合并成一条
+    expect(r[0].blocks.length).toBe(3);
+    const s = aggregateUsage(r);
+    expect(s.inputTokens).toBe(1200); // 不是 0（取首行），也不是 2400（逐行相加）
+    expect(s.outputTokens).toBe(300);
+    expect(s.cacheReadTokens).toBe(9000);
+    expect(s.cacheCreationTokens).toBe(40);
+    expect(s.totalTokens).toBe(10540);
+  });
+
+  it("同 id 被别的消息打断时仍按 id 收敛代表行（只计一次）", () => {
+    const usage =
+      '{"input_tokens":100,"output_tokens":10,"cache_read_input_tokens":5,"cache_creation_input_tokens":1}';
+    const jsonl = [
+      `{"type":"assistant","message":{"id":"msg_1","role":"assistant","content":[{"type":"thinking","thinking":"a"}],"usage":${usage}}}`,
+      '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}',
+      `{"type":"assistant","message":{"id":"msg_1","role":"assistant","content":[{"type":"text","text":"续写"}],"usage":${usage}}}`,
+    ].join("\n");
+    const r = parseSessionMessages(jsonl);
+    // 打断后各自成条（不合并），但 usage 只在首段计入
+    expect(r.length).toBe(3);
+    expect(r[2].usage).toBeNull();
+    const stats = aggregateUsage(r);
+    expect(stats.inputTokens).toBe(100);
+    expect(stats.outputTokens).toBe(10);
+    expect(stats.cacheReadTokens).toBe(5);
+    expect(stats.cacheCreationTokens).toBe(1);
+    expect(stats.totalTokens).toBe(116);
+    expect(stats.messageCount).toBe(3);
+  });
+
+  it("parseUsage：旧格式（数字）与新格式（input_tokens 嵌套对象）都读得出来", () => {
+    expect(
+      parseUsage({
+        input_tokens: 7,
+        output_tokens: 3,
+        cache_read_input_tokens: 2,
+        cache_creation_input_tokens: 1,
+      }),
+    ).toEqual({
+      inputTokens: 7,
+      outputTokens: 3,
+      cacheReadInputTokens: 2,
+      cacheCreationInputTokens: 1,
+    });
+    expect(
+      parseUsage({ input_tokens: { input: 9, cache_read: 4, cache_creation: 2 }, output_tokens: 5 }),
+    ).toEqual({
+      inputTokens: 9,
+      outputTokens: 5,
+      cacheReadInputTokens: 4,
+      cacheCreationInputTokens: 2,
+    });
+    // 嵌套字段缺省时回退顶层（部分版本两层都有）
+    expect(parseUsage({ input_tokens: { input: 1 }, cache_read_input_tokens: 6 })).toEqual({
+      inputTokens: 1,
+      outputTokens: 0,
+      cacheReadInputTokens: 6,
+      cacheCreationInputTokens: 0,
+    });
+    // 负数 / 字符串当 0（对应 v2 线 as_u64 的语义）
+    expect(parseUsage({ input_tokens: -5, output_tokens: "3" })).toEqual({
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+    });
+    expect(parseUsage(undefined)).toBeNull();
+    expect(parseUsage("x")).toBeNull();
+  });
+
   it("task-notification 按工具结果展示（<result> 优先，回退 <summary>）", () => {
     const jsonl =
       '{"type":"user","message":{"role":"user","content":"<task-notification>\\n<task-id>a35e</task-id>\\n<tool-use-id>call_ffd1</tool-use-id>\\n<output-file>C:\\\\temp\\\\x.output</output-file>\\n<status>completed</status>\\n<summary>Agent 任务完成</summary>\\n<result>任务完成，共处理 5 个文件\\n- a.ts 已更新</result>\\n</task-notification>"}}\n';
@@ -376,6 +471,34 @@ describe("sliceMessages / getSessionMessages", () => {
     expect(rl.offset).toBe(100);
     expect(rl.messages.length).toBe(50);
     expect(rl.messages[0].blocks[0].text).toContain("消息 100");
+  });
+
+  it("stats 对全量聚合，与本次切片范围无关", () => {
+    const jsonl = [
+      '{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"a"}],"usage":{"input_tokens":10,"output_tokens":1}}}',
+      '{"type":"assistant","message":{"id":"m2","role":"assistant","content":[{"type":"text","text":"b"}],"usage":{"input_tokens":20,"output_tokens":2}}}',
+    ].join("\n");
+    const all = parseSessionMessages(jsonl);
+    const full = sliceMessages(all);
+    expect(full.stats).toEqual({
+      messageCount: 2,
+      inputTokens: 30,
+      outputTokens: 3,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+      totalTokens: 33,
+    });
+    // 只取第一条，stats 仍覆盖全量（否则头部统计会随翻页跳变）
+    const first = sliceMessages(all, 0, 1);
+    expect(first.messages.length).toBe(1);
+    expect(first.stats.inputTokens).toBe(30);
+    expect(first.stats.messageCount).toBe(2);
+  });
+
+  it("无 usage 的历史会话：stats 全 0 但不为 undefined", () => {
+    const r = sliceMessages(parseSessionMessages(bigJsonl(3)));
+    expect(r.stats.totalTokens).toBe(0);
+    expect(r.stats.messageCount).toBe(3);
   });
 
   it("getSessionMessages：文件校验 + 分页", () => {
