@@ -35,6 +35,7 @@ export const KNOWN_CONFIG_KEYS = [
   "excluded",
   "dark",
   "closeAction",
+  "defaultInteraction",
   "providers",
   "currentProvider",
   "pinnedSessions",

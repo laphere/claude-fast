@@ -146,7 +146,7 @@ describe("loadConfig", () => {
 });
 
 describe("encodeConfig", () => {
-  it("落盘写全 8 个已知键（数据根判定依赖这一点：缺键会让 portable 根认不出来）", () => {
+  it("落盘写全已知键（数据根判定依赖这一点：缺键会让 portable 根认不出来）", () => {
     const onDisk = JSON.parse(encodeConfig(defaultConfig()));
     expect(Object.keys(onDisk).sort()).toEqual(
       [
@@ -155,6 +155,7 @@ describe("encodeConfig", () => {
         "excluded",
         "dark",
         "closeAction",
+        "defaultInteraction",
         "providers",
         "currentProvider",
         "pinnedSessions",

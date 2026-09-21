@@ -12,7 +12,7 @@
 
 | 文件 | 作用 |
 |---|---|
-| `src/` | 前端：React + TypeScript + Vite。`App.tsx` 状态管理（项目清单 / 会话 / 对话 tab / 置顶 / 配置落盘）；`src/components/` 24 个 UI 组件（列表、各类对话框、`ChatView` / `ChatTabs` / `AskQuestionCard` / `StatsDialog` / `ProviderDialog` / `PinnedSessions` 等）；`src/lib/api.ts` 封装全部 preload 桥调用（`window.claudeFast`）；`src/config/claudeProviderPresets.ts` 是 88 个供应商预设常量 |
+| `src/` | 前端：React + TypeScript + Vite。`App.tsx` 状态管理（项目清单 / 会话 / 对话 tab / 置顶 / 配置落盘）；`src/components/` 26 个 UI 组件（列表、各类对话框、`ChatView` / `ChatTabs` / `TerminalPane` / `AskQuestionCard` / `StatsDialog` / `ProviderDialog` / `PinnedSessions` 等）；`src/lib/api.ts` 封装全部 preload 桥调用（`window.claudeFast`）；`src/config/claudeProviderPresets.ts` 是 88 个供应商预设常量 |
 | `electron/main.ts` | Electron 主进程：窗口 / 托盘 / 单实例 / 关闭拦截 / 全部 IPC 命令注册 |
 | `electron/preload.ts` | `contextBridge` 白名单 API（渲染进程无 Node 权限，全部经 `ipcRenderer.invoke`） |
 | `electron/backend/` | 后端业务模块：`paths.ts`（数据根定位/内容校验/进程内缓存 + 项目目录）、`config.ts`（配置模型 + 三步保护 + 读改写 + 写串行化）、`chat.ts`（**app 内对话层**：官方 Agent SDK 托管 + 流式事件翻译 + 多会话/权限/方案/提问/图片）、`provider.ts`（供应商切换，含 CC Switch SQL 导入）、`model-fetch.ts`（供应商模型列表拉取）、`usage-query.ts`（Coding Plan 用量）、`claude-update.ts`（本机 claude 版本检查与升级）、`usage-stats.ts`（全局用量台账）、`session-extra.ts`（会话搜索/进度轨/导出/失效项目数据清除/置顶清单）、`mangle.ts`（目录名正反解析）、`sessions.ts`（会话列表/元数据/内容解析/重命名）、`trash.ts`（回收站）、`platform.ts`（启动/健康检查/resume/批量扫描/旧脚本迁移）、`scriptnames.ts`（脚本时代的转义工具，生产代码只剩 `shQuote` 在用，`parseCdPath` 只服务旧脚本迁移）、`text.ts`（标题清洗） |
@@ -47,11 +47,22 @@
 
 ## 功能
 
-- **配置模型（`config.json`）**：`order`（项目显示顺序，项目绝对路径数组；未收录项按名称追加在后）、`projects`（手动添加的项目路径，与会话扫描结果取并集）、`excluded`（从列表移除的项目路径，扫描会重新发现它们，必须靠它排除）、`dark`、`closeAction`、`providers` / `currentProvider`（供应商切换）、`pinnedSessions`（置顶会话，条目 `{file, projectPath}`：`file` 是会话 jsonl 绝对路径作稳定锚点，`projectPath` 在置顶时刻记录）。
+- **配置模型（`config.json`）**：`order`（项目显示顺序，项目绝对路径数组；未收录项按名称追加在后）、`projects`（手动添加的项目路径，与会话扫描结果取并集）、`excluded`（从列表移除的项目路径，扫描会重新发现它们，必须靠它排除）、`dark`、`closeAction`、`defaultInteraction`（新开内容 tab 的默认交互方式：`"chat"` 页面对话 / `"terminal"` 内嵌终端；两种 tab 始终共存、改设置不关已开 tab）、`providers` / `currentProvider`（供应商切换）、`pinnedSessions`（置顶会话，条目 `{file, projectPath}`：`file` 是会话 jsonl 绝对路径作稳定锚点，`projectPath` 在置顶时刻记录）。
   - **兼容层 `favorites`**：本分支历史上的「收藏置顶」，**已不驱动任何 UI**（页面上没有星标/收藏入口）。保留读写只为不给老配置造成回归：仅在 `order` **键缺失**时拿它当 `order` 初值（显式写出的空 `order` 不会被覆盖回来）。
 - **顶栏与左栏布局（单行顶栏 + 可收起左栏）**：工具栏整行已撤，功能入口全在顶栏右侧（搜索 / 新建 / 批量添加 / 回收站 / 统计，纯图标 + title），品牌区已移除（应用名只在窗口/任务栏标题）。顶栏右端还有两个状态胶囊：供应商（未配置显示「默认配置」）与健康检查（「检查中…」/「claude 可用」/「claude 未找到」，有失效项目时变红并带「N 失效」角标）。搜索框收在左栏顶部、默认隐藏，由顶栏搜索按钮展开（Esc 或再点即收起并清空），常驻不被列表滚走。左栏可手动收起（顶栏最左 panel-left 开关，收起后内容区占满全宽）；窄于 980 自动收起、宽于 1020 才恢复（40px 迟滞带 + resize 80ms 防抖），**只恢复「被自动收起」的那次**——手动切换会清掉 `autoCollapsedRef`，此后 resize 不再干预；收起态仅内存、不落盘。默认窗口 1120×720、最小 800×500。
 - **全局拖拽排序（`order`）**：项目行整行可拖拽调序（拖到目标行上半/下半 = 插到它前/后；松手写回 `order` 落盘；位置没变不写盘），起手必须 `setData("text/plain", key)`（WebKit 下不带 data 的拖拽根本不启动）；搜索过滤期间禁用拖拽；右键菜单「移到最前」是同一套全序列语义的快捷入口。前端用原生 HTML5 DnD——主进程的 **`will-navigate` 拦截是前提**（Electron 渲染层默认拖文件/链接会导航离开页面，`main.ts` 里 `webContents.on("will-navigate", e => e.preventDefault())` 与 `setWindowOpenHandler` deny 保证页面内 dragover/drop 可用，勿当冗余代码删掉）。
 - **置顶会话聚合区（`pinnedSessions`）**：会话行左侧图钉按钮置顶/取消置顶，置顶项聚到左栏顶部**跨项目**区域（无置顶项时整块不渲染；带项目名徽标消歧）。`listPinnedSessions` 按清单顺序**实时**解析元数据（不存快照），文件缺失的条目静默跳过；**已置顶会话不再在项目列表中重复显示**（前端按 file 过滤；某项目会话全被置顶时展开区提示「会话已全部置顶」）。语义：新置顶插最前、不支持拖拽排序；**删除会话保留条目**（恢复后自动复活），只有彻底删除才清理——`purgeSession` / `purgeTrash` 后 `pruneDeadPins`，`removeProject` / `purgeClaudeProjectData` 按 projectPath 撤条目（`dropPinsForProjects`）。⚠️ **后端这四个入口改的是磁盘 config，前端内存里的 `pinnedSessions` 必须重新读盘同步**（`syncPinsFromConfig`）——它是下次保存的真源，不同步则之后任意一次保存（切主题/拖拽排序/置顶取消）都会把已清掉的死条目写回；`refreshPinned` 只刷展示元数据、与真源清单不可互相替代。
+- **app 内嵌终端（node-pty + xterm.js，2026-09-21 自 Tauri `embedded-terminal` 分支移植）**：与页面对话共存于同一条 tab 栏（tab 模型为判别联合 `kind: "chat" | "term"`，状态收在 tab 对象上）。真 claude CLI 跑在 PTY 里，`TerminalPane.tsx` + `src/lib/{pty,bold-bright,term-unicode,term-title,ime-anchor}.ts` 与 `styles.css` 终端样式块**逐字搬运**（含注释里的实测数据，别改）。要点：
+  - **通道**：渲染层预生成 token、**先订阅** `pty:data:<token>` / `pty:exit:<token>` 再 invoke——主进程早于应答就推首字节（实测 ~13ms），订阅先行零丢失，Tauri 侧 earlyExits 记账从根上不需要（同 chat 层设计）。
+  - **spawn 链**：`where claude` 择优（.exe > .cmd/.bat > 无扩展名，过滤商店别名）→ `.cmd/.bat` 走 `cmd /D /S /C call`（⚠️ cmd 必须用 `ComSpec` 全路径——node-pty 不做 PATH 解析，裸名 File not found）；env 置 `TERM=xterm-256color`/`COLORTERM=truecolor` 并剥 `CLAUDE_CODE_CHILD_SESSION`/`CLAUDE_CODE_ENTRYPOINT`/`CLAUDECODE`（不剥则子会话 jsonl 不落盘）。
+  - **kill 契约**：Windows 先 `taskkill /PID <pid> /T /F`（等跑完）再 `pty.kill()`，**handler 返回 = 进程树已杀完**——删会话「先杀完进程再动文件」依赖它（走 `killers` 注册表 await，不靠卸载路径的 fire-and-forget）。已知残留：MCP 守护进程（如 codegraph `--liftoff-only`）在深树里可能脱离父链存活（与 Tauri 线同机制同残留；根治要 Job Object，未做）。退出路径 `quit_app` 与 `before-quit` 都会 `shutdownAll`。
+  - **输出归一**：node-pty 的 onData Windows 给 Buffer / Unix 给 string，主进程统一 `Uint8Array` 再推（否则 bold-bright 的字节级扫描在 macOS 静默失效）。
+  - **忙闲探针**：右键 tab 那一刻现算（不轮询），判据顺序 = 屏幕文案（`ctrl+x to stop` 等）→ 近 1 秒 ≥8 chunk → 空闲标记；busy/unknown 一律不可关（宁漏关不误杀）。2026-09-21 实测：busy 6-13 chunk/s、无焦点 idle 0/s、burst p50=8214B/10.9MB/s——阈值 8 在 node-pty 粒度（≈8KB 边界）下沿用。
+  - **字体/WebGL**：`integralAdvanceFontSize`（找步进×dpr 为整数的字号，dpr1.5 → 15.93 → 格宽 14.0 设备px）+ `alignRowHeight`（压 1px 行盒 + lineHeight 补回 28）+ WebGL 渲染器消块字符暗缝——阶段 0 已在 Electron(Chromium146) 与 WebView2(153) 双侧逐值验证一致（`.workbuddy/terminal-port-spike/CONCLUSIONS.md`），**取值零重标定**；DOM 渲染器回落会带回每 14px 一条暗缝（实测 32 条/7.5%），属预期。
+  - **IME 锚点**：`ime-anchor.ts` 钩 xterm 私有方法把候选窗锚到 claude 自画的光标格；六步探针在 Electron 全过（`#ime` 模式的 harness 可复跑），真输入法待用户实测。
+  - **新会话标题回填**：`--session-id <预生成uuid>` + OSC 0 终端标题（`term-title.ts` 清洗）为主路；`session_title_for`（读 `<mangled>/<id>.jsonl` 的 head/tail 64KB，与列表同一 `sessionMetaFromLite`）兜底轮询（3s，拿到即停），两者以 `titledRef` 定稿互不覆盖。
+  - **贴图**：`clipboard_image_path`（`clipboard-image.ts` 读 CF_HDROP 的 DROPFILES 字节自己解，png/jpg/jpeg/gif/webp 白名单）把**图片文件路径当粘贴文本**送 PTY（conhost 同款步骤，claude 转成 `[Image #1]`）；只读不动剪贴板。**Chromium 是否列出 FileNameW 格式待真机验证**（阶段 3）。
+  - ⚠️ **打包/构建铁律**：node-pty 必须在 esbuild `external`（打进 bundle 会毁掉 prebuilds 的相对定位 → 「Failed to load native module: conpty.node」，2026-09-21 dev.mjs 配置漂移实测踩过）——`npm run build` 与 `npm run dev` 的主进程 esbuild 配置**共用一份** `tools/esbuild-main.config.mjs`，别再各自维护；`package.json` 的 `build.asarUnpack` 已含 `**/node_modules/node-pty/**`（asar 内的可执行文件没法 spawn），且 `build.npmRebuild: false`——node-pty 是 **N-API 预编译包**（同一二进制在 Node/Electron 双 ABI 直接加载，阶段 0 实测），@electron/rebuild 对它跑 node-gyp 只会在没装 MSVC/Python 工具链的机器上炸（2026-09-21 实测）。2026-09-21 真机打包验证：win-unpacked 与 NSIS 安装包均可跑，终端 spawn/渲染/杀树全过。
 - **app 内直接对话（官方 Agent SDK）**：`electron/backend/chat.ts` 用 `@anthropic-ai/claude-agent-sdk`（运行时动态 `import()`）托管 CLI 子进程，事件翻译成 `ChatEvent` 经 IPC 推给 `ChatView` 流式渲染。要点：
   - **懒启动**：首条消息才 spawn；失败可重试（以 `query` 为成功标志，`starting` 兼作并发去重）。多会话 tab 并行，切 tab 只切 `display`、**不中断流**（非激活页继续后台流式）；同一会话不允许开两个进程（只激活已有 tab）。
   - **权限 6 档**：`manual`（= CLI 的 `default`，每工具都问）/ `auto` / `acceptEdits` / `plan` / `bypassPermissions` / `dontAsk`（不进下拉，配置里配了才以原始名动态加入）。初始档位跟随 settings（项目 `settings.local.json` > 项目 `settings.json` > 用户级，`CLAUDE_CONFIG_DIR` 优先）；未改选时必须用内部选项 `resolvePermissionModeInCli: true`，否则会被 SDK 的 `--permission-mode default` 压过（见下面「Agent SDK 验证结论」第 3 条）。
@@ -155,7 +166,7 @@ app 内对话层改用官方 `@anthropic-ai/claude-agent-sdk` 前必须先确认
 ```bash
 npm install                  # 依赖（国内可设 ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ 加速）
 npm run dev                  # 开发模式（vite 热更新 + electron，主进程改动自动重启）
-npm test                     # 后端单元测试（329 个：路径解析/配置/扫描/根目录定位/会话管理/mangle/回收站/对话层/用量台账）
+npm test                     # 后端单元测试（350 个：路径解析/配置/扫描/根目录定位/会话管理/mangle/回收站/终端 PTY/剪贴板图片/对话层/用量台账）
 npm run typecheck            # 类型检查（前端 tsc + electron tsc）
 npm run build                # 生产构建（typecheck + vite build + esbuild 编译主进程）
 npm run dist:win             # Windows NSIS 安装包（别名：npm run electron:build）

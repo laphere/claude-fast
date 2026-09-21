@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./lib/api";
+import { newSessionId } from "./lib/pty";
 import type {
   CloseAction,
   PinnedSession,
@@ -7,6 +8,8 @@ import type {
   Project,
   ProviderListState,
   SessionInfo,
+  TabActivity,
+  TerminalTab,
 } from "./types";
 import Header from "./components/Header";
 import { MessageCircleIcon, SearchIcon, XIcon } from "./components/Icons";
@@ -26,9 +29,30 @@ import StatsDialog from "./components/StatsDialog";
 import ProviderDialog from "./components/ProviderDialog";
 import ChatView from "./components/ChatView";
 import ChatTabs from "./components/ChatTabs";
+import TerminalPane from "./components/TerminalPane";
 import SessionContextMenu from "./components/SessionContextMenu";
+import TabContextMenu from "./components/TabContextMenu";
 
 export type DialogKind = "new" | "batch" | "health" | null;
+
+/** 内容区 tab：页面对话（Agent SDK 托管）或内嵌终端（真 claude CLI 跑在 PTY 里），
+ *  两种 tab 共存于同一条 tab 栏（简报 §5：改「默认交互方式」不得关掉已开的 tab）。
+ *  对话状态收在 tab 对象上（phase），不再旁挂 map——终端 tab 的状态本来就在
+ *  TerminalTab.status 里，两套并列时旁挂 map 只会多一张对不上的表。 */
+export type ContentTab =
+  | {
+      kind: "chat";
+      id: string;
+      projectPath: string;
+      title: string;
+      /** null = 新对话 */
+      session: SessionInfo | null;
+      /** 所属项目 key（关闭 tab 时刷新会话列表用） */
+      key: string;
+      /** 对话状态（"starting"/"thinking" 时 tab 打点、"关闭其他"时跳过） */
+      phase: string;
+    }
+  | ({ kind: "term" } & TerminalTab);
 
 /** 会话进行中 = 正在启动/思考中（"关闭其他会话"时跳过这类 tab） */
 function isBusyPhase(phase: string | undefined): boolean {
@@ -105,28 +129,31 @@ export default function App() {
     key: string;
     session: SessionInfo;
   } | null>(null);
-  // ---------- app 内直接对话（多会话 tab 并行） ----------
-  const [chats, setChats] = useState<
-    Array<{
-      /** tab 唯一 id */
-      id: string;
-      projectPath: string;
-      title: string;
-      /** null = 新对话 */
-      session: SessionInfo | null;
-      /** 所属项目 key（关闭 tab 时刷新会话列表用） */
-      key: string;
-    }>
-  >([]);
-  const [activeChatId, setActiveChatId] = useState<string | null>(null);
-  /** 各 tab 的对话状态（思考中给 tab 打点） */
-  const [chatStatus, setChatStatus] = useState<Record<string, string>>({});
-  const nextChatTabId = useRef(`chat-1`);
-  const newChatTabId = () => {
-    const id = nextChatTabId.current;
-    nextChatTabId.current = `chat-${Number(id.slice(5)) + 1}`;
-    return id;
-  };
+  // ---------- 内容区 tab（页面对话 + 内嵌终端，多会话并行） ----------
+  const [tabs, setTabs] = useState<ContentTab[]>([]);
+  const [activeTabId, setActiveTabId] = useState<string | null>(null);
+  /** 终端 tab 的忙/闲探针（TerminalPane 挂载时注册）：**右键那一刻现算**，不缓存、不轮询。
+   *  轮询+只在变化时上报会留下陈旧快照（挂载后 1s 那次探测看到的是还没画完的空屏）。 */
+  const tabProbesRef = useRef(new Map<string, () => TabActivity>());
+  /** 终端 tab 的"就地击杀"句柄（TerminalPane 挂载时注册）：删除会话时先 await 它拿到
+   *  「进程树已杀完」的时刻再动会话文件（卸载路径的 kill 是 fire-and-forget，等不到）。 */
+  const tabKillersRef = useRef(new Map<string, () => Promise<void>>());
+  /** tab 清单的同步镜像：关闭操作（确认框 onOk 等）在异步间隙执行，闭包里的 tabs
+   *  可能已被期间的其他关闭换掉——统一从 ref 取最新列表再更新（连续两次关闭不会
+   *  按同一份旧数组互相覆盖）。 */
+  const tabsRef = useRef(tabs);
+  tabsRef.current = tabs;
+  /** 唯一的清单更新入口：ref 先行、state 随后（两个视图永不脱节） */
+  const updateTabs = useCallback((fn: (prev: ContentTab[]) => ContentTab[]) => {
+    const next = fn(tabsRef.current);
+    tabsRef.current = next;
+    setTabs(next);
+  }, []);
+  const tabSeqRef = useRef(0);
+  const newChatTabId = () => `chat-${++tabSeqRef.current}`;
+  const newTermTabId = () => `term-${++tabSeqRef.current}`;
+  /** 新开内容 tab 的默认交互方式（项目行「+」/点会话行用哪种；两种 tab 始终共存） */
+  const [defaultInteraction, setDefaultInteraction] = useState<"chat" | "terminal">("chat");
   const closeActionRef = useRef<CloseAction>(null);
   closeActionRef.current = closeAction;
 
@@ -151,6 +178,72 @@ export default function App() {
     });
   }, []);
 
+  // ---------- 内容区 tab 基础操作（对话 + 终端共用） ----------
+
+  /** 关掉若干 tab 后决定"接下来显示谁"，然后统一移除。
+   *  规则（浏览器/终端的通行行为，移植自 Tauri 线）：
+   *  ① 当前激活的 tab 没被关 → 不动；
+   *  ② 被关了 → 优先 preferId（"关闭其他"传右键那个 tab）；
+   *  ③ 再退化到"剩下里的最后一个"——"关闭所有"时会落到那个还在干活、没被关的会话上，
+   *     不会一律回落到空态；
+   *  ④ 一个都不剩 → null（空态）。
+   *  接管 tab 从 ref 的最新列表里挑（见 tabsRef / updateTabs 注释）：ref 里含本 tick
+   *  内刚 append 的 tab，连续两次关闭也不会按同一份旧数组互相覆盖。 */
+  const removeTabs = useCallback(
+    (ids: string[], preferId: string | null = null) => {
+      const gone = new Set(ids);
+      const rest = tabsRef.current.filter((t) => !gone.has(t.id));
+      updateTabs(() => rest);
+      setActiveTabId((cur) => {
+        if (cur === null) return null;
+        if (!gone.has(cur)) return cur;
+        if (preferId && !gone.has(preferId)) return preferId;
+        return rest.length > 0 ? rest[rest.length - 1].id : null;
+      });
+    },
+    [updateTabs],
+  );
+
+  /** 挂着某个会话的终端 tab：续聊 tab 认 resumeSessionId、新会话 tab 认 newSessionId
+   *  （都是传给 claude 的那个 uuid，与 SessionInfo.sessionId 同一套 id）。 */
+  const termTabsForSession = useCallback(
+    (sessionId: string) =>
+      tabsRef.current.filter(
+        (t): t is ContentTab & { kind: "term" } =>
+          t.kind === "term" &&
+          (t.resumeSessionId === sessionId || t.newSessionId === sessionId),
+      ),
+    [],
+  );
+
+  /** 单个 tab 关闭后的接管者：右邻优先、退化左邻（浏览器惯例） */
+  const neighborTabId = useCallback((id: string) => {
+    const list = tabsRef.current;
+    const i = list.findIndex((t) => t.id === id);
+    return i < 0 ? null : (list[i + 1]?.id ?? list[i - 1]?.id ?? null);
+  }, []);
+
+  /** 终端 tab 能否安全关闭：进程已结束，或探针判为"空闲"。busy / unknown 一律不关——
+   *  关 tab = 卸载终端 = kill 进程，误杀在跑的会话代价远大于漏关几个 tab。
+   *  status 是 starting 还是 running 不参与判断：刚开的会话本来就该能关（也还没干过活）。
+   *  （对话 tab 的同款判断是 isBusyPhase，两条判据各自的口径原样保留。） */
+  const termTabClosable = useCallback(
+    (t: TerminalTab, activity: Record<string, TabActivity>) =>
+      t.status === "exited" || activity[t.id] === "idle",
+    [],
+  );
+
+  /** 某个 tab 此刻能否安全关闭（关 = 结束其进程；对话的 thinking/starting 与
+   *  终端的 busy/unknown 同为"在跑"，宁可漏关不可误杀）。activity 为空时只按
+   *  对话 phase / 终端 status 判断（终端探针结果由调用方现算注入）。 */
+  const tabClosableNow = useCallback(
+    (t: ContentTab, activity: Record<string, TabActivity>): boolean => {
+      if (t.kind === "chat") return !isBusyPhase(t.phase);
+      return termTabClosable(t, activity);
+    },
+    [termTabClosable],
+  );
+
   // ---------- Toast ----------
 
   const toastTimerRef = useRef<number | null>(null);
@@ -170,7 +263,7 @@ export default function App() {
       if (remember) {
         // 先落盘再改内存态：写失败时内存不领先磁盘
         try {
-          await api.saveConfig(order, pinnedSessions, projectDirs, excludedDirs, dark, action);
+          await api.saveConfig(order, pinnedSessions, projectDirs, excludedDirs, dark, action, defaultInteraction);
         } catch (e) {
           // 失败必须留在窗口内报错：窗口一隐藏/退出，提示再没机会被看到，
           // 用户会以为选择已记住。保持打开，可重试或去掉「记住」再关。
@@ -185,7 +278,7 @@ export default function App() {
         await api.quitApp();
       }
     },
-    [order, pinnedSessions, projectDirs, excludedDirs, dark, showToast],
+    [order, pinnedSessions, projectDirs, excludedDirs, dark, defaultInteraction, showToast],
   );
 
   // ---------- 数据加载 ----------
@@ -205,6 +298,7 @@ export default function App() {
       setExcludedDirs(cfg.excluded ?? []);
       setDark(cfg.dark ?? false);
       setCloseAction(cfg.closeAction ?? null);
+      setDefaultInteraction(cfg.defaultInteraction ?? "chat");
       // 选中项可能已被删除，清理
       setSelectedKey((k) => (k && list.some((l) => l.key === k) ? k : null));
     } catch (e) {
@@ -251,6 +345,7 @@ export default function App() {
       pins: PinnedSession[],
       d: boolean,
       ca?: CloseAction,
+      di?: "chat" | "terminal",
     ): Promise<boolean> => {
       try {
         await api.saveConfig(
@@ -260,6 +355,7 @@ export default function App() {
           excludedDirs,
           d,
           ca === undefined ? closeAction : ca,
+          di === undefined ? defaultInteraction : di,
         );
         return true;
       } catch (e) {
@@ -267,7 +363,7 @@ export default function App() {
         return false;
       }
     },
-    [showToast, closeAction, projectDirs, excludedDirs],
+    [showToast, closeAction, defaultInteraction, projectDirs, excludedDirs],
   );
 
   const toggleTheme = useCallback(async () => {
@@ -452,29 +548,21 @@ export default function App() {
         delete next[l.key];
         return next;
       });
-      // 该项目的对话 tab 直接移除（ChatView unmount 会优雅关闭托管进程），激活相邻 tab
-      const removedChatIds = new Set(
-        chats.filter((c) => c.key === l.key).map((c) => c.id),
+      // 该项目的对话/终端 tab 直接移除（ChatView unmount 优雅关闭托管进程、
+      // TerminalPane unmount kill 终端进程树），激活相邻 tab
+      const removedIds = new Set(
+        tabsRef.current
+          .filter((t) => (t.kind === "chat" ? t.key === l.key : t.projectPath === l.path))
+          .map((t) => t.id),
       );
-      if (removedChatIds.size > 0) {
-        const rest = chats.filter((c) => !removedChatIds.has(c.id));
-        setChats(rest);
-        setActiveChatId((cur) =>
-          cur !== null && removedChatIds.has(cur)
-            ? rest[rest.length - 1]?.id ?? null
-            : cur,
-        );
-        setChatStatus((prev) => {
-          const copy = { ...prev };
-          removedChatIds.forEach((id) => delete copy[id]);
-          return copy;
-        });
+      if (removedIds.size > 0) {
+        removeTabs([...removedIds]);
       }
       await refreshPinned();
       await load();
       showToast(`已从列表移除 ${l.name}`);
     },
-    [refreshPinned, load, showToast, chats],
+    [refreshPinned, load, showToast, removeTabs],
   );
 
   const confirmRemove = useCallback(
@@ -522,10 +610,11 @@ export default function App() {
       const { session, key } = renameTarget;
       await api.renameSession(session.file, newTitle); // 失败时向上抛给对话框显示
       setRenameTarget(null);
-      // 该会话已开着对话 tab 时同步 tab 标题与其 session，否则标签/头部停留在旧标题
-      setChats((prev) =>
+      // 该会话已开着对话 tab 时同步 tab 标题与其 session，否则标签/头部停留在旧标题。
+      // 终端 tab 不用同步：claude 的 /rename 会改写 OSC 终端标题，onTitle 那条路自动跟上
+      updateTabs((prev) =>
         prev.map((c) => {
-          if (!c.session || c.session.file !== session.file) return c;
+          if (c.kind !== "chat" || !c.session || c.session.file !== session.file) return c;
           return { ...c, session: { ...c.session, title: newTitle }, title: newTitle };
         }),
       );
@@ -638,6 +727,20 @@ export default function App() {
 
   const deleteSession = useCallback(
     async (key: string, session: SessionInfo) => {
+      // 这个会话还开在内嵌终端里 → **先结束进程、再删文件**，不能反序：
+      // ① 反序会在两者之间漏掉 claude 最后追加的一条消息（回收站里的备份不完整）；
+      // ② 仍在写的 claude 会让删除静默失效——要么把移走的文件继续写进回收站那份，
+      //    要么在原路径重新建出来（会话在列表里"自己回来"）。
+      // 不能靠卸载路径（removeTabs → TerminalPane cleanup）的 kill：那是
+      // fire-and-forget，这里要的是"进程树确实杀完"的时刻，走 killers 注册表显式 await。
+      const attached = termTabsForSession(session.sessionId);
+      await Promise.all(
+        attached
+          .filter((t) => t.status !== "exited")
+          .map((t) => tabKillersRef.current.get(t.id)?.() ?? Promise.resolve()),
+      );
+      // 已结束的死 tab 同样收掉：文件都没了，留着只是"指向不存在会话"的孤儿
+      if (attached.length > 0) removeTabs(attached.map((t) => t.id));
       try {
         await api.deleteSession(session.file);
         await refreshSessions(key);
@@ -649,20 +752,37 @@ export default function App() {
         showToast("删除失败：" + String(e));
       }
     },
-    [refreshSessions, refreshPinned, showToast],
+    [refreshSessions, refreshPinned, showToast, termTabsForSession, removeTabs],
   );
 
   const confirmDeleteSession = useCallback(
     (key: string, session: SessionInfo) => {
+      // 终端里开着这个会话时，确认框必须说清"连带关掉终端"（关 = 结束 claude 进程）
+      const attached = termTabsForSession(session.sessionId);
+      const live = attached.filter((t) => t.status !== "exited");
+      // 忙/闲**就在点删除这一刻现算**（与 openTabMenu 同一套）：缓存快照会骗人。
+      // unknown 按忙处理，口径与 tabClosableNow 一致（宁可说得重一点，不可轻描淡写）
+      const busy = live.some(
+        (t) => (tabProbesRef.current.get(t.id)?.() ?? "unknown") !== "idle",
+      );
+      const tail =
+        attached.length === 0
+          ? ""
+          : live.length === 0
+            ? "\n\n该会话的终端 tab（已结束）将一并关闭。"
+            : busy
+              ? "\n\n该会话正开在终端 tab 里，删除将一并结束它——claude 正在干活，这一轮会被中断。"
+              : "\n\n该会话正开在终端 tab 里，删除将一并关闭该终端。";
       setConfirm({
         title: "删除会话",
-        message: `将删除会话：\n\n「${session.title}」\n\n删除后移入回收站（可恢复），继续？`,
+        message:
+          `将删除会话：\n\n「${session.title}」\n\n删除后移入回收站（可恢复），继续？` + tail,
         okText: "删除",
         danger: true,
         onOk: () => deleteSession(key, session),
       });
     },
-    [deleteSession],
+    [deleteSession, termTabsForSession],
   );
 
   const resumeSession = useCallback(
@@ -679,121 +799,301 @@ export default function App() {
     [items, showToast],
   );
 
-  // ---------- app 内直接对话（多会话 tab 并行） ----------
+  // ---------- 内容区 tab：开 / 关 / 标题（对话 + 终端） ----------
 
   /** 打开一个对话 tab（已存在同会话的 tab 则只激活）。
    *  id 必须在 updater 外生成、updater 保持纯函数——React（StrictMode 下）
-   *  会多次调用 updater，在内部生成 id / 写外部变量会导致 activeChatId
+   *  会多次调用 updater，在内部生成 id / 写外部变量会导致 activeTabId
    *  与 tab 实际 id 不一致（表现为第一个会话要点两次） */
   const openChatTab = useCallback(
     (tab: { projectPath: string; title: string; session: SessionInfo | null; key: string }) => {
       // 续聊同一会话不允许开两个进程（会分叉历史），只激活已有 tab
       const dup = tab.session
-        ? chats.find((c) => c.session?.file === tab.session!.file)
+        ? tabsRef.current.find(
+            (c): c is ContentTab & { kind: "chat" } =>
+              c.kind === "chat" && c.session?.file === tab.session!.file,
+          )
         : undefined;
       if (dup) {
-        setActiveChatId(dup.id);
+        setActiveTabId(dup.id);
         return;
       }
       const id = newChatTabId();
-      setChats((prev) => [...prev, { id, ...tab }]);
-      setActiveChatId(id);
+      updateTabs((prev) => [...prev, { kind: "chat", id, phase: "idle", ...tab }]);
+      setActiveTabId(id);
     },
-    [chats],
+    [updateTabs],
   );
 
-  /** 在 app 内新开对话（claude 工作目录 = 项目路径） */
-  const startInAppChat = useCallback(
+  /** 打开一个内嵌终端 tab（移植自 Tauri 线 openTerminalTab）。
+   *  同一会话已开过 tab → 直接激活，避免 --resume 同 id 双开。续聊 tab
+   *  （resumeSessionId）与新会话 tab（newSessionId）都要认：新会话的 jsonl
+   *  落盘后从右键「继续对话」进来就是同一个 uuid，漏掉它照样双开两个 claude
+   *  进程交错写同一份会话文件。**只认还活着的**（exited 不算）：命中一个已退出
+   *  的 tab 等于把用户送到死终端上（--resume 永远发不出去）；那种情况下照常新开
+   *  一个——旧 tab 的进程已经没了，不会跟它争同一份 jsonl。 */
+  const openTerminalTab = useCallback(
+    (opts: { title: string; projectPath: string; resumeSessionId: string | null }) => {
+      if (opts.resumeSessionId) {
+        const dup = termTabsForSession(opts.resumeSessionId).find((t) => t.status !== "exited");
+        if (dup) {
+          setActiveTabId(dup.id);
+          return;
+        }
+      }
+      const tab: ContentTab = {
+        kind: "term",
+        id: newTermTabId(),
+        title: opts.title,
+        projectPath: opts.projectPath,
+        resumeSessionId: opts.resumeSessionId,
+        // 新会话预生成会话 id（交给 claude 的 --session-id）：tab 一开出来就知道
+        // 它对应哪个会话文件，会话名一落盘就能回填标题
+        newSessionId: opts.resumeSessionId === null ? newSessionId() : null,
+        status: "starting",
+        exitCode: null,
+      };
+      updateTabs((prev) => [...prev, tab]);
+      setActiveTabId(tab.id);
+    },
+    [termTabsForSession, updateTabs],
+  );
+
+  /** 项目行「+」：按「默认交互方式」开新会话 tab（页面对话 / 内嵌终端） */
+  const startNewSessionTab = useCallback(
     (key: string) => {
       const l = items.find((x) => x.key === key);
       if (!l?.path) {
-        showToast("该项目未解析到路径，无法对话");
+        showToast("该项目未解析到路径，无法新建会话");
         return;
       }
       if (l.healthy === false) {
-        showToast(`目录不存在，无法对话：${l.path}`);
+        showToast(`目录不存在，无法新建会话：${l.path}`);
         return;
       }
-      openChatTab({ projectPath: l.path, title: l.name, session: null, key });
+      if (defaultInteraction === "terminal") {
+        openTerminalTab({ title: l.name, projectPath: l.path, resumeSessionId: null });
+      } else {
+        openChatTab({ projectPath: l.path, title: l.name, session: null, key });
+      }
     },
-    [items, showToast, openChatTab],
+    [items, showToast, defaultInteraction, openTerminalTab, openChatTab],
   );
 
-  /** 在 app 内继续已有会话 */
-  const continueInAppChat = useCallback(
+  /** 点会话行：按「默认交互方式」继续对话（页面对话 tab / 内嵌终端 resume） */
+  const continueSessionTab = useCallback(
     (key: string, session: SessionInfo) => {
       const l = items.find((x) => x.key === key);
       if (!l?.path) {
-        showToast("该项目未解析到路径，无法对话");
+        showToast("该项目未解析到路径，无法继续对话");
         return;
       }
-      openChatTab({ projectPath: l.path, title: session.title, session, key });
+      const projectPath = l.path;
+      if (defaultInteraction === "terminal") {
+        openTerminalTab({ title: session.title, projectPath, resumeSessionId: session.sessionId });
+      } else {
+        openChatTab({ projectPath, title: session.title, session, key });
+      }
     },
-    [items, showToast, openChatTab],
+    [items, showToast, defaultInteraction, openTerminalTab, openChatTab],
   );
 
-  /** 关闭对话 tab：卸载 ChatView（其 unmount 会优雅关闭进程）并刷新该项目会话列表 */
-  const closeChat = useCallback(
+  /** 右键菜单里的「另一种交互方式」：与默认相反的那条路（默认开终端时这里开对话，
+   *  反之亦然）——两种 tab 必须都留着入口，不因默认值切换而失踪。 */
+  const continueSessionOtherMode = useCallback(
+    (key: string, session: SessionInfo) => {
+      const l = items.find((x) => x.key === key);
+      const projectPath = l?.path ?? key;
+      if (defaultInteraction === "terminal") {
+        openChatTab({ projectPath, title: session.title, session, key });
+      } else {
+        openTerminalTab({ title: session.title, projectPath, resumeSessionId: session.sessionId });
+      }
+    },
+    [items, defaultInteraction, openChatTab, openTerminalTab],
+  );
+
+  /** 终端状态回传（TerminalPane：starting → running / exited） */
+  const updateTabStatus = useCallback(
+    (id: string, status: TerminalTab["status"], exitCode: number | null) => {
+      updateTabs((prev) =>
+        prev.map((t) =>
+          t.kind === "term" && t.id === id ? { ...t, status, exitCode } : t,
+        ),
+      );
+    },
+    [updateTabs],
+  );
+
+  /** 对话状态回传（ChatView：idle/starting/thinking）——收在 tab 对象上 */
+  const updateChatPhase = useCallback(
+    (id: string, phase: string) => {
+      updateTabs((prev) =>
+        prev.map((t) => (t.kind === "chat" && t.id === id && t.phase !== phase ? { ...t, phase } : t)),
+      );
+    },
+    [updateTabs],
+  );
+
+  /** 改 tab 标题。**标题没变就不 setState**：claude 干活时每 ~960ms 用 ◐/◑ 重写一次
+   *  OSC 标题，剥掉字形后内容完全相同，不挡住这一路会让整棵 tab 条跟着动画帧重渲染。 */
+  const setTabTitle = useCallback(
+    (id: string, title: string) => {
+      updateTabs((prev) => {
+        const i = prev.findIndex((t) => t.id === id);
+        if (i < 0 || prev[i].title === title) return prev;
+        const next = prev.slice();
+        next[i] = { ...next[i], title };
+        return next;
+      });
+    },
+    [updateTabs],
+  );
+
+  /** 标题已定稿的终端 tab：定稿后不再让「会话文件兜底」插话（它读到的可能还是首条
+   *  用户消息，比 claude 刚写出的 OSC 标题旧）。ref 给轮询里的同步判断用，
+   *  state 用来重算待办清单。 */
+  const titledRef = useRef<Set<string>>(new Set());
+  const [titledIds, setTitledIds] = useState<string[]>([]);
+  const markTitled = useCallback((id: string) => {
+    if (titledRef.current.has(id)) return;
+    titledRef.current.add(id);
+    setTitledIds((prev) => [...prev, id]);
+  }, []);
+
+  /** 会话名回传（TerminalPane 的 onTitle：claude 写的 OSC 0 终端标题，已剥字形/滤噪声）。
+   *  新会话 tab 开出来时标题是项目名（那会儿会话还没起名），claude 写出会话名后由这里
+   *  换成真名字；`/rename` 也一样——定稿即收工，不再轮询会话文件。 */
+  const updateTabTitle = useCallback(
+    (id: string, title: string) => {
+      setTabTitle(id, title);
+      markTitled(id);
+    },
+    [setTabTitle, markTitled],
+  );
+
+  /** 待补标题的新会话终端 tab：会话 id 已知、进程还活着、标题还没定稿。
+   *  为什么要补：claude 的 OSC 标题取 customTitle > aiTitle > "Claude Code"，
+   *  **不带「首条用户消息」这一档**，而左栏列表的标题链是 customTitle > aiTitle >
+   *  首条用户消息。于是没生成 aiTitle 的会话（Tauri 线实测 175 个里 10 个）OSC 只写
+   *  兜底值、被 term-title.ts 滤掉，tab 就永远挂着项目名。这类会话只能回来读会话
+   *  文件——文件在第一条消息之后才出现，所以是轮询。 */
+  const pendingTitleTabs = tabs
+    .filter(
+      (t): t is ContentTab & { kind: "term" } =>
+        t.kind === "term" && t.newSessionId !== null && t.status !== "exited" && !titledIds.includes(t.id),
+    )
+    .map((t) => ({ id: t.id, projectPath: t.projectPath, sessionId: t.newSessionId as string }));
+  const pendingTitleKey = pendingTitleTabs.map((t) => t.id).join(",");
+  // 轮询里取最新待办：清单随每次渲染重算，但 effect 不该跟着重订阅（那样每 3s 重建一次定时器）
+  const pendingTitleRef = useRef(pendingTitleTabs);
+  pendingTitleRef.current = pendingTitleTabs;
+
+  // 标题补挂：每 3s 问一次「这个会话起名了吗」。文件没出现时后端只做一次 stat，
+  // 代价可忽略；拿到标题即定稿停下（此后 claude 的 /rename 由 OSC 那条路跟）。
+  useEffect(() => {
+    if (pendingTitleKey === "") return;
+    let disposed = false;
+    const tick = async () => {
+      for (const t of pendingTitleRef.current) {
+        if (disposed || titledRef.current.has(t.id)) continue;
+        try {
+          const title = await api.sessionTitleFor(t.projectPath, t.sessionId);
+          // 期间可能已被 OSC 定稿（或 tab 已关）：迟到结果不得覆盖更新的名字
+          if (title !== null && !disposed && !titledRef.current.has(t.id)) {
+            setTabTitle(t.id, title);
+            markTitled(t.id);
+          }
+        } catch {
+          /* 读失败（瞬态）：下一轮再试 */
+        }
+      }
+    };
+    const timer = window.setInterval(() => void tick(), 3000);
+    void tick();
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [pendingTitleKey, setTabTitle, markTitled]);
+
+  /** 关单个 tab：终端的运行中先确认（关闭 = 结束 claude 进程树）；对话直接关
+   *  （ChatView unmount 优雅关闭进程）。被关的是当前激活 tab 时接管到右/左邻。 */
+  const closeTab = useCallback(
     (tabId: string) => {
-      const tab = chats.find((c) => c.id === tabId);
-      if (tab) void refreshSessions(tab.key);
-      const rest = chats.filter((c) => c.id !== tabId);
-      setChats(rest);
-      // 关闭的是当前 tab → 激活相邻 tab
-      setActiveChatId((cur) =>
-        cur === tabId ? rest[rest.length - 1]?.id ?? null : cur,
-      );
-      setChatStatus((prev) => {
-        if (!(tabId in prev)) return prev;
-        const copy = { ...prev };
-        delete copy[tabId];
-        return copy;
-      });
+      const tab = tabsRef.current.find((t) => t.id === tabId);
+      if (!tab) return;
+      const next = neighborTabId(tabId);
+      if (tab.kind === "term" && tab.status !== "exited") {
+        setConfirm({
+          title: "关闭终端",
+          message: `「${tab.title}」的 claude 会话仍在运行，关闭 tab 将结束该进程。继续？`,
+          okText: "关闭",
+          danger: true,
+          onOk: () => removeTabs([tabId], next),
+        });
+        return;
+      }
+      if (tab.kind === "chat") void refreshSessions(tab.key);
+      removeTabs([tabId], next);
     },
-    [chats, refreshSessions],
+    [neighborTabId, removeTabs, refreshSessions],
   );
 
-  /** 关闭除 keepId 外的其他会话；进行中（思考中/启动中）的会话跳过不关 */
-  const closeOtherChats = useCallback(
-    (keepId: string) => {
-      const closing = chats.filter(
-        (c) => c.id !== keepId && !isBusyPhase(chatStatus[c.id]),
-      );
-      if (closing.length === 0) return;
-      for (const c of closing) void refreshSessions(c.key);
-      const ids = new Set(closing.map((c) => c.id));
-      setChats((prev) => prev.filter((c) => !ids.has(c.id)));
-      // 当前 tab 被关（不可能，keepId 保留）→ 兜底激活保留的 tab
-      setActiveChatId((cur) => (cur && ids.has(cur) ? keepId : cur));
-      setChatStatus((prev) => {
-        const copy = { ...prev };
-        for (const c of closing) delete copy[c.id];
-        return copy;
-      });
+  /** tab 右键菜单打开时刻的忙/闲快照（终端探针此刻现算，见 tabProbesRef 注释） */
+  const [tabMenu, setTabMenu] = useState<{
+    x: number;
+    y: number;
+    tabId: string | null;
+    activity: Record<string, TabActivity>;
+  } | null>(null);
+
+  /** 打开 tab 右键菜单：此刻对每个终端 tab 现算一次忙/闲，结果作为快照放进菜单状态 */
+  const openTabMenu = useCallback(
+    (e: React.MouseEvent, tabId: string | null) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const activity: Record<string, TabActivity> = {};
+      for (const t of tabsRef.current) {
+        if (t.kind !== "term") continue;
+        activity[t.id] = tabProbesRef.current.get(t.id)?.() ?? "unknown";
+      }
+      setTabMenu({ x: e.clientX, y: e.clientY, tabId, activity });
     },
-    [chats, chatStatus, refreshSessions],
+    [],
   );
 
-  /** 关闭全部会话；进行中（思考中/启动中）的会话跳过不关（与"关闭其他"同规则） */
-  const closeAllChats = useCallback(() => {
-    const closing = chats.filter((c) => !isBusyPhase(chatStatus[c.id]));
-    if (closing.length === 0) return;
-    for (const c of closing) void refreshSessions(c.key);
-    const ids = new Set(closing.map((c) => c.id));
-    const remaining = chats.filter((c) => !ids.has(c.id));
-    setChats(remaining);
-    // 当前 tab 被关闭 → 激活剩余的最后一个 tab（可能就是进行中被保留的那个）
-    setActiveChatId((cur) =>
-      cur && ids.has(cur) ? remaining[remaining.length - 1]?.id ?? null : cur,
-    );
-    setChatStatus((prev) => {
-      const copy = { ...prev };
-      for (const c of closing) delete copy[c.id];
-      return copy;
-    });
-  }, [chats, chatStatus, refreshSessions]);
+  /** 批量关 tab：只关 closable 的，其余跳过并如实报数（对话/终端同一套规则）。
+   *  exceptId：保留哪一个（"关闭其他"传右键那个 tab 的 id；"关闭所有"传 null）。 */
+  const closeTabsSafely = useCallback(
+    (exceptId: string | null, activity: Record<string, TabActivity>) => {
+      const targets = tabsRef.current.filter((t) => t.id !== exceptId);
+      const closable = targets.filter((t) => tabClosableNow(t, activity));
+      const kept = targets.length - closable.length;
+      if (closable.length === 0) {
+        showToast(kept > 0 ? "没有可关闭的会话（在跑的已跳过）" : "没有可关闭的会话");
+        return;
+      }
+      for (const t of closable) {
+        if (t.kind === "chat") void refreshSessions(t.key);
+      }
+      // 一次性移除（removeTabs 内部经 tabsRef 取最新列表，批量不会丢更新）；
+      // exceptId 传给 removeTabs：被关掉的若是当前激活 tab，优先接管到右键那个
+      removeTabs(closable.map((t) => t.id), exceptId);
+      showToast(
+        `已关闭 ${closable.length} 个会话` + (kept > 0 ? `，跳过 ${kept} 个在跑的` : ""),
+      );
+    },
+    [removeTabs, refreshSessions, tabClosableNow, showToast],
+  );
 
   // ---------- 渲染 ----------
+
+  /** 当前激活 tab 若是对话 tab，其会话文件路径（左栏高亮用；终端 tab / 空态为 null） */
+  const activeSessionFile = useMemo(() => {
+    const t = tabs.find((c) => c.id === activeTabId);
+    return t?.kind === "chat" ? t.session?.file ?? null : null;
+  }, [tabs, activeTabId]);
 
   return (
     <div className="app">
@@ -856,9 +1156,9 @@ export default function App() {
             <PinnedSessions
             items={pinnedMeta}
             search={search}
-            activeSessionFile={activeChatId ? chats.find((c) => c.id === activeChatId)?.session?.file ?? null : null}
+            activeSessionFile={activeSessionFile}
             projects={items}
-            onOpenSession={continueInAppChat}
+            onOpenSession={continueSessionTab}
             onTogglePin={togglePin}
             onSessionContextMenu={(x, y, key, session) =>
               setSessionMenu({ x, y, key, session })
@@ -869,7 +1169,7 @@ export default function App() {
             pinnedFiles={pinnedFiles}
             selectedKey={selectedKey}
             expandedKey={expandedKey}
-            activeSessionFile={activeChatId ? chats.find((c) => c.id === activeChatId)?.session?.file ?? null : null}
+            activeSessionFile={activeSessionFile}
             sessionsByKey={sessionsByKey}
             onSelect={setSelectedKey}
             onReorder={reorder}
@@ -879,49 +1179,53 @@ export default function App() {
             onSessionContextMenu={(x, y, key, session) =>
               setSessionMenu({ x, y, key, session })
             }
-            onChatProject={startInAppChat}
-            onChatSession={continueInAppChat}
+            onChatProject={startNewSessionTab}
+            onChatSession={continueSessionTab}
             onContextMenu={(x, y, key) => setMenu({ x, y, key })}
           />
           </div>
         </div>
         <div className="chat-col">
-          {chats.length > 0 && (
+          {tabs.length > 0 && (
             <ChatTabs
-              tabs={chats.map((c) => ({ id: c.id, title: c.title }))}
-              activeId={activeChatId}
-              statusByTab={chatStatus}
-              onSelect={setActiveChatId}
-              onClose={closeChat}
-              onCloseOthers={closeOtherChats}
-              onCloseAll={closeAllChats}
+              tabs={tabs}
+              activeId={activeTabId}
+              onSelect={setActiveTabId}
+              onClose={closeTab}
+              onTabContextMenu={openTabMenu}
             />
           )}
-          {chats.map((c) => (
+          {tabs.map((t) => (
             <div
-              key={c.id}
-              className={c.id === activeChatId ? "chat-page chat-page-active" : "chat-page"}
+              key={t.id}
+              className={t.id === activeTabId ? "chat-page chat-page-active" : "chat-page"}
             >
-              <ChatView
-                projectPath={c.projectPath}
-                title={c.title}
-                session={c.session}
-                onToast={showToast}
-                onStatusChange={(phase) =>
-                  setChatStatus((prev) =>
-                    prev[c.id] === phase ? prev : { ...prev, [c.id]: phase },
-                  )
-                }
-              />
+              {t.kind === "chat" ? (
+                <ChatView
+                  projectPath={t.projectPath}
+                  title={t.title}
+                  session={t.session}
+                  onToast={showToast}
+                  onStatusChange={(phase) => updateChatPhase(t.id, phase)}
+                />
+              ) : (
+                <TerminalPane
+                  tab={t}
+                  onStatus={updateTabStatus}
+                  onTitle={updateTabTitle}
+                  probes={tabProbesRef}
+                  killers={tabKillersRef}
+                />
+              )}
             </div>
           ))}
-          {chats.length === 0 && (
+          {tabs.length === 0 && (
             <div className="viewer-empty" style={{ flex: 1 }}>
               <div className="empty-icon">
                 <MessageCircleIcon size={34} />
               </div>
-              <div>点击项目行的 + 新建对话，或点击会话直接继续</div>
-              <div className="empty-sub">可同时打开多个对话，标签页切换</div>
+              <div>点击项目行的 + 新建会话，或点击会话直接继续</div>
+              <div className="empty-sub">页面对话与内嵌终端均可，可同时打开多个标签页</div>
             </div>
           )}
         </div>
@@ -953,11 +1257,30 @@ export default function App() {
           y={sessionMenu.y}
           session={sessionMenu.session}
           sessionPinned={pinnedFiles.has(sessionMenu.session.file)}
+          otherModeLabel={
+            defaultInteraction === "chat"
+              ? "在内嵌终端继续对话"
+              : "在页面对话中继续"
+          }
           onClose={() => setSessionMenu(null)}
           onResumeTerminal={() => resumeSession(sessionMenu.key, sessionMenu.session)}
+          onResumeInApp={() => continueSessionOtherMode(sessionMenu.key, sessionMenu.session)}
           onRename={() => setRenameTarget({ session: sessionMenu.session, key: sessionMenu.key })}
           onTogglePin={() => togglePin(sessionMenu.key, sessionMenu.session)}
           onDelete={() => confirmDeleteSession(sessionMenu.key, sessionMenu.session)}
+        />
+      )}
+
+      {tabMenu && (
+        <TabContextMenu
+          x={tabMenu.x}
+          y={tabMenu.y}
+          tabId={tabMenu.tabId}
+          tabs={tabs}
+          activity={tabMenu.activity}
+          onClose={() => setTabMenu(null)}
+          onCloseOthers={(id) => closeTabsSafely(id, tabMenu.activity)}
+          onCloseAll={() => closeTabsSafely(null, tabMenu.activity)}
         />
       )}
 
@@ -1029,10 +1352,13 @@ export default function App() {
       {settingsOpen && (
         <SettingsDialog
           closeAction={closeAction}
+          defaultInteraction={defaultInteraction}
           onClose={() => setSettingsOpen(false)}
-          onSave={async (action) => {
+          onSave={async (action, interaction) => {
             setCloseAction(action);
-            await persistConfig(order, pinnedSessions, dark, action);
+            // 两种 tab 共存：改默认只影响之后新开的 tab，已开的不动（简报 §5）
+            setDefaultInteraction(interaction);
+            await persistConfig(order, pinnedSessions, dark, action, interaction);
             setSettingsOpen(false);
             showToast("设置已保存");
           }}

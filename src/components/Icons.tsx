@@ -852,3 +852,24 @@ export function NotebookTextIcon({ size = 13, className }: IconProps) {
     </svg>
   );
 }
+
+/** 终端（内嵌会话 tab 图标，Lucide terminal；自 embedded-terminal 分支逐字搬入） */
+export function TerminalIcon({ size = 13, className }: IconProps) {
+  return (
+    <svg
+      className={className}
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <polyline points="4 17 10 11 4 5" />
+      <line x1="12" x2="20" y1="19" y2="19" />
+    </svg>
+  );
+}

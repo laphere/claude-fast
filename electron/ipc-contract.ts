@@ -26,6 +26,7 @@ export interface IpcContract {
     excluded?: string[];
     dark?: boolean;
     closeAction?: string | null;
+    defaultInteraction?: string;
   };
   add_project: { path: string };
   remove_project: { path: string };
@@ -86,6 +87,28 @@ export interface IpcContract {
     response?: string;
   };
   chat_close: { sessionId: string };
+  // ---------- 内嵌终端（node-pty，对齐 Tauri 线 pty_* 命令面） ----------
+  /** 启动 claude 终端会话：输出经 `pty:data:<token>`、退出经 `pty:exit:<token>`
+   *  单向推送（token 由渲染层生成，先订阅再 invoke——早于应答的事件零丢失） */
+  pty_spawn_claude: {
+    cwd: string;
+    resumeSessionId: string | null;
+    newSessionId: string | null;
+    cols: number;
+    rows: number;
+    token: string;
+  };
+  /** 键盘输入写入 PTY（xterm.js onData 原文） */
+  pty_write: { id: number; data: string };
+  /** 终端尺寸变更（FitAddon 防抖后调用） */
+  pty_resize: { id: number; cols: number; rows: number };
+  /** 结束终端会话（先 taskkill /T /F 杀树再 pty.kill；返回 = 树已杀完） */
+  pty_kill: { id: number };
+  /** 按会话 id 读会话标题（终端 tab 的会话名兜底）；文件未落盘返回 null */
+  session_title_for: { projectPath: string; sessionId: string };
+  /** 剪贴板里若放着**图片文件**（资源管理器「复制」），返回其路径；否则 null。
+   *  只读不动剪贴板；位图/纯文本/非图片文件/非 Windows 一律 null */
+  clipboard_image_path: void;
   // ---------- 供应商切换 ----------
   provider_list: void;
   provider_save: { provider: unknown };
@@ -160,6 +183,12 @@ export const IPC_CHANNELS = [
   "chat_set_permission_mode",
   "chat_permission_response",
   "chat_close",
+  "pty_spawn_claude",
+  "pty_write",
+  "pty_resize",
+  "pty_kill",
+  "session_title_for",
+  "clipboard_image_path",
   "provider_list",
   "provider_save",
   "provider_delete",

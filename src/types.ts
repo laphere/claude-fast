@@ -23,6 +23,9 @@ export interface Config {
   dark: boolean;
   /** null/undefined = 每次询问；"quit" = 直接退出；"minimize" = 最小化到托盘 */
   closeAction?: CloseAction;
+  /** 新开内容 tab 的默认交互方式："chat" = 页面对话（Agent SDK）；"terminal" = 内嵌终端。
+   *  只决定「项目行 + / 点会话行」默认开哪种 tab；已开的 tab 不受切换影响（两种共存）。 */
+  defaultInteraction?: "chat" | "terminal";
 }
 
 /** 置顶会话条目（持久化在 config 里） */
@@ -39,6 +42,33 @@ export interface ClaudeProject {
   /** true = 真实路径已不存在（项目代码被删除），不可启动 */
   missing: boolean;
 }
+
+// ---------------- 内嵌终端（自 embedded-terminal 分支 src/types.ts 逐字搬入） ----------------
+
+/** 内容区内嵌终端 tab（真 claude CLI 跑在 PTY 里，xterm.js 渲染） */
+export interface TerminalTab {
+  /** 前端 tab 标识（spawn 完成前就要渲染 tab，不用 pty id） */
+  id: string;
+  /** tab 标题（resume = 会话标题；新会话 = 项目名）。
+   *  会话一有名字就被 claude 写进终端标题（OSC 0），由 TerminalPane 的 onTitle
+   *  实时覆盖成真会话名（见 lib/term-title.ts）——初始值只是「还没起名」时的占位 */
+  title: string;
+  /** claude 的工作目录（项目绝对路径） */
+  projectPath: string;
+  /** 续聊的会话 id（uuid）；null = 新会话 */
+  resumeSessionId: string | null;
+  /** 新会话预生成的会话 id（`--session-id`；续聊 tab 为 null）：claude 的会话文件
+   *  就是 `<id>.jsonl`，靠它把会话名回填到 tab 标题（见 App 的标题补挂） */
+  newSessionId: string | null;
+  status: "starting" | "running" | "exited";
+  exitCode: number | null;
+}
+
+/** claude 是否正在干活（由终端屏幕状态行探测，见 TerminalPane 的 detectActivity）。
+ *  注意与 TerminalTab["status"] 的区别：status 只说"进程还活着"，处在 prompt 等输入的
+ *  会话同样是 running；busy 才是"正在干活"。
+ *  unknown = 屏幕上看不出来（用户滚在历史里 / claude 改了文案）——调用方按 busy 处理。 */
+export type TabActivity = "busy" | "idle" | "unknown";
 
 /** Claude Code 会话元数据（来自 ~/.claude/projects 下 jsonl 的轻量解析） */
 export interface SessionInfo {

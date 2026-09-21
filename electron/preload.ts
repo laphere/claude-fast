@@ -26,6 +26,24 @@ const api = {
       ipcRenderer.removeListener(channel, handler);
     };
   },
+  /** 订阅某个终端 token 的输出字节流（Uint8Array）；返回取消订阅函数 */
+  onPtyData: (token: string, cb: (chunk: Uint8Array) => void): (() => void) => {
+    const channel = `pty:data:${token}`;
+    const handler = (_e: unknown, chunk: Uint8Array) => cb(chunk);
+    ipcRenderer.on(channel, handler);
+    return () => {
+      ipcRenderer.removeListener(channel, handler);
+    };
+  },
+  /** 订阅某个终端 token 的退出事件（code 为 null = 被信号终止）；返回取消订阅函数 */
+  onPtyExit: (token: string, cb: (code: number | null) => void): (() => void) => {
+    const channel = `pty:exit:${token}`;
+    const handler = (_e: unknown, code: number | null) => cb(code);
+    ipcRenderer.on(channel, handler);
+    return () => {
+      ipcRenderer.removeListener(channel, handler);
+    };
+  },
   /** 订阅窗口关闭请求（主进程拦截 close 后转发）；返回取消订阅函数 */
   onCloseRequested: (cb: () => void): (() => void) => {
     const handler = () => cb();

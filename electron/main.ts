@@ -22,6 +22,8 @@ import {
 } from "./backend/config";
 import { ChatManager, defaultPermissionMode } from "./backend/chat";
 import { claudeRunUpgrade, claudeUpdateStatus } from "./backend/claude-update";
+import { PtyManager } from "./backend/pty";
+import { clipboardImagePath } from "./backend/clipboard-image";
 import { fetchModels } from "./backend/model-fetch";
 import {
   addProject,
@@ -57,6 +59,7 @@ import {
   getSessionMessages,
   listSessions,
   renameSession,
+  sessionTitleFor,
   validateSessionFile,
 } from "./backend/sessions";
 import {
@@ -114,6 +117,16 @@ const chatManager = new ChatManager((sessionId, event) => {
   if (!token || !mainWindow || mainWindow.isDestroyed()) return;
   mainWindow.webContents.send(`chat:event:${token}`, event);
 });
+
+// ---------------- 内嵌终端：PtyManager + 事件定向推送 ----------------
+
+/** 终端会话 id → 渲染层 token（与 chatTokens 同款：事件只发给发起该终端的 tab） */
+const ptyManager = new PtyManager();
+
+/** 关闭全部终端会话（app 退出路径调用；树杀契约见 backend/pty.ts） */
+function shutdownPtySessions(): void {
+  ptyManager.shutdownAll();
+}
 
 // ---------------- IPC 包装：后端抛错统一转为字符串（对齐 Tauri Err(String)） ----------------
 
@@ -229,6 +242,8 @@ async function quitApp(): Promise<void> {
   // 先优雅关掉对话子进程（关 stdin、最多等 3s 让 CLI 把 jsonl 收尾）再退出：
   // app.exit() 会立刻终止进程、连 before-quit 都不走，漏了这一步就会砍在半路。
   await chatManager.closeAll();
+  // 终端会话走强杀（taskkill /T /F）：ConPTY 无优雅收尾协议，等树杀完再退
+  shutdownPtySessions();
   app.exit(0);
 }
 
@@ -324,6 +339,9 @@ function registerIpc(): void {
     if (p.excluded !== undefined) patch.excluded = (p.excluded ?? []).map(String);
     if (p.dark !== undefined) patch.dark = p.dark === true;
     if (p.closeAction !== undefined) patch.closeAction = p.closeAction;
+    if (p.defaultInteraction !== undefined) {
+      patch.defaultInteraction = p.defaultInteraction === "terminal" ? "terminal" : "chat";
+    }
     return updateConfig(rootDir(), patch);
   });
   handle("add_project", (p) =>
@@ -436,6 +454,39 @@ function registerIpc(): void {
     // 但主进程侧必须等子进程收尾（最多 3s）再算关完
     return chatManager.close(sid);
   });
+
+  // ---------- 内嵌终端（node-pty，对齐 Tauri 线 pty_* 命令） ----------
+  handle("pty_spawn_claude", (p) => {
+    const token = String(p.token);
+    const send = (channel: string, payload: unknown) => {
+      if (!mainWindow || mainWindow.isDestroyed()) return;
+      mainWindow.webContents.send(channel, payload);
+    };
+    // 输出/退出经 token 定向推送：渲染层在 invoke 之前就已订阅
+    // `pty:data:<token>` / `pty:exit:<token>`，早于应答的事件零丢失
+    return ptyManager.spawnClaude(
+      {
+        cwd: String(p.cwd),
+        resumeSessionId: p.resumeSessionId ?? null,
+        newSessionId: p.newSessionId ?? null,
+        cols: toInt(p.cols) ?? 80,
+        rows: toInt(p.rows) ?? 24,
+        token,
+      },
+      {
+        onData: (chunk) => send(`pty:data:${token}`, chunk),
+        // exit 只带 code：token 与这次 spawn 一一对应，渲染层不需要再对 id
+        onExit: (code) => send(`pty:exit:${token}`, code),
+      },
+    );
+  });
+  handle("pty_write", (p) => ptyManager.write(toInt(p.id) ?? 0, String(p.data ?? "")));
+  handle("pty_resize", (p) =>
+    ptyManager.resize(toInt(p.id) ?? 0, toInt(p.cols) ?? 0, toInt(p.rows) ?? 0));
+  handle("pty_kill", (p) => ptyManager.kill(toInt(p.id) ?? 0));
+  handle("session_title_for", (p) =>
+    sessionTitleFor(projectsDir(), String(p.projectPath), String(p.sessionId)));
+  handle("clipboard_image_path", () => clipboardImagePath());
 
   // ---------- 供应商切换 ----------
   handle("provider_list", () => providerListFrom(claudeConfigDir(), rootDir()));
@@ -567,6 +618,9 @@ if (!gotSingleInstanceLock) {
     if (chatExitDone) return;
     e.preventDefault();
     void chatManager.closeAll().finally(() => {
+      // 终端会话也一并清场（树杀是异步的 taskkill；不等它落定也行——进程亡即树亡，
+      // 但先发起再放行退出，给系统留出回收窗口，与 quit_app 同一条路）
+      shutdownPtySessions();
       chatExitDone = true;
       app.quit();
     });

@@ -67,6 +67,7 @@ describe("looksLikeOurConfig", () => {
       "excluded",
       "dark",
       "closeAction",
+      "defaultInteraction",
       "providers",
       "currentProvider",
       "pinnedSessions",

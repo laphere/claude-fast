@@ -33,6 +33,9 @@ export interface Config {
   dark: boolean;
   /** null = 每次询问；"quit" = 直接退出；"minimize" = 最小化到托盘 */
   closeAction: string | null;
+  /** 新开内容 tab 的默认交互方式："chat" = 页面对话（Agent SDK）；"terminal" = 内嵌终端。
+   *  只决定「项目行 + / 点会话行」默认开哪种 tab；已开的 tab 不受切换影响（两种共存）。 */
+  defaultInteraction: "chat" | "terminal";
   /** Claude Code 供应商清单 */
   providers: ProviderInfo[];
   /** 当前启用供应商 id（null = 尚未启用过） */
@@ -56,6 +59,7 @@ const OUT_KEYS = [
   "excluded",
   "dark",
   "closeAction",
+  "defaultInteraction",
   "providers",
   "currentProvider",
   "pinnedSessions",
@@ -69,6 +73,7 @@ export function defaultConfig(): Config {
     excluded: [],
     dark: false,
     closeAction: null,
+    defaultInteraction: "chat",
     providers: [],
     currentProvider: null,
     pinnedSessions: [],
@@ -154,6 +159,7 @@ export function decodeConfig(v: unknown): Config {
   cfg.excluded = stringArray(obj.excluded);
   cfg.dark = obj.dark === true;
   cfg.closeAction = obj.closeAction === "quit" || obj.closeAction === "minimize" ? obj.closeAction : null;
+  cfg.defaultInteraction = obj.defaultInteraction === "terminal" ? "terminal" : "chat";
   cfg.providers = normalizeProviders(obj.providers);
   cfg.currentProvider = typeof obj.currentProvider === "string" ? obj.currentProvider : null;
   cfg.pinnedSessions = normalizePins(obj.pinnedSessions);
@@ -179,6 +185,7 @@ export function encodeConfig(cfg: Config): string {
   out.excluded = cfg.excluded;
   out.dark = cfg.dark;
   out.closeAction = cfg.closeAction;
+  out.defaultInteraction = cfg.defaultInteraction;
   out.providers = cfg.providers;
   out.currentProvider = cfg.currentProvider;
   out.pinnedSessions = cfg.pinnedSessions;
@@ -267,6 +274,9 @@ function applyPatch(cfg: Config, patch: ConfigPatch): void {
   if (has("dark")) cfg.dark = p.dark === true;
   if (has("closeAction")) {
     cfg.closeAction = p.closeAction === "quit" || p.closeAction === "minimize" ? p.closeAction : null;
+  }
+  if (has("defaultInteraction")) {
+    cfg.defaultInteraction = p.defaultInteraction === "terminal" ? "terminal" : "chat";
   }
   if (has("providers")) cfg.providers = normalizeProviders(p.providers);
   if (has("currentProvider")) {

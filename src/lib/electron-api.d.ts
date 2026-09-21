@@ -8,6 +8,10 @@ export interface ClaudeFastBridge {
   invoke: <K extends IpcChannel>(channel: K, payload: IpcContract[K]) => Promise<unknown>;
   /** 订阅某个对话 token 的事件流；返回取消订阅函数 */
   onChatEvent: (token: string, cb: (event: unknown) => void) => () => void;
+  /** 订阅某个终端 token 的输出字节流（Uint8Array）；返回取消订阅函数 */
+  onPtyData: (token: string, cb: (chunk: Uint8Array) => void) => () => void;
+  /** 订阅某个终端 token 的退出事件（code 为 null = 被信号终止）；返回取消订阅函数 */
+  onPtyExit: (token: string, cb: (code: number | null) => void) => () => void;
   /** 订阅窗口关闭请求（主进程拦截 close 后转发）；返回取消订阅函数 */
   onCloseRequested: (cb: () => void) => () => void;
   /** 订阅窗口获得焦点；返回取消订阅函数 */

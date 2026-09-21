@@ -66,6 +66,7 @@ export const api = {
     excluded: string[],
     dark: boolean,
     closeAction?: string | null,
+    defaultInteraction?: "chat" | "terminal",
   ) =>
     invoke("save_config", {
       order,
@@ -74,6 +75,7 @@ export const api = {
       excluded,
       dark,
       closeAction,
+      defaultInteraction,
     }),
   addProject: (path: string) => invoke("add_project", { path }),
   removeProject: (path: string) => invoke("remove_project", { path }),
@@ -196,6 +198,43 @@ export const api = {
     chatUnsubs.delete(sessionId);
     return invoke("chat_close", { sessionId });
   },
+  // ---------- 内嵌终端（node-pty） ----------
+  /** 启动 claude 终端会话（先订阅 onPtyData/onPtyExit 再调用——订阅必须先行，
+   *  主进程早于应答就会推首字节）。返回后端会话表的数字键 */
+  ptySpawnClaude: (
+    cwd: string,
+    resumeSessionId: string | null,
+    newSessionId: string | null,
+    cols: number,
+    rows: number,
+    token: string,
+  ) =>
+    invoke<{ id: number; pid: number }>("pty_spawn_claude", {
+      cwd,
+      resumeSessionId,
+      newSessionId,
+      cols,
+      rows,
+      token,
+    }),
+  /** 键盘输入写入 PTY（xterm.js onData 原文） */
+  ptyWrite: (id: number, data: string) => invoke("pty_write", { id, data }),
+  /** 终端尺寸变更 */
+  ptyResize: (id: number, cols: number, rows: number) =>
+    invoke("pty_resize", { id, cols, rows }),
+  /** 结束终端会话（taskkill /T /F 杀树；返回 = 树已杀完） */
+  ptyKill: (id: number) => invoke("pty_kill", { id }),
+  /** 按会话 id 读会话标题（终端 tab 的会话名兜底）；文件未落盘返回 null */
+  sessionTitleFor: (projectPath: string, sessionId: string) =>
+    invoke<string | null>("session_title_for", { projectPath, sessionId }),
+  /** 剪贴板里若放着**图片文件**（资源管理器「复制」），返回其路径；否则 null */
+  clipboardImagePath: () => invoke<string | null>("clipboard_image_path"),
+  /** 订阅某个终端 token 的输出字节流；返回取消订阅函数 */
+  onPtyData: (token: string, cb: (chunk: Uint8Array) => void) =>
+    bridge.onPtyData(token, cb),
+  /** 订阅某个终端 token 的退出事件；返回取消订阅函数 */
+  onPtyExit: (token: string, cb: (code: number | null) => void) =>
+    bridge.onPtyExit(token, cb),
   // ---------- 供应商切换 ----------
   /** 供应商清单（首次调用自动把 live 配置收编为 default 供应商） */
   providerList: () => invoke<ProviderListState>("provider_list"),

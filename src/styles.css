@@ -4186,3 +4186,89 @@ mark {
   color: var(--dim);
   font-weight: 400;
 }
+
+/* ============ 内嵌终端（自 embedded-terminal 分支 styles.css 逐字搬入） ============ */
+
+/* 中文单独放大（只 Windows）：截图实测同一屏下 cmd 的中文字面比本 app 大一档
+ *  （同字号，cmd 单字墨迹约 24×23 设备px、本 app 22×22；拉丁那边两边逐像素一致），
+ *  回退字体没法单独定字号，只能靠 @font-face 的 size-adjust 缩放这一个字体。
+ *  106% 是按上面的墨迹差反推的；改这个值请重新截图对比。
+ *  mac 走 "PingFang SC"（排在 TermCJK 前），碰不到这里。 */
+@font-face {
+  font-family: "TermCJK";
+  src: local("SimHei");
+  size-adjust: 106%;
+}
+
+/* 圈号一类"歧义宽度"符号必须抢在 Consolas 前交给中易黑体。
+ *  原因（实测）：①~⑳（U+2460-24FF）这些码位 Consolas 也有，但那本"拉丁字宽"的
+ *  圈号画得极小——canvas 实测 ④ 墨迹 16.5×13.5 设备px，而同样字号下中易黑体/
+ *  雅黑是 24×22.5。字体栈里 Consolas 排在 TermCJK 之前，于是 app 里圈号"特别小"
+ *  （并排截图与系统终端差一档：app 14×13、WT/cmd 22×23——用户报的就是这个）。
+ *  cmd 那边不会这样：conhost 是按 font linking 把这类码位整段交给中文黑体的，
+ *  这里用 unicode-range 复刻同一种分工——只圈"拉丁字体有、且画得小"的块，
+ *  拉丁字母/方块字符/制表符不受影响（它们仍走 Cascadia，块状字符的整格重绘
+ *  也依赖这一点）。mac 上 SimHei 不存在 → 这个 family 直接不生效，落到 Menlo。 */
+@font-face {
+  font-family: "TermWide";
+  src: local("SimHei");
+  size-adjust: 106%;
+  unicode-range: U+2460-24FF;
+}
+
+/* 同一个块的后半段（⑪-⑳、⒜-⒵ 等）中文字体也没有——中易黑体/雅黑/宋体实测都只
+ *  覆盖 50/160 个码位（缺 U+246A 起）。剩下一半交给 Segoe UI Symbol（实测整块
+ *  160/160 全覆盖），只是它的圈号偏小（19.5×19.5 设备px，汉字 25.5×24），按比例
+ *  放大 125% 补到与中文同档，免得同一行里 ⑩ 大 ⑪ 小。 */
+@font-face {
+  font-family: "TermWide2";
+  src: local("Segoe UI Symbol");
+  size-adjust: 125%;
+  unicode-range: U+2460-24FF;
+}
+
+/* 内嵌终端面板：配色在 TerminalPane 固定深色，不随 app 主题。
+ *  不给 .xterm 强制定高——行高取整后由 xterm 自算视口高，强定 100% 会与
+ *  行数取整打架，实测会把最后一行裁掉一截。padding 贴近 cmd 的紧凑边距：
+ *  纵向 4/6→2/2 再省 6px（横向 8px 保持不变——横向只影响列数取整，不影响
+ *  行数，动它有把 claude 表格换行点改掉的风险，收益为零）。 */
+.terminal-pane {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  padding: 2px 8px 2px;
+  overflow: hidden; /* 只裁 1px 级舍入残边，不裁整行（行数由 FitAddon 保证容得下） */
+}
+
+/* xterm 自带样式里 .xterm-viewport 是 overflow-y: scroll（xterm.css 第 93 行），
+   会在终端右侧常驻一根滚动条——dpr1.5 下实测 15px 宽的一条亮线，既占宽度又破坏
+   深底观感（老板截图红框圈的就是它，早先量截图的 x=2553.5 那条竖线同为它）。
+   滚动能力照旧（滚轮 / Shift+PageUp 翻 scrollback），只把滚动条本身藏掉。
+   注意：藏掉后终端内容宽 +15px，claude TUI 会多排一列左右，换行点随之变化。 */
+.terminal-pane .xterm-viewport {
+  scrollbar-width: none;
+}
+.terminal-pane .xterm-viewport::-webkit-scrollbar {
+  display: none;
+}
+
+/* 终端 tab 的图标与弱化态（自 Tauri 线 .content-tab-term 系列折算到 chat-tab 体系） */
+.chat-tab-term-icon {
+  flex-shrink: 0;
+  color: var(--dim);
+}
+
+/* 已退出的终端 tab 整体弱化（缓冲仍可回看，直到手动关闭） */
+.chat-tab.chat-tab-exited {
+  color: var(--dim);
+}
+
+/* tab 右键菜单的说明行（跳过多少个在跑的；自 Tauri 线逐字搬入） */
+.context-note {
+  padding: 6px 10px 2px;
+  font-size: 11.5px;
+  color: var(--dim);
+  border-top: 1px solid var(--border);
+  margin-top: 4px;
+  white-space: pre-line;
+}
