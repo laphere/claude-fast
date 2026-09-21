@@ -33,12 +33,15 @@
 
 复核状态：**B1 / B3 / B4 / B5 / B6 / B7 已人工复核代码确认**；B2 由审计用本机真实 jsonl 实测（未人工复核）；B8–B16 来自审计、未逐条复核。
 
+> **修复进展（2026-09-21）**：**B1 / B2 / B3 已修**（各条末尾有「已修」说明）。⚠️ 其中 B1 顺带**订正了 v2 的口径**：v2 取「同 id 的首行」，但当代 jsonl 首行 usage 恒为 0（或只有占位），真实值在**带 `stop_reason` 的收尾行**上——本机实测某会话取首行只有 3.44M、取收尾行是 258.84M（差 75 倍）。本分支因此**复用用量台账的 `betterUsageRow`（收尾行优先，同优先级取 token 更大者）**，会话头部统计与统计仪表盘逐字节一致（8 个最大的真实会话文件实测 0.0% 偏差）。§1 抄录的 v2 原文里没有这条，别照它实现。
+
 ### B1【高】会话页头部 token 统计整块没移植（静默失效）
 
 - 现象：「总计 N · 输入 N · 输出 N · 缓存读取 N」**永不渲染**，只剩「N 条消息」，无任何报错。
 - 本分支：`src/types.ts:132` 把 `SessionUsageStats` 声明为 `SessionMessages` 的**必填**字段、`src/components/ChatView.tsx:235` + `:973` 消费它，但后端 `electron/backend/sessions.ts` 不产——全仓 `grep -rn SessionUsageStats` 只有声明与消费两处、**没有生产者**；`sliceMessages` 只回 4 个字段。
 - v2 参照：`lib.rs:1880` 在**切片前**对全量消息 `aggregate_usage`（实现 `:1903-1921`），每条消息带 `usage`（`:1848-1867`），`parse_usage` 兼容新旧两种格式（`:1923-1955`）。
 - 验收：`get_session_messages` 返回 `stats`；头部四数字渲染；usage 按 `message.id` 全局只计一次（见 B2）。
+- **已修**：`sessions.ts` 增 `Usage` / `SessionUsageStats` / `parseUsage` / `aggregateUsage`，`sliceMessages` 切片**前**对全量聚合；代表行取舍复用台账的 `betterUsageRow`（**收尾行优先**，见本节的订正说明）。验证：会话头部与台账 8 个真实会话文件 0.0% 偏差；`parseSessionMessages` / `aggregateUsage` 单测覆盖新旧 usage 格式与"首行 0、收尾行才是真值"的形状。
 
 ### B2【中】相邻同 `message.id` 的 assistant 行未合并
 
@@ -54,6 +57,7 @@
 - v2 参照：`lib.rs:1837-1845` 把相邻同 id 的行**追加进上一条**；`usage_counted_ids`（`:1846-1856`）让 usage 按 id 全局只计一次（该修复的实测背景：21.3M 被显示成 32.8M）。
 - 注意：**不会错位**——搜索/进度轨/变更文件面板的 `index` 与列表同源、自洽；活动组的视觉合并另在 `ChatView.tsx:1255`，与本条无关。
 - 验收：见 §3 的 `parse_session_messages_merges_same_msg_id` / `session_usage_counts_split_msg_id_once` 语义。
+- **已修**：`parseSessionMessages` 按 `message.id` 合并相邻行（后行 blocks 追加进上一条）。验证：本机 6 个真实会话实测合并掉 324–899 行（「消息数」从虚高回到真实值，与台账的 messages 计数同源）。**注意**：合并会改变 `messages` 下标，搜索 / 进度轨 / 变更文件面板的 `index` 与列表同源、自洽（已在审计中确认）。
 
 ### B3【中】Windows「继续对话」过度拒字符（与 v2/main 相反）
 
@@ -61,6 +65,7 @@
 - 本分支：`electron/backend/platform.ts:105` 拒 `" & | < > ^ % ! ( )` **十个**；`electron/backend/platform.test.ts:44-58` 把这条反向规则**写成了断言**；本分支 CLAUDE.md 也记成「Windows 拒绝 cmd 元字符」。
 - v2/main 口径：只拒引号内仍有效的 `"` `%` `!`（引号截断 / 变量展开 / 延迟展开），`& | < > ^ ( )` 在双引号内是字面量——**见 §1.1 原文**。
 - 验收：含 `(x86) & test` 的合法目录**必须放行**，`%` `!` `"` 仍必拒；同步改掉 `platform.test.ts` 的反向断言与本分支 CLAUDE.md 的措辞。
+- **已修**：`validateResumePath` 的 win32 名单收敛为 `" % !`，注释写明口径来源与「别改回一律拒元字符」的理由；`platform.test.ts` 的反向断言改成逐字符判定（`& | < > ^ ( )` 必须放行）+ 一条端到端用例（真实存在的 `Program Files (x86) & test` 目录原样通过）；`buildResumeCmdline` 的用例同步（`%` `!` 拦、`&` 不再拦）。**B4 仍未修**（`launchProject` 依旧零校验），修它时直接复用同一个函数即可。
 
 ### B4【中】启动路径完全不做字符校验
 

@@ -33,8 +33,8 @@
 - `scriptExt()` 返回 bat/sh；`legacyMarker()` 兼容旧标记 `claude-claude-fast.<ext>`；`parseCdPath` 兼容 `cd /d` 与 `cd "/path"` 两种语法（现供旧脚本迁移解析用）。
 - **启动/resume 必须经 `cmd /c start` 链**（`spawnStartChain`）：`start "Claude Code" /d "<项目>" cmd /k claude [--resume <id>]`。⚠️ Electron GUI 主进程（无控制台）+ `stdio:"ignore"` 直接 spawn cmd 时，Windows **不分配新 console**（windowsHide/detached 均救不了；`detached` 反而触发 claude 2.x bash 探测弹多窗）——claude 拿不到 TTY 静默退出、无任何窗口（2026-09 实测根因）。`start` 用 CREATE_NEW_CONSOLE 新开终端、走系统默认终端委托；外层 cmd `/c` 无窗口立即退出。verbatim 传参仍必须（cmd 不认 MSVC 转义的 `\"`）。
 - `resumeSession(file, projectPath, projectsDir)`：新开终端窗口执行 `claude --resume <session-id>`。Windows 走 `buildResumeCmdline` 的 start 链；macOS 写临时 .sh 到系统临时目录再 `open -a Terminal`（无需 osascript 自动化权限）。共用 `validateResumePath`，平台规则不同：Windows 拒绝 cmd 元字符；macOS 路径经 `shQuote` 进 `cd "..."` 后元字符均为字面量，故仅拒控制字符 + 要求路径存在（避免误伤含 `( ) ' \` 的合法 mac 路径）。
-  - ⚠️ **本分支的 Windows 规则比 `v2.0.0`/`v1.0.0` 严**：多拒了 `( ) & < > | ^`——`C:\Program Files (x86)\…` 下的项目「启动」能开、「继续对话」会被拒。v2/main 只拒 `"` `%` `!`（双引号内其余字符是字面量），口径原文与验收标准见 `docs/chat-behavior-spec.md` §1.1 与 §2 B3。
-  - ⚠️ `launchProject` **不做字符校验**（v2/main 与 resume 共用同一校验），且 macOS 分支用 `JSON.stringify` 拼 `cd`（不转义 `$` 与反引号）——同一文件的 resume 版却用了 `shQuote`。两条都记在 `docs/chat-behavior-spec.md` §2 B4/B5。
+  - Windows 口径：**只拒 `"` `%` `!`**（引号截断 / 变量展开 / 延迟展开）——`& | < > ^ ( )` 在双引号内都是字面量。这条与 `v2.0.0`/`v1.0.0` 逐字对齐（那边有回归测试断言含 `(x86) & test` 的合法目录必须放行），**别改回「一律拒 cmd 元字符」**：多拒会让 `C:\Program Files (x86)\…` 这类常见目录「启动能开、继续对话报错」。
+  - ⚠️ 仍缺两条（见 `docs/chat-behavior-spec.md` §2 B4/B5）：`launchProject` **不做字符校验**（v2/main 与 resume 共用同一校验），且它的 macOS 分支用 `JSON.stringify` 拼 `cd`（不转义 `$` 与反引号）——同一文件的 resume 版用的是 `shQuote`。
 - `openFolder`：explorer.exe / `open`；`checkClaude`：`where` / `sh -c "command -v claude"`（均 3 秒超时，Promise 不阻塞渲染）。
 - `checkClaude`/`checkLaunchers` 等 spawn 系函数 Windows 一律 `windowsHide: true`，防止后台命令闪黑窗（注意：这只影响探测类调用，启动终端必须走上面的 start 链）。
 
@@ -55,6 +55,8 @@
 - **会话管理**：点击项目行展开其 Claude Code 会话列表（异步加载不阻塞 UI）；会话行显示标题 + 相对时间 + 摘要，悬停出现 ✎ 重命名、🗑 删除。`listSessions(projectPath)` 用真实路径正向 mangle 定位 `<projects>/<mangled>/`，对每个 `.jsonl` 只读首尾各 64KB（`LITE_READ_BUF_SIZE`）提取元数据：标题回退链 customTitle > aiTitle > 首条用户消息；**命令消息（如 `/init`）被跳过——只执行命令、无实质对话的会话不进列表**；sidechain/纯元数据会话过滤；按 mtime 倒序。`renameSession(file, newTitle)` 安全校验（限 projects 目录下 uuid.jsonl）后向 jsonl **追加** `custom-title` 行（与 Claude Code `/rename` 同机制，不覆盖原文件）。
 - **回收站（删除 = 移入回收站）**：`deleteSession` 先备份到数据根 `trash/sessions/<时间戳>/<项目>/` 再删除；「🗑 回收站」对话框可 `restoreSession` 恢复（移回原目录，Claude Code 可继续 resume）或 `purgeSession` / `purgeTrash` 永久删除（行内二次确认）。
 - **会话内容查看**：左右分栏（左 320px 项目/会话列表，右内容区）。`getSessionMessages(file)` 全量读 jsonl 提取 user/assistant 消息（text/thinking/tool_use/tool_result 块，`MAX_SESSION_MESSAGES=500` 截断，过滤 sidechain/isMeta/命令消息），前端聊天式渲染（思考/工具调用/工具结果 `<details>` 折叠、围栏代码块等宽）。
+  - **相邻同 `message.id` 的行合并成一条**：一次响应被拆成多行落盘（代理多段迭代共用一个 id），不合并会让消息数虚高一截（真实会话实测 +30~80%），连带 Markdown 导出的「## 消息 N」与分页覆盖的轮次都失真。
+  - **头部 token 统计**（`SessionMessages.stats`）在**切片前**对全量消息聚合，翻页不影响数字；每条消息的 `usage` 按 id 取**代表行**——**收尾行（带 `stop_reason`）优先**，同优先级取 token 更大者。⚠️ **不能取首行**：当代 jsonl 的首行 usage 恒为 0，实测某会话取首行 3.44M vs 收尾行 258.84M（差 75 倍）；也**不能逐行相加**（成倍虚高）。这条口径与用量台账**共用同一个函数**（`usage-stats.ts` 的 `betterUsageRow`），两处必须同源——本就为「头部数字与统计仪表盘对不上」埋过雷。
 - **单实例**（`app.requestSingleInstanceLock()`）：重复启动不新建进程，`second-instance` 回调里 show + restore + focus + `setAlwaysOnTop` 开关（对抗 Windows 前台锁定，勿当冗余代码删掉）把已有窗口调到前台。
 - **关闭行为**：主进程拦截窗口 `close`（`e.preventDefault()` + 向渲染层发 `window:close-requested`），前端按 `closeAction` 分发：`quit` → `destroyWindow`（绕过拦截）、`minimize` → `hideWindow`（托盘）、未设置 → 弹窗询问。托盘菜单「退出程序」与 `quitApp` IPC 走 `quitting` 标志绕过拦截直接退出。
 - 其他：深色主题（`dark`）、搜索过滤、右键菜单、新建/删除启动脚本、开机自启动（`app.setLoginItemSettings`：Windows 注册表 Run 项 / macOS 登录项）、系统托盘（左键显示窗口/右键菜单：显示窗口+退出；**不能用 `setContextMenu`**——Windows 上设置后左键单击也会弹菜单，会顶掉「左键显示窗口」）。状态存 `config.json`。
@@ -139,7 +141,7 @@ app 内对话层改用官方 `@anthropic-ai/claude-agent-sdk` 前必须先确认
 ```bash
 npm install                  # 依赖（国内可设 ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ 加速）
 npm run dev                  # 开发模式（vite 热更新 + electron，主进程改动自动重启）
-npm test                     # 后端单元测试（107 个：路径解析/脚本生成/配置/扫描/根目录定位/会话管理/mangle/回收站）
+npm test                     # 后端单元测试（316 个：路径解析/脚本生成/配置/扫描/根目录定位/会话管理/mangle/回收站/对话层/用量台账）
 npm run typecheck            # 类型检查（前端 tsc + electron tsc）
 npm run build                # 生产构建（typecheck + vite build + esbuild 编译主进程）
 npm run dist:win             # Windows NSIS 安装包（别名：npm run electron:build）
