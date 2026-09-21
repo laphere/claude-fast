@@ -5,8 +5,10 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
+  buildLaunchScript,
   buildResumeCmdline,
   buildResumeScript,
+  launchProject,
   listProjects,
   scanClaudeProjects,
   validateResumePath,
@@ -76,6 +78,29 @@ describe("validateResumePath", () => {
     fs.mkdirSync(tricky, { recursive: true });
     expect(validateResumePath(tricky, "darwin")).toBe(tricky);
     expect(() => validateResumePath(d + "\u0001", "darwin")).toThrow();
+  });
+});
+
+describe("launchProject / buildLaunchScript", () => {
+  // 只测「校验拦下」的分支：放行的分支会真的开一个终端窗口，单测不碰副作用
+  it("启动路径与 resume 共用同一套校验（\" % ! 拦住）", () => {
+    expect(() => launchProject(path.join(tmp, "a%b"), "win32")).toThrow("非法字符");
+    expect(() => launchProject(path.join(tmp, "a!b"), "win32")).toThrow("非法字符");
+    expect(() => launchProject(path.join(tmp, 'a"b'), "win32")).toThrow("非法字符");
+  });
+
+  it("目录不存在时拒绝", () => {
+    expect(() => launchProject(path.join(tmp, "nope"), "win32")).toThrow("项目路径不存在");
+  });
+
+  it("macOS 临时脚本与 resume 同款 shQuote：`$` 与反引号不做命令替换", () => {
+    const d = path.join(tmp, "$(whoami)-`id`");
+    fs.mkdirSync(d, { recursive: true });
+    const script = buildLaunchScript(d, "darwin");
+    expect(script).toBe(`#!/bin/bash\ncd "${shQuote(d)}" || exit 1\nexec claude\n`);
+    // 未转义的话这两段会被 bash 当命令执行——转义后 `$` 与反引号前各有一个反斜杠
+    expect(script).toContain("\\$(whoami)");
+    expect(script).toContain("\\`id\\`");
   });
 });
 

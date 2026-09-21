@@ -163,6 +163,18 @@ export function buildResumeScript(
   return `#!/bin/bash\ncd "${shQuote(proj)}" || exit 1\nexec claude --resume ${sessionId}\n`;
 }
 
+/** 构造「启动新会话」的临时脚本内容（macOS）：`cd "/path" && exec claude`。
+ *  ⚠️ 与 buildResumeScript 同一套转义（shQuote）——早先这处写的是 `JSON.stringify(dir)`，
+ *  它不转义 `$` 与反引号，目录名含 `$(...)` / 反引号时会变成命令替换（见
+ *  docs/chat-behavior-spec.md §2 B5）。两处必须一起改。 */
+export function buildLaunchScript(
+  projectPath: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const proj = validateResumePath(projectPath, platform);
+  return `#!/bin/bash\ncd "${shQuote(proj)}" || exit 1\nexec claude\n`;
+}
+
 /** 继续对话：新开终端窗口，在项目目录运行 `claude --resume <session-id>`。
  *  Windows：cmd /c + start 链（新 console 走默认终端委托）；macOS：临时 .sh + Terminal.app。 */
 export function resumeSession(
@@ -333,8 +345,11 @@ export function launchProject(
   projectPath: string,
   platform: NodeJS.Platform = process.platform,
 ): Promise<void> {
-  const dir = projectPath.trim();
-  if (!statIsDirectory(dir)) throw new Error("项目路径不存在");
+  // ⚠️ 与 resume 共用同一套校验：这里的 dir 同样被拼进 `cd /d "<目录>"`（Windows）与
+  // `cd "<shQuote>"`（macOS），注入面完全一致——早先只做 statIsDirectory 时，`%`
+  // （变量展开）`!`（延迟展开）`"`（截断引号）在启动路径上全部放行（见
+  // docs/chat-behavior-spec.md §2 B4）。
+  const dir = validateResumePath(projectPath, platform);
   if (platform === "win32") {
     return spawnStartChain(`start "Claude Code" /d "${dir}" cmd /k claude`, dir);
   }
@@ -343,11 +358,7 @@ export function launchProject(
     os.tmpdir(),
     `claude-fast-open-${Date.now()}-${Math.floor(Math.random() * 1e6)}.sh`,
   );
-  fs.writeFileSync(
-    sh,
-    `#!/bin/bash\ncd ${JSON.stringify(dir)} || exit 1\nexec claude\n`,
-    "utf8",
-  );
+  fs.writeFileSync(sh, buildLaunchScript(dir, platform), "utf8");
   fs.chmodSync(sh, 0o755);
   return new Promise<void>((resolve, reject) => {
     const child = spawn("open", ["-a", "Terminal", sh], {
