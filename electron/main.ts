@@ -83,6 +83,8 @@ let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 /** true 时 close 事件不再拦截（quit_app / window_destroy / before-quit 已置位） */
 let quitting = false;
+/** before-quit 只拦一次：等对话子进程优雅退出后再放行真正的退出 */
+let chatExitDone = false;
 
 // ---------------- 数据根（paths.ts 内按 exe 路径缓存；exe 位置运行期不变） ----------------
 
@@ -222,8 +224,11 @@ function showMainWindow(): void {
   w.setAlwaysOnTop(false);
 }
 
-function quitApp(): void {
+async function quitApp(): Promise<void> {
   quitting = true;
+  // 先优雅关掉对话子进程（关 stdin、最多等 3s 让 CLI 把 jsonl 收尾）再退出：
+  // app.exit() 会立刻终止进程、连 before-quit 都不走，漏了这一步就会砍在半路。
+  await chatManager.closeAll();
   app.exit(0);
 }
 
@@ -232,7 +237,7 @@ function createTray(): void {
   tray.setToolTip("CC Desktop");
   const menu = Menu.buildFromTemplate([
     { label: "显示窗口", click: () => showMainWindow() },
-    { label: "退出程序", click: () => quitApp() },
+    { label: "退出程序", click: () => void quitApp() },
   ]);
   // 左键点击显示窗口、右键弹菜单。
   // 不用 setContextMenu：Windows 上设置了之后左键单击也会弹菜单，
@@ -427,7 +432,9 @@ function registerIpc(): void {
   handle("chat_close", (p) => {
     const sid = String(p.sessionId);
     chatTokens.delete(sid);
-    chatManager.close(sid);
+    // 返回 promise：前端「关闭 tab」要么等它落定、要么 fire-and-forget，
+    // 但主进程侧必须等子进程收尾（最多 3s）再算关完
+    return chatManager.close(sid);
   });
 
   // ---------- 供应商切换 ----------
@@ -552,10 +559,17 @@ if (!gotSingleInstanceLock) {
     });
   });
 
-  app.on("before-quit", () => {
+  app.on("before-quit", (e) => {
     quitting = true;
-    // 退出前优雅关掉全部对话子进程（关 stdin，超时强杀由 ChatManager 内部处理）
-    chatManager.closeAll();
+    // 退出前优雅关掉全部对话子进程（关 stdin，最多等 3s 让 CLI 把 jsonl 收尾）。
+    // before-quit 是同步事件：先 preventDefault 挡住这次退出，关完再 app.quit()——
+    // 否则 Electron 会在子进程还没收尾时就把它们带走。第二轮进来（chatExitDone）放行。
+    if (chatExitDone) return;
+    e.preventDefault();
+    void chatManager.closeAll().finally(() => {
+      chatExitDone = true;
+      app.quit();
+    });
   });
 
   app.on("window-all-closed", () => {

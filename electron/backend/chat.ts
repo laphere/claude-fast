@@ -525,38 +525,107 @@ export function defaultPermissionMode(
 
 // ---------------- 定位真实的 Claude Code 可执行文件 ----------------
 
+/** 探测结果缓存：整个进程只探一次（一条会话起一次就有两次同步子进程调用，不该每个
+ *  tab 都付）。找不到也缓存 undefined，否则每开一个 tab 都要白等一轮超时。 */
+let claudeExeCache: { path: string | undefined } | null = null;
+
+/** 清缓存（单测用） */
+export function resetClaudeExecutableCache(): void {
+  claudeExeCache = null;
+}
+
 /**
- * 跟随本机 Claude Code：实测只有 `<claude-code>/bin/claude.exe` 能跑
- * （无扩展名 shim 会 failed to launch、claude.cmd 会 spawn EINVAL）。
+ * 从 `where claude`（Windows）/ `command -v claude`（macOS）的输出里挑出**能真跑**的那个。
+ * ⚠️ 实测：SDK 不启 shell，指到 npm 垫片上必失败（无扩展名 sh 垫片 `failed to launch`、
+ * `claude.cmd` `spawn EINVAL`），所以垫片要顺着同级 `node_modules` 找背后真正的
+ * `bin/claude.exe`；找不到真身就跳过该候选，而不是把垫片交出去。
+ * macOS 上直接采信候选路径（内核按 shebang 执行，与 v2.0.0 / v1.0.0 同做法，**未在真机验证**）。
+ */
+export function pickClaudeFromPathOutput(
+  stdout: string,
+  platform: NodeJS.Platform = process.platform,
+  exists: (p: string) => boolean = (p) => fs.existsSync(p),
+): string | undefined {
+  const binName = platform === "win32" ? "claude.exe" : "claude";
+  for (const raw of stdout.split(/\r?\n/)) {
+    const cand = raw.trim();
+    if (cand === "" || !exists(cand)) continue;
+    if (/\.exe$/i.test(cand)) return cand; // 原生安装的 claude.exe，直接用
+    if (platform !== "win32") return cand;
+    // Windows 的 .cmd / .bat / 无扩展名 shim → 找同级的真身
+    const sibling = path.join(
+      path.dirname(cand),
+      "node_modules",
+      "@anthropic-ai",
+      "claude-code",
+      "bin",
+      binName,
+    );
+    if (exists(sibling)) return sibling;
+  }
+  return undefined;
+}
+
+/**
+ * 跟随本机 Claude Code：实测只有真实可执行文件能跑（见 pickClaudeFromPathOutput 的注释）。
  * 找不到就返回 undefined —— 上层不传 pathToClaudeCodeExecutable，SDK 用自带的 claude.exe。
  */
 export function findClaudeExecutable(
   platform: NodeJS.Platform = process.platform,
 ): string | undefined {
+  if (claudeExeCache) return claudeExeCache.path;
+  claudeExeCache = { path: resolveClaudeExecutable(platform) };
+  return claudeExeCache.path;
+}
+
+/** 真正的探测（结果由 findClaudeExecutable 缓存）。顺序按「跟随本机」的权威性排：
+ *  ① PATH 上的 claude（用户在终端里跑的那个；官方原生安装也走这条）
+ *  ② 开发目录的 node_modules（本仓库自己装了 claude-code 时）
+ *  ③ npm 全局根（npm 的 bin 目录不在 PATH 时的兜底） */
+function resolveClaudeExecutable(platform: NodeJS.Platform): string | undefined {
   const binName = platform === "win32" ? "claude.exe" : "claude";
   const probe = (prefix: string): string | undefined => {
     if (!prefix) return undefined;
     const p = path.join(prefix, "@anthropic-ai", "claude-code", "bin", binName);
     return fs.existsSync(p) ? p : undefined;
   };
-  // ① 开发目录：node_modules 里装了 claude-code 时直接命中
+  // ① PATH 探测。此前没有这一步，只猜下面两处目录——官方原生安装（如
+  // %USERPROFILE%\.local\bin\claude.exe）一律找不到，且**静默**退化成 SDK 自带那份。
+  try {
+    const out =
+      platform === "win32"
+        ? execFileSync("where", ["claude"], {
+            encoding: "utf8",
+            timeout: 3000,
+            windowsHide: true,
+          })
+        : execFileSync("sh", ["-c", "command -v claude"], { encoding: "utf8", timeout: 3000 });
+    const picked = pickClaudeFromPathOutput(out, platform);
+    if (picked) return picked;
+  } catch {
+    // 不在 PATH / 超时 → 继续走后面的兜底
+  }
+  // ② 开发目录：node_modules 里装了 claude-code 时直接命中
   const local = probe(path.join(process.cwd(), "node_modules"));
   if (local) return local;
-  // ② 全局 npm 安装目录。⚠️ Windows 上必须带 `shell: true`：npm 是 npm.cmd，
+  // ③ 全局 npm 安装目录。⚠️ Windows 上必须带 `shell: true`：npm 是 npm.cmd，
   // execFileSync 不启 shell 时连命令都找不到（实测 `spawnSync npm ENOENT`），错误被
-  // 下面的 catch 吞掉后这条分支**等于不存在**——「跟随本机 Claude Code」会静默退化成
-  // SDK 自带的那份 claude.exe。参数是常量，走 shell 没有注入面。
+  // 下面的 catch 吞掉后这条分支**等于不存在**。参数是常量，走 shell 没有注入面。
   try {
     const prefix = execFileSync("npm", ["root", "-g"], {
       encoding: "utf8",
-      timeout: 5000,
+      timeout: 3000,
       shell: platform === "win32",
+      windowsHide: true,
     }).trim();
     const global = probe(prefix);
     if (global) return global;
   } catch {
     // 忽略：回退到 SDK 自带可执行文件
   }
+  // 三条都没命中：显式留一条日志再回退。静默回退正是这条被审计点名的地方
+  // （app 内对话与终端跑的可能不是同一个 CLI）。前端暂不展示，排查时看主进程输出。
+  console.warn("[chat] 未找到本机 claude 可执行文件，本次对话改用 SDK 自带的那份");
   return undefined;
 }
 
@@ -605,6 +674,12 @@ class MessageQueue implements AsyncIterable<SDKUserMessage> {
   }
 }
 
+/** 关会话时的优雅退出窗口：先关 stdin 让 CLI 收尾（把 jsonl 写完），超时才强杀。
+ *  对齐 v2.0.0 的 `wait_then_kill(child, 3s)`。 */
+const GRACEFUL_CLOSE_MS = 3000;
+/** app 退出时整体等待上限（各会话并行关；超时后统一强杀，不能让退出被卡住的子进程拖住） */
+const GRACEFUL_QUIT_MS = 3000;
+
 /** 一个活跃对话（对应一个 CLI 子进程；懒启动：首条 send 才 spawn） */
 class ChatSession {
   private id: string;
@@ -621,6 +696,8 @@ class ChatSession {
   /** 启动中的 promise（并发 send 共用同一次启动；失败时清空以便重试） */
   private starting: Promise<void> | null = null;
   private exited = false;
+  /** 等进程退出的回调（close 的优雅退出窗口用） */
+  private exitWaiters: Array<() => void> = [];
 
   /** 进程是否已退出（ChatManager.send 据此拒绝往死会话里塞消息） */
   hasExited(): boolean {
@@ -722,6 +799,8 @@ class ChatSession {
   private emitExited(code: number | null): void {
     if (this.exited) return;
     this.exited = true;
+    for (const w of this.exitWaiters) w();
+    this.exitWaiters.length = 0;
     this.emit({ type: "exited", code, stderrTail: null });
   }
 
@@ -787,9 +866,26 @@ class ChatSession {
     await sdk.renameSession(this.id, title, { dir: this.projectPath });
   }
 
-  /** 优雅关：先结束输入（stdin EOF 让 CLI 优雅退出），超时由 SDK 强杀 */
-  close(): void {
+  /** 优雅关：先结束输入（stdin EOF 让 CLI 自己收尾并把 jsonl 写完），最多等
+   *  `GRACEFUL_CLOSE_MS`，**超时才** abort 强杀。
+   *  ⚠️ 早先是 `queue.end()` 后同一个 tick 直接 `abort.abort()`（abort 又是 spawn 的
+   *  signal），等于流式中途砍掉子进程——jsonl 尾部可能不完整，注释里那句「超时由 SDK
+   *  强杀」其实没实现。对齐 v2.0.0 的 drop(stdin) → wait_then_kill(child, 3s)。 */
+  async close(graceMs: number = GRACEFUL_CLOSE_MS): Promise<void> {
     this.queue.end();
+    if (!this.query || this.exited) return; // 从未启动 / 已退出：没什么可等
+    const exited = await Promise.race([
+      new Promise<boolean>((r) => this.exitWaiters.push(() => r(true))),
+      new Promise<boolean>((r) => {
+        const t = setTimeout(() => r(false), graceMs);
+        t.unref?.();
+      }),
+    ]);
+    if (!exited) this.abort.abort();
+  }
+
+  /** 立即强杀（整体退出超时的兜底） */
+  kill(): void {
     this.abort.abort();
   }
 }
@@ -849,16 +945,30 @@ export class ChatManager {
     await this.sessions.get(sessionId)?.rename(title);
   }
 
-  close(sessionId: string): void {
+  async close(sessionId: string, graceMs: number = GRACEFUL_CLOSE_MS): Promise<void> {
     const session = this.sessions.get(sessionId);
-    if (session) {
-      session.close();
-      this.sessions.delete(sessionId);
-    }
+    if (!session) return;
+    // 先摘掉：关的过程中再有 send 不该落到这个正在关的会话上
+    this.sessions.delete(sessionId);
+    await session.close(graceMs);
   }
 
-  /** 关闭全部（app 退出时：关 stdin 优雅退出，超时由 SDK 强杀） */
-  closeAll(): void {
-    for (const id of [...this.sessions.keys()]) this.close(id);
+  /** 关闭全部（app 退出时）。每个会话各自「关 stdin → 等退出 → 超时强杀」，整体再设
+   *  上限——不能让退出流程被一个卡住的子进程无限拖住。 */
+  async closeAll(
+    totalTimeoutMs: number = GRACEFUL_QUIT_MS,
+    graceMs: number = GRACEFUL_CLOSE_MS,
+  ): Promise<void> {
+    const sessions = [...this.sessions.values()];
+    this.sessions.clear();
+    const done = Promise.all(sessions.map((s) => s.close(graceMs))).catch(() => undefined);
+    await Promise.race([
+      done,
+      new Promise<void>((r) => {
+        const t = setTimeout(r, totalTimeoutMs);
+        t.unref?.();
+      }),
+    ]);
+    for (const s of sessions) s.kill(); // 兜底：整体超时后仍未退出的直接杀
   }
 }

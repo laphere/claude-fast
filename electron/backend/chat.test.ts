@@ -18,6 +18,7 @@ import {
   fromSdkPermissionMode,
   normalizeDefaultMode,
   defaultPermissionMode,
+  pickClaudeFromPathOutput,
   ChatManager,
   type SDKMessage,
   type ChatImage,
@@ -417,5 +418,45 @@ describe("buildPermissionResult", () => {
     expect(
       buildPermissionResult("AskUserQuestion", askInput, { kind: "deny", message: "用户取消了这次提问" }),
     ).toEqual({ behavior: "deny", message: "用户取消了这次提问" });
+  });
+});
+
+describe("pickClaudeFromPathOutput（本机 claude 定位，B7）", () => {
+  const win = "win32" as NodeJS.Platform;
+  const mac = "darwin" as NodeJS.Platform;
+  /** npm 垫片同级的真身路径（与 chat.ts 的拼法一致） */
+  const real = (p: string): string =>
+    path.join(path.dirname(p), "node_modules", "@anthropic-ai", "claude-code", "bin", "claude.exe");
+
+  it("Windows：原生安装的 claude.exe 直接用", () => {
+    const exe = "C:\\Users\\me\\.local\\bin\\claude.exe";
+    expect(pickClaudeFromPathOutput(exe + "\n", win, (p) => p === exe)).toBe(exe);
+  });
+
+  it("Windows：npm 垫片（无扩展名 shim / .cmd）顺着同级 node_modules 找真身", () => {
+    // 本机的形状就是这样：PATH 上是 shim 与 .cmd，直接指过去会
+    // failed to launch / spawn EINVAL（SDK 不启 shell）
+    const shim = "E:\\DevTool\\node18-global\\claude";
+    const out = [shim, "E:\\DevTool\\node18-global\\claude.cmd"].join("\r\n");
+    expect(pickClaudeFromPathOutput(out, win, (p) => p === shim || p === real(shim))).toBe(real(shim));
+  });
+
+  it("Windows：垫片找不到真身就跳过它（宁可不选，也不交一个跑不起来的路）", () => {
+    const shim = "E:\\DevTool\\node18-global\\claude.cmd";
+    expect(pickClaudeFromPathOutput(`${shim}\n`, win, (p) => p === shim)).toBeUndefined();
+  });
+
+  it("不存在的候选跳过，继续看下一个", () => {
+    const exe = "C:\\bin\\claude.exe";
+    expect(pickClaudeFromPathOutput(`C:\\gone\\claude.exe\n${exe}\n`, win, (p) => p === exe)).toBe(exe);
+  });
+
+  it("macOS：command -v 的结果直接采信", () => {
+    const p = "/usr/local/bin/claude";
+    expect(pickClaudeFromPathOutput(`${p}\n`, mac, (x) => x === p)).toBe(p);
+  });
+
+  it("空输出 / 只有空行 → undefined", () => {
+    expect(pickClaudeFromPathOutput("\n\n", win, () => true)).toBeUndefined();
   });
 });
