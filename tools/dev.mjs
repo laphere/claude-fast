@@ -91,16 +91,11 @@ function shutdown(code = 0) {
 process.on("SIGINT", () => shutdown(0));
 process.on("SIGTERM", () => shutdown(0));
 
-// 1. 编译主进程（初始构建，先保证 electron 有产物可跑）
+// 1. 编译主进程（初始构建，先保证 electron 有产物可跑）。
+//    配置与 build-electron.mjs 共用一份（external 列表等曾因两处漂移踩坑，见该文件头注）
+import { mainEsbuildConfig } from "./esbuild-main.config.mjs";
 const ctx = await esbuildContext({
-  entryPoints: ["electron/main.ts", "electron/preload.ts"],
-  bundle: true,
-  platform: "node",
-  format: "cjs",
-  target: "node20",
-  external: ["electron"],
-  outdir: "dist-electron",
-  outExtension: { ".js": ".cjs" },
+  ...mainEsbuildConfig,
   logLevel: "info",
 });
 await ctx.rebuild();

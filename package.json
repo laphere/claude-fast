@@ -25,9 +25,14 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.278",
+    "@xterm/addon-fit": "0.11.0",
+    "@xterm/addon-unicode11": "0.9.0",
+    "@xterm/addon-webgl": "0.19.0",
+    "@xterm/xterm": "6.0.0",
     "dompurify": "^3.4.13",
     "highlight.js": "^11.12.0",
     "marked": "^18.0.9",
+    "node-pty": "1.1.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
@@ -49,6 +54,7 @@
     "electronDownload": {
       "mirror": "https://npmmirror.com/mirrors/electron/"
     },
+    "npmRebuild": false,
     "directories": {
       "output": "release"
     },
@@ -57,7 +63,8 @@
       "dist-electron/**"
     ],
     "asarUnpack": [
-      "**/node_modules/@anthropic-ai/claude-agent-sdk*/**"
+      "**/node_modules/@anthropic-ai/claude-agent-sdk*/**",
+      "**/node_modules/node-pty/**"
     ],
     "extraResources": [
       {
