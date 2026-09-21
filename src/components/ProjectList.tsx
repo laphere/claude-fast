@@ -1,7 +1,7 @@
 import { useCallback, useState } from "react";
 import type { DragEvent } from "react";
 import type { Project, SessionInfo } from "../types";
-import { ChatIcon, FolderIcon, MoreIcon, PinIcon } from "./Icons";
+import { FolderIcon, MoreIcon, PinIcon, PlusIcon } from "./Icons";
 
 interface Props {
   items: Project[];
@@ -167,18 +167,11 @@ export default function ProjectList({
                 </div>
                 <div className="row-path">{l.path}</div>
               </div>
+              {/* 行内两枚按钮的图标与左右顺序对齐 v1.0.0：先是「更多操作」（⋯），
+                  再是 PlusIcon（+）。⚠️ v1.0.0 的 + 是「起终端跑 claude」，这里仍是
+                  「app 内新建对话」——只是外观对齐，别按 v1.0.0 的语义去改它。 */}
               {l.healthy !== false && (
                 <div className="row-actions">
-                  <button
-                    className="row-icon row-icon-chat"
-                    title="app 内对话（新建会话）"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onChatProject(l.key);
-                    }}
-                  >
-                    <ChatIcon size={15} />
-                  </button>
                   <button
                     className="row-icon row-icon-more"
                     title="更多操作（与右键菜单相同）"
@@ -189,6 +182,16 @@ export default function ProjectList({
                     }}
                   >
                     <MoreIcon size={15} />
+                  </button>
+                  <button
+                    className="row-icon row-icon-add"
+                    title="app 内对话（新建会话）"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onChatProject(l.key);
+                    }}
+                  >
+                    <PlusIcon size={15} />
                   </button>
                 </div>
               )}

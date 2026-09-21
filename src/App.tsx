@@ -920,7 +920,7 @@ export default function App() {
               <div className="empty-icon">
                 <MessageCircleIcon size={34} />
               </div>
-              <div>点击项目行的对话图标新建对话，或点击会话直接继续</div>
+              <div>点击项目行的 + 新建对话，或点击会话直接继续</div>
               <div className="empty-sub">可同时打开多个对话，标签页切换</div>
             </div>
           )}
