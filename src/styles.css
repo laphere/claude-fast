@@ -5,8 +5,13 @@
   --panel-2: #f1efe9;
   --border: #e5e2da;
   --text: #292524;
-  --muted: #78716c;
-  --dim: #a8a29e;
+  /* 次要文字色：原 #78716c 在 --bg 上只有 4.6:1，刚过 AA 的线，一屏灰字（思考行/工具行/
+     统计行/引用）就显得发飘。提到 #635e58 = 6.05:1（2026-09-22 可读性整改）。
+     它同时是表头/单元格边框色，加深等于把表格线做实，与 2026-09-21 那次反馈同向 */
+  --muted: #635e58;
+  /* 「低语」层（分隔线/轨道刻度/行号/截断提示）：原 #a8a29e 在 --bg 上只有 2.4:1，
+     连「非文本 3:1」都不到，代码块的虚线框基本看不见。提到 #8f8981 = 3.3:1 */
+  --dim: #8f8981;
   --accent: #c15f3c;
   --accent-hover: #a84e2e;
   --accent-soft: rgba(193, 95, 60, 0.12);
@@ -16,15 +21,44 @@
   --star-soft: rgba(217, 119, 6, 0.12);
   --ok: #16a34a;
   --ok-soft: rgba(22, 163, 74, 0.12);
-  /* markdown 显色：对齐 claude CLI TUI 的语义色（CLI 主题定义里的 suggestion/merged/
-     planMode/subtle），要的是「TUI 有颜色的内容在 app 里也显色，而不是只加浅底」。
-     字符串与数字不另立 token，直接复用 --ok / --star。 */
-  --code: #5769f7; /* 行内代码 + 语法里的函数/属性/变量（CLI suggestion 原值） */
-  --syn-keyword: #7c3aed; /* 关键字/字面量/类型（CLI merged，压暗到浅底可读） */
-  --syn-meta: #006666; /* meta / doctag / 预处理（CLI planMode 原值） */
-  --syn-comment: #a8a29e; /* 注释与引用（CLI subtle） */
+  /* markdown 显色：语义沿用 claude CLI TUI（suggestion/merged/planMode/subtle），
+     要的是「TUI 有颜色的内容在 app 里也显色，而不是只加浅底」。
+     **2026-09-22 用户定稿：代码彩色字走单色** —— 六个角色统一用会话标题下 token 统计的那个色
+     （--accent-hover）。试过之后「意外的好，也很符合 app 的风格」，故定稿。
+     「语法区分度没了（只能靠字形区分）」是有意的取舍，不是漏改 —— 别擅自改回分色。
+     真要恢复分色，把 --code / --syn-string / --syn-number / --syn-keyword / --syn-meta /
+     --code-inline 各自换回下面这组即可（那组是逐色压到 AA 以上的）：
+        --code #1a6ad4（蓝·函数名）  --syn-string #1a7f37（绿）
+        --syn-number #c2410c（橙）   --syn-keyword #7c3aed（紫）
+        --syn-meta #006666（青）     --code-inline #1e40af（深蓝·行内代码）
+     注释（--syn-comment）不参与单色化：它本来就不算「彩色字」，留灰还能保住一点代码结构 */
+  --code: var(--accent-hover); /* 函数/属性/变量名 */
+  --syn-string: var(--accent-hover); /* 字符串 */
+  --syn-number: var(--accent-hover); /* 数字 */
+  --syn-keyword: var(--accent-hover); /* 关键字/字面量/类型 */
+  --syn-meta: var(--accent-hover); /* meta / doctag / 预处理 */
+  --code-inline: var(--accent-hover); /* 行内代码 */
+  /* 通用 code 元素的 chip 底：只服务基础层那条全局 code 规则（如对话框里的目录路径）。
+     会话正文里的行内代码**不用**它 —— 那边是「彩色字、无底」 */
+  --code-bg: #ebe7de;
+  --syn-comment: #78716c; /* 注释与引用（灰）：原为 CLI subtle #a8a29e，浅底上仅 2.4:1 看不见 */
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.05), 0 8px 24px rgba(0, 0, 0, 0.08);
   --radius: 10px;
+  /* 会话内容列的阅读宽度（见 .chat-body > .chat-msg-assistant）。
+     用百分比、不用固定像素（2026-09-22 用户定稿）：固定值 760px / 1000px 两版都被嫌
+     「太窄」「两边很空」，且固定值有个硬伤 —— 收起左栏时内容区变宽、内容列却不跟着长，
+     两侧空白反而更大。百分比挂在 .chat-body 上，收起/展开左栏自动跟着变 */
+  --read-width: 88%;
+  /* 左侧进度轨宽度（.msg-rail）+ 内容列的左右补正基准：轨道是 flex 实体，
+     占了左边一整条位置，不补正的话「左留白+轨道」会比右留白宽出整整一条轨道 */
+  --rail-w: 58px;
+  /* 等宽字体栈（不随主题变，故只声明一次）。
+     ⚠️ 末尾必须挂中文字体，别写成 `Consolas, monospace`：Consolas / Courier New 都**没有
+     汉字字形**，中文会交给 `monospace` 的默认 CJK 回退 —— Windows 上那就是**宋体**。
+     而宋体是本机所有中文字体里笔画最细的（实测墨迹 4.74，雅黑 7.67，差 1.6 倍），
+     14.5px 下又细又花，用户 2026-09-22 报的「正文里出现蓝色的宋体字」就是它。
+     挂上雅黑后分工不变：拉丁仍走 Consolas，只有汉字落到雅黑 */
+  --font-mono: Consolas, "Courier New", "Microsoft YaHei UI", "Microsoft YaHei", monospace;
 
   /* 趋势图堆叠色板（浅色主题）：9 色，色相刻意跨冷暖交错排布
      （1 陶土 / 2 青 / 3 金 / 4 紫 / 5 绿 / 6 玫 / 7 蓝 / 8 棕 / 9 松），
@@ -63,11 +97,19 @@
   --star-soft: rgba(245, 181, 68, 0.15);
   --ok: #4ade80;
   --ok-soft: rgba(74, 222, 128, 0.14);
-  /* markdown 显色（深色版）：--code 取用户终端里实测的行内代码蓝 rgb(161,168,226) 一带 */
-  --code: #a3b4ef;
-  --syn-keyword: #a894d1;
-  --syn-meta: #79bcb0;
-  --syn-comment: #8d8880;
+  /* markdown 显色（深色版）：与浅色主题同步的**单色定稿**（统一用 --accent-hover，
+     深色下即 #e08b6d）。恢复分色时用这组原值（深底浅字，也都已达标）：
+       --code #a3b4ef / --syn-string #4ade80 / --syn-number #f5b544 /
+       --code-inline #b6c2f0 / --syn-keyword #a894d1 / --syn-meta #79bcb0 */
+  --code: var(--accent-hover);
+  --syn-string: var(--accent-hover);
+  --syn-number: var(--accent-hover);
+  --code-inline: var(--accent-hover);
+  --syn-keyword: var(--accent-hover);
+  --syn-meta: var(--accent-hover);
+  /* chip 底（只给全局 code 规则用）比 --panel-2 (#33302b) 再亮一档才看得出来 */
+  --code-bg: #37342d;
+  --syn-comment: #9c968d; /* 原 #8d8880 在 --panel 上 4.2:1，提到 5.1:1 */
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.45), 0 8px 24px rgba(0, 0, 0, 0.55);
 
   /* 同一组 9 个色相的深色主题版：明度抬到约 62%、饱和度约 50%（深底上不提亮立不住）。
@@ -132,8 +174,8 @@ body {
 }
 
 code {
-  font-family: Consolas, monospace;
-  background: var(--panel-2);
+  font-family: var(--font-mono);
+  background: var(--code-bg);
   padding: 1px 5px;
   border-radius: 4px;
 }
@@ -813,8 +855,8 @@ code {
 }
 
 .viewer-truncated {
-  font-size: 11px;
-  color: var(--dim);
+  font-size: 11.5px;
+  color: var(--muted);
   text-align: center;
   border: 1px dashed var(--border);
   border-radius: 6px;
@@ -849,10 +891,12 @@ code {
 
 /* ============ 会话域增强（统计 / 搜索 / 文件面板 / 导出） ============ */
 
-/* 标题下的唯一 meta 线：消息数（并入进来，不再独立占行）+ token 统计 */
+/* 标题下的唯一 meta 线：消息数（并入进来，不再独立占行）+ token 统计。
+   用 --accent-hover 而不是 --accent：同一色相深一档，--accent 在 --bg 上只有 3.96:1，
+   11px 小字下明显发飘（2026-09-22 可读性整改） */
 .viewer-stats {
-  font-size: 11px;
-  color: var(--accent);
+  font-size: 11.5px;
+  color: var(--accent-hover);
   margin-top: 1px;
   white-space: nowrap;
   overflow: hidden;
@@ -871,7 +915,7 @@ code {
 .msg-rail {
   /* 无视觉底色但保留较宽的透明命中列：滚轮滚动发生在容器上，
      列宽即滚轮操作区宽度，太窄容易一晃鼠标就滚到左侧列表/右侧内容 */
-  flex: 0 0 58px;
+  flex: 0 0 var(--rail-w);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1194,7 +1238,7 @@ mark {
 .file-name {
   flex: 1;
   min-width: 0;
-  font-family: Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 11.5px;
   white-space: nowrap;
   overflow: hidden;
@@ -1603,14 +1647,16 @@ mark {
 }
 
 .msg-time {
-  font-size: 10.5px;
-  color: var(--dim);
+  font-size: 11px;
+  color: var(--muted);
 }
 
 /* ============ Markdown 正文（marked + DOMPurify） ============ */
+/* 正文字号 13.5→14.5、行高 1.75→1.8（2026-09-22 可读性整改）：
+   中文技术长文在 13.5px 下偏密，且行内代码/表格/折叠行都比它更小，整页没有「正文是主体」的层次 */
 .md-body {
-  font-size: 13.5px;
-  line-height: 1.75;
+  font-size: 14.5px;
+  line-height: 1.8;
   word-break: break-word;
 }
 
@@ -1623,39 +1669,57 @@ mark {
 }
 
 .md-body p {
-  margin: 0.75em 0;
+  margin: 0.95em 0;
 }
 
 .md-body h1,
 .md-body h2,
 .md-body h3,
 .md-body h4 {
-  margin: 1em 0 0.45em;
-  line-height: 1.3;
+  margin: 1.5em 0 0.55em;
+  line-height: 1.35;
   font-weight: 600;
 }
 
 /* 标题不上色（2026-09-21 用户定稿）：大号加粗蓝字太扎眼——正文黑，标题也黑。
    （当年上色是想对齐 TUI 的 suggestion 蓝，实测 TUI 的标题其实没颜色，只是加粗） */
 .md-body h1 {
-  font-size: 1.35em;
+  font-size: 1.42em;
 }
 
 .md-body h2 {
-  font-size: 1.2em;
+  font-size: 1.26em;
 }
 
 .md-body h3 {
-  font-size: 1.08em;
+  font-size: 1.1em;
 }
 
+/* h4 是标题轴的最后一级，1em 就够；但要和正文区分得开，
+   所以给一条左侧短竖条（不上色，沿用上面的口径） */
 .md-body h4 {
   font-size: 1em;
+  border-left: 3px solid var(--border);
+  padding-left: 8px;
+}
+
+/* 章节线（2026-09-22）：原来 h2/h3 只有字号一条轴，一屏长文档扫不出章节；
+   加一条上分隔线 + 更大的上留白。h4 不参与（它是最末级，加线会变成噪声） */
+.md-body h2,
+.md-body h3 {
+  border-top: 1px solid var(--border);
+  padding-top: 0.7em;
+}
+
+.md-body > h2:first-child,
+.md-body > h3:first-child {
+  border-top: none;
+  padding-top: 0;
 }
 
 .md-body ul,
 .md-body ol {
-  margin: 0.45em 0;
+  margin: 0.6em 0;
   padding-left: 1.6em;
 }
 
@@ -1663,39 +1727,61 @@ mark {
   margin: 0;
 }
 
-/* 行内代码：TUI 里是「蓝色文字、无底色」，这里照做（原来给的是白底 + 边框） */
+/* 列表项之间留一口气：多行中文列表项贴在一起会糊成一段 */
+.md-body li + li {
+  margin-top: 0.35em;
+}
+
+/* 行内代码（2026-09-22 定稿）：**彩色字、无底色**。
+   取色用 --code-inline（而不是代码块那个亮蓝 --code）—— 理由写在该 token 上。
+   ⚠️ 别再给它加 background/padding/border-radius：底来自基础层那条全局 code 规则
+   （--code-bg 的 chip），chip 是画蛇添足（用户 2026-09-22 指出 TUI 里这些内容就是彩色字无底），
+   所以这里要一并清掉；清不干净的话，去掉底色后那 5px 横向内边距会变成一段没来由的空白。
+   字号必须 ≥ 正文：原来 12px 比正文还小，一句中文里字号来回跳，中文标识符还会掉出
+   汉字掉进宋体（当时的字体栈是 `Consolas, monospace`，宋体正是 monospace 的默认 CJK
+   回退），笔画只有雅黑的六成 —— 这才是「正文里蓝色的宋体字」的成因，见 --font-mono */
 .md-body code {
-  font-size: 12px;
-  font-family: Consolas, "Courier New", monospace;
-  color: var(--code);
+  font-size: 13.5px;
+  font-family: var(--font-mono);
+  color: var(--code-inline);
+  background: none;
+  padding: 0;
+  border-radius: 0;
 }
 
 /* 代码块：TUI 是虚线灰边的盒子（CLI 实现 borderStyle:"dashed", borderColor:"subtle"），
-   不再用白底填充；块内逐 token 的颜色由下面那组 .hljs-* 规则给 */
+   不再用白底填充；块内逐 token 的颜色由下面那组 .hljs-* 规则给。
+   字号跟着正文抬一档（12→13），仍是全页最小的等宽块，保持「引用物」的层级 */
 .md-body pre {
-  font-size: 12px;
-  line-height: 1.5;
+  font-size: 13px;
+  line-height: 1.65;
   border: 1px dashed var(--dim);
   border-radius: 7px;
-  padding: 8px 10px;
+  padding: 10px 12px;
   overflow-x: auto;
-  margin: 0.5em 0;
+  margin: 0.7em 0;
 }
 
-/* ⚠️ color: inherit 不能省：上面 .md-body code 的 --code 蓝会一路继承进代码块，
-   把整块正文都染成蓝色（span 之外的纯文本没有 .hljs-* 类可覆盖它） */
+/* ⚠️ 这两条不能省：
+   ① color: inherit —— 上面 .md-body code 的 --code 蓝会一路继承进代码块，
+      把整块正文都染成蓝色（span 之外的纯文本没有 .hljs-* 类可覆盖它）；
+   ② font-size: inherit —— .md-body pre code 也命中 .md-body code 那条规则（13.5px），
+      会把代码块从 13px 顶回 13.5px，块内外字号对不上 */
 .md-body pre code {
   background: none;
   border: none;
   padding: 0;
   display: block;
   color: inherit;
+  font-size: inherit;
 }
 
 /* ---------- 语法高亮（highlight.js 的 token 类，见 src/lib/highlight.ts） ----------
-   配色取 CLI 主题的语义色：关键字=merged 紫 / 函数属性=code 蓝 / 字符串=success 绿 /
-   数字=warning 黄 / 注释=subtle 灰 / meta=planMode 青。深浅主题靠 token 自动切换，
-   所以这里不写 [data-theme="dark"] 例外。 */
+   语义沿用 CLI 主题：关键字=紫 / 函数属性=蓝 / 字符串=绿 / 数字=黄 / 注释=灰 / meta=青。
+   但**取色不共用深色主题那套**（2026-09-22）：--ok/--star/--code 这三个在浅底上分别只有
+   3.07 / 3.00 / 4.15:1，全部低于 AA 4.5 —— 浅底上的代码里，字符串和数字几乎糊在背景里。
+   现在字符串/数字用浅色主题专用的 --syn-string / --syn-number。
+   深浅主题靠 token 自动切换，所以这里不写 [data-theme="dark"] 例外。 */
 .md-body .hljs-keyword,
 .md-body .hljs-literal,
 .md-body .hljs-type,
@@ -1723,14 +1809,14 @@ mark {
 .md-body .hljs-addition,
 .md-body .hljs-regexp,
 .md-body .hljs-char.escape_ {
-  color: var(--ok);
+  color: var(--syn-string);
 }
 
 .md-body .hljs-number,
 .md-body .hljs-symbol,
 .md-body .hljs-bullet,
 .md-body .hljs-tag {
-  color: var(--star);
+  color: var(--syn-number);
 }
 
 .md-body .hljs-comment,
@@ -1767,29 +1853,40 @@ mark {
 
 .md-body table {
   border-collapse: collapse;
-  margin: 0.5em 0;
-  font-size: 12.5px;
+  margin: 0.7em 0;
+  font-size: 13px;
+  line-height: 1.65;
   max-width: 100%;
   overflow-x: auto;
   display: block;
 }
 
 /* 表格边框取 --muted（比 --border 深两档）：1px 的浅灰细线在浅底上糊成一片，
-   行列关系读不出来（2026-09-21 用户反馈「边框太细可读性差」） */
+   行列关系读不出来（2026-09-21 用户反馈「边框太细可读性差」）
+   ⚠️ 别为了「看着轻」把它换回 --border —— 那是已被否掉的一版；
+   挤的是内边距不是线：4px 纵向内边距 + 12.5px 字号会让两行中文贴成一块 */
 .md-body th,
 .md-body td {
   border: 1px solid var(--muted);
-  padding: 4px 10px;
+  padding: 6px 12px;
+  /* 单元格高度不齐时（多行中文 / 行内代码各行长度不同）顶对齐，
+     否则默认的垂直居中会让相邻行的文字错位，列关系反而更难读 */
+  vertical-align: top;
 }
 
-/* 表头：加粗 + 浅底衬出表头行，扫读更容易 */
+/* 表头：加粗 + 浅底衬出表头行，扫读更容易。
+   ⚠️ 别再加粗下边线（曾用过 2px solid var(--muted)）：--muted 加深到 6:1 之后，
+   那条线就变成一道压在表格上沿的黑杠（2026-09-22 用户直接指出「过粗」）。
+   表头靠 600 字重 + 底色区分足够，行与列的关系交给下面统一的 1px 网格 */
 .md-body th {
   font-weight: 600;
   background: var(--panel-2);
 }
 
+/* 链接同样压深一档：--accent 在 --bg 上 3.96:1 也没过 AA（下划线能认出是链接，
+   但字本身仍偏浅） */
 .md-body a {
-  color: var(--accent);
+  color: var(--accent-hover);
   text-decoration: underline;
 }
 
@@ -1800,8 +1897,10 @@ mark {
 }
 
 /* ============ 思考 / 工具调用 / 工具结果（折叠卡片） ============ */
+/* 2026-09-22 字号跟着正文抬一档（12.5→13.5）：折叠行要「弱」但不能「看不清」，
+   弱靠颜色（--muted / 左竖线）与字号差来体现，不靠缩到 12px */
 .thinking-block {
-  font-size: 12.5px;
+  font-size: 13.5px;
   color: var(--muted);
   border-left: 2px solid var(--border);
   padding-left: 10px;
@@ -1812,7 +1911,7 @@ mark {
   cursor: pointer;
   user-select: none;
   font-style: italic;
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .thinking-body {
@@ -1820,13 +1919,13 @@ mark {
 }
 
 .thinking-body .md-body {
-  font-size: 12.5px;
+  font-size: 13.5px;
   color: var(--muted);
 }
 
 .tool-row,
 .tool-result {
-  font-size: 12.5px;
+  font-size: 13.5px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--panel);
@@ -1840,7 +1939,7 @@ mark {
   align-items: center;
   gap: 6px;
   padding: 6px 10px;
-  font-family: Consolas, "Courier New", monospace;
+  font-family: var(--font-mono);
 }
 
 .tool-icon {
@@ -1862,7 +1961,7 @@ mark {
 
 .tool-status {
   flex-shrink: 0;
-  font-size: 11px;
+  font-size: 11.5px;
   color: var(--muted);
 }
 
@@ -1872,8 +1971,8 @@ mark {
 
 .tool-body {
   margin: 0;
-  font-size: 11.5px;
-  line-height: 1.5;
+  font-size: 12.5px;
+  line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-word;
   max-height: 240px;
@@ -1917,7 +2016,7 @@ mark {
 }
 
 .diff-title {
-  font-family: Consolas, "Courier New", monospace;
+  font-family: var(--font-mono);
   font-weight: 700;
   font-size: 12.5px;
   color: var(--text);
@@ -1925,7 +2024,7 @@ mark {
 }
 
 .diff-path {
-  font-family: Consolas, "Courier New", monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   color: var(--muted);
   min-width: 0;
@@ -1946,7 +2045,7 @@ mark {
   border-top: 1px solid var(--border);
   max-height: 500px;
   overflow-y: auto;
-  font-family: Consolas, "Courier New", monospace;
+  font-family: var(--font-mono);
   font-size: 11.5px;
   line-height: 1.55;
 }
@@ -2287,7 +2386,7 @@ mark {
   color: var(--text);
   font-size: 13px;
   outline: none;
-  font-family: Consolas, monospace;
+  font-family: var(--font-mono);
 }
 
 .input:focus {
@@ -2505,7 +2604,7 @@ mark {
   margin-top: 6px;
   max-height: 140px;
   overflow-y: auto;
-  font-family: Consolas, "Courier New", monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
   white-space: pre-wrap;
   word-break: break-all;
@@ -2659,6 +2758,39 @@ mark {
   max-width: 86%;
 }
 
+/* 内容列宽度（2026-09-22）：助手正文取 --read-width（.chat-body 的百分比、居中），
+   用户气泡保持 .chat-msg 的 86% 上限、贴右，右缘与助手列的右边界对齐。
+   ⚠️ 别把 --read-width 换成固定像素：760px / 1000px 两版都被否过（「太窄」、「两边很空」），
+   固定值还漏了「收起左栏 → 内容区变宽而内容列不动」这条。
+   两侧留白 = (100% - --read-width) / 2：
+   · 助手侧给一对 auto 外边距 → 在 cross 轴居中（同时设的 align-self 会被 auto 外边距接管）；
+   · 气泡侧只能给 margin-right —— 它是 align-self: flex-end，给 auto 会变成居中。 */
+.chat-body > .chat-msg-assistant {
+  max-width: var(--read-width);
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.chat-body > .chat-msg-user {
+  margin-right: calc((100% - var(--read-width)) / 2);
+}
+
+/* 左右留白等宽（2026-09-22 用户定稿）：上面的居中是在 .chat-body 内容盒里算的，而
+   .chat-body 左边还杵着一条 --rail-w 宽的进度轨（flex 实体，占位），于是「左留白 + 轨道」
+   比右留白整整多出一条轨道。这里把内容列整体右移半个轨道宽，右侧加法、左侧减法，
+   补完就是 左留白 + 轨道 == 右留白。
+   ⚠️ 必须挂 :has(> .msg-rail)：轨道按 railItems.length 决定渲不渲染，没有轨道时
+   .chat-body 从 .chat-main 左缘起算，再补正就变成反向偏移了。 */
+.chat-main:has(> .msg-rail) .chat-body > .chat-msg-assistant {
+  margin-left: calc((100% - var(--read-width)) / 2 - var(--rail-w) / 2);
+  margin-right: calc((100% - var(--read-width)) / 2 + var(--rail-w) / 2);
+}
+
+/* 气泡右缘要跟着内容列的右边界走 —— 否则列右移了、气泡没动，两者就错开了 */
+.chat-main:has(> .msg-rail) .chat-body > .chat-msg-user {
+  margin-right: calc((100% - var(--read-width)) / 2 + var(--rail-w) / 2);
+}
+
 .chat-msg-user {
   align-self: flex-end;
   background: var(--accent-soft);
@@ -2666,8 +2798,10 @@ mark {
   padding: 8px 12px;
 }
 
+/* 用户发言是纯文本（不渲染 markdown），字号跟正文对齐，别比助手那边小一号 */
 .chat-user-text {
-  font-size: 13px;
+  font-size: 14px;
+  line-height: 1.7;
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -2746,6 +2880,11 @@ mark {
   background: rgba(0, 0, 0, 0.75);
 }
 
+/* ⚠️ 别给助手消息加 border-left 之类「轮次锚点」（2026-09-22 试过并否掉）：
+   一轮回答在 DOM 里是**多个同级的 .chat-msg-assistant**（renderStream 里 flush() 把
+   thinking/tool 折成一个活动组、asstText 各出一条），中间隔着 .chat-body 的 gap，
+   直接加边框会画成一串断线；要靠 padding/负 margin 抵消 gap 才能连起来，代价不小。
+   而且轮次的边界本来就有 —— 贴右的用户气泡就是断点，再加装饰反倒多余 */
 .chat-msg-assistant {
   align-self: flex-start;
   width: 100%;
@@ -2923,7 +3062,7 @@ mark {
   gap: 7px;
   padding: 6px 8px;
   color: var(--muted);
-  font-size: 12.5px;
+  font-size: 13px;
   list-style: none;
 }
 
@@ -3101,7 +3240,7 @@ mark {
 .msg-rail {
   /* 无视觉底色但保留较宽的透明命中列：滚轮滚动发生在容器上，
      列宽即滚轮操作区宽度，太窄容易一晃鼠标就滚到左侧列表/右侧内容 */
-  flex: 0 0 58px;
+  flex: 0 0 var(--rail-w);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -3293,7 +3432,7 @@ mark {
   margin-top: 3px;
   font-size: 12px;
   opacity: 0.65;
-  font-family: Consolas, monospace;
+  font-family: var(--font-mono);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -3386,7 +3525,7 @@ mark {
   border-radius: 8px;
   background: var(--bg);
   color: var(--text);
-  font-family: Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.55;
   outline: none;
@@ -3594,7 +3733,7 @@ mark {
   background: var(--bg);
   color: var(--text);
   font-size: 12.5px;
-  font-family: Consolas, monospace;
+  font-family: var(--font-mono);
   outline: none;
 }
 
@@ -3677,14 +3816,14 @@ mark {
   min-width: 4ch;
   text-align: right;
   font-weight: 700;
-  font-family: Consolas, monospace;
+  font-family: var(--font-mono);
 }
 
 .usage-reset {
   min-width: 52px; /* 倒计时缺失时撑住列位，避免多行错位 */
   opacity: 0.6;
   font-size: 11px;
-  font-family: Consolas, monospace;
+  font-family: var(--font-mono);
 }
 
 /* 分档阈值与色值（Tailwind green-600/orange-500/red-500） */
@@ -3823,7 +3962,7 @@ mark {
   background: var(--bg);
   color: var(--text);
   font-size: 12.5px;
-  font-family: Consolas, monospace;
+  font-family: var(--font-mono);
   outline: none;
 }
 
@@ -3921,7 +4060,7 @@ mark {
   background: none;
   color: var(--text);
   font-size: 12.5px;
-  font-family: Consolas, monospace;
+  font-family: var(--font-mono);
   cursor: pointer;
   text-align: left;
 }
