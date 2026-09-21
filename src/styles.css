@@ -16,6 +16,13 @@
   --star-soft: rgba(217, 119, 6, 0.12);
   --ok: #16a34a;
   --ok-soft: rgba(22, 163, 74, 0.12);
+  /* markdown 显色：对齐 claude CLI TUI 的语义色（CLI 主题定义里的 suggestion/merged/
+     planMode/subtle），要的是「TUI 有颜色的内容在 app 里也显色，而不是只加浅底」。
+     字符串与数字不另立 token，直接复用 --ok / --star。 */
+  --code: #5769f7; /* 行内代码 + 语法里的函数/属性/变量（CLI suggestion 原值） */
+  --syn-keyword: #7c3aed; /* 关键字/字面量/类型（CLI merged，压暗到浅底可读） */
+  --syn-meta: #006666; /* meta / doctag / 预处理（CLI planMode 原值） */
+  --syn-comment: #a8a29e; /* 注释与引用（CLI subtle） */
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.05), 0 8px 24px rgba(0, 0, 0, 0.08);
   --radius: 10px;
 
@@ -56,6 +63,11 @@
   --star-soft: rgba(245, 181, 68, 0.15);
   --ok: #4ade80;
   --ok-soft: rgba(74, 222, 128, 0.14);
+  /* markdown 显色（深色版）：--code 取用户终端里实测的行内代码蓝 rgb(161,168,226) 一带 */
+  --code: #a3b4ef;
+  --syn-keyword: #a894d1;
+  --syn-meta: #79bcb0;
+  --syn-comment: #8d8880;
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.45), 0 8px 24px rgba(0, 0, 0, 0.55);
 
   /* 同一组 9 个色相的深色主题版：明度抬到约 62%、饱和度约 50%（深底上不提亮立不住）。
@@ -1623,12 +1635,16 @@ mark {
   font-weight: 600;
 }
 
+/* ⚠️ 标题上色是用户明确要的；但**实测 TUI 的标题没有颜色**（只是加粗，那一块像素全灰阶）。
+   想严格对齐 TUI 就把这两行 color 删掉。 */
 .md-body h1 {
   font-size: 1.35em;
+  color: var(--code);
 }
 
 .md-body h2 {
   font-size: 1.2em;
+  color: var(--code);
 }
 
 .md-body h3 {
@@ -1649,31 +1665,99 @@ mark {
   margin: 0;
 }
 
+/* 行内代码：TUI 里是「蓝色文字、无底色」，这里照做（原来给的是白底 + 边框） */
 .md-body code {
   font-size: 12px;
   font-family: Consolas, "Courier New", monospace;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 0 4px;
+  color: var(--code);
 }
 
+/* 代码块：TUI 是虚线灰边的盒子（CLI 实现 borderStyle:"dashed", borderColor:"subtle"），
+   不再用白底填充；块内逐 token 的颜色由下面那组 .hljs-* 规则给 */
 .md-body pre {
   font-size: 12px;
   line-height: 1.5;
-  background: var(--panel);
-  border: 1px solid var(--border);
+  border: 1px dashed var(--dim);
   border-radius: 7px;
   padding: 8px 10px;
   overflow-x: auto;
   margin: 0.5em 0;
 }
 
+/* ⚠️ color: inherit 不能省：上面 .md-body code 的 --code 蓝会一路继承进代码块，
+   把整块正文都染成蓝色（span 之外的纯文本没有 .hljs-* 类可覆盖它） */
 .md-body pre code {
   background: none;
   border: none;
   padding: 0;
   display: block;
+  color: inherit;
+}
+
+/* ---------- 语法高亮（highlight.js 的 token 类，见 src/lib/highlight.ts） ----------
+   配色取 CLI 主题的语义色：关键字=merged 紫 / 函数属性=code 蓝 / 字符串=success 绿 /
+   数字=warning 黄 / 注释=subtle 灰 / meta=planMode 青。深浅主题靠 token 自动切换，
+   所以这里不写 [data-theme="dark"] 例外。 */
+.md-body .hljs-keyword,
+.md-body .hljs-literal,
+.md-body .hljs-type,
+.md-body .hljs-built_in,
+.md-body .hljs-selector-tag {
+  color: var(--syn-keyword);
+}
+
+.md-body .hljs-title,
+.md-body .hljs-title.function_,
+.md-body .hljs-title.class_,
+.md-body .hljs-attr,
+.md-body .hljs-attribute,
+.md-body .hljs-variable,
+.md-body .hljs-template-variable,
+.md-body .hljs-params,
+.md-body .hljs-property,
+.md-body .hljs-selector-class,
+.md-body .hljs-selector-id,
+.md-body .hljs-name {
+  color: var(--code);
+}
+
+.md-body .hljs-string,
+.md-body .hljs-addition,
+.md-body .hljs-regexp,
+.md-body .hljs-char.escape_ {
+  color: var(--ok);
+}
+
+.md-body .hljs-number,
+.md-body .hljs-symbol,
+.md-body .hljs-bullet,
+.md-body .hljs-tag {
+  color: var(--star);
+}
+
+.md-body .hljs-comment,
+.md-body .hljs-quote {
+  color: var(--syn-comment);
+  font-style: italic;
+}
+
+.md-body .hljs-meta,
+.md-body .hljs-doctag,
+.md-body .hljs-section,
+.md-body .hljs-link {
+  color: var(--syn-meta);
+}
+
+.md-body .hljs-deletion {
+  color: var(--danger);
+}
+
+.md-body .hljs-emphasis {
+  font-style: italic;
+}
+
+.md-body .hljs-strong {
+  font-weight: 600;
 }
 
 .md-body blockquote {
@@ -1698,8 +1782,8 @@ mark {
   padding: 4px 10px;
 }
 
+/* 表头：TUI 是「加粗、无填充」，白底去掉 */
 .md-body th {
-  background: var(--panel);
   font-weight: 600;
 }
 

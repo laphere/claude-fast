@@ -5,6 +5,7 @@
 import { useMemo, type ReactNode } from "react";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
+import { installMarkdownHighlighting } from "../lib/highlight";
 import type { ContentBlock } from "../types";
 import {
   BrainIcon,
@@ -14,6 +15,10 @@ import {
   TriangleAlertIcon,
   WrenchIcon,
 } from "./Icons";
+
+// 给全局 marked 装代码块高亮（幂等，见 lib/highlight.ts）。放在模块顶层而非组件内：
+// marked.use 是全局副作用，且必须在首次 marked.parse 之前生效。
+installMarkdownHighlighting();
 
 /** ISO 时间戳 → HH:MM */
 export function formatTime(iso: string | null | undefined): string {
