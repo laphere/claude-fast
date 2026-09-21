@@ -33,7 +33,7 @@
 
 复核状态：**B1 / B3 / B4 / B5 / B6 / B7 已人工复核代码确认**；B2 由审计用本机真实 jsonl 实测（未人工复核）；B8–B16 来自审计、未逐条复核。
 
-> **修复进展（2026-09-21）**：**B1 / B2 / B3 已修**（各条末尾有「已修」说明）。⚠️ 其中 B1 顺带**订正了 v2 的口径**：v2 取「同 id 的首行」，但当代 jsonl 首行 usage 恒为 0（或只有占位），真实值在**带 `stop_reason` 的收尾行**上——本机实测某会话取首行只有 3.44M、取收尾行是 258.84M（差 75 倍）。本分支因此**复用用量台账的 `betterUsageRow`（收尾行优先，同优先级取 token 更大者）**，会话头部统计与统计仪表盘逐字节一致（8 个最大的真实会话文件实测 0.0% 偏差）。§1 抄录的 v2 原文里没有这条，别照它实现。
+> **修复进展（2026-09-21）**：**B1–B7 已修**（各条末尾有「已修」说明），**剩余 B8–B16**——都是纵深防御与边角差异，优先级见本节末尾。⚠️ 其中 B1 顺带**订正了 v2 的口径**：v2 取「同 id 的首行」，但当代 jsonl 首行 usage 恒为 0（或只有占位），真实值在**带 `stop_reason` 的收尾行**上——本机实测某会话取首行只有 3.44M、取收尾行是 258.84M（差 75 倍）。本分支因此**复用用量台账的 `betterUsageRow`（收尾行优先，同优先级取 token 更大者）**，会话头部统计与统计仪表盘逐字节一致（8 个最大的真实会话文件实测 0.0% 偏差）。§1 抄录的 v2 原文里没有这条，别照它实现。
 
 ### B1【高】会话页头部 token 统计整块没移植（静默失效）
 
@@ -72,24 +72,28 @@
 - 本分支：`electron/backend/platform.ts:328-336` 的 `launchProject` 只做 `statIsDirectory`，随后把 `dir` 原样拼进 `` start "Claude Code" /d "${dir}" cmd /k claude ``（`windowsVerbatimArguments: true`）→ `%`（变量展开）、`!`（延迟展开）、`"`（截断引号）全部放行。
 - v2/main：`launch_project` 第一句就是 `validate_resume_path(&dir)?`——注释写明「路径与 resume 拼进同款 `cd /d "..."`，注入面一致，共用同一校验」。
 - 验收：launch 与 resume 共用同一校验函数。
+- **已修**：`launchProject` 改为 `validateResumePath(projectPath, platform)`（同时顶掉原来的 `statIsDirectory` 分支）。验证：`platform.test.ts` 补「`%` `!` `"` 拦住、不存在目录拒绝」两条（放行分支会真开终端窗口，单测不碰）。
 
 ### B5【中】macOS「启动」临时脚本用 `JSON.stringify` 而非 `shQuote`
 
 - 本分支：`electron/backend/platform.ts:344` 写成 `` cd ${JSON.stringify(dir)} ``，而**同一文件的 resume 版**（`:159`）用的是 `shQuote`。`JSON.stringify` 不转义 `$` 与反引号 → 目录名含 `$(...)` 或 `` ` `` 时生成的 .sh 会执行命令替换（空格没问题，引号还在，所以是半边修好）。
 - v2/main：`launch_project` 的 macOS 临时脚本走 `sh_quote`——见 §1.1 原文末句。
 - 验收：两处共用 `shQuote`。
+- **已修**：抽出 `buildLaunchScript(projectPath, platform)`（与 `buildResumeScript` 对称，同走 `validateResumePath` + `shQuote`），`launchProject` 调它。验证：单测断言脚本内容与 `shQuote` 版逐字相同，且 `$(whoami)`、`` `id` `` 均被转义（不构成命令替换）。
 
 ### B6【中】关闭会话 / 退出 app 没有优雅退出窗口
 
 - 本分支：`electron/backend/chat.ts:791-794` 的 `close()` 是 `queue.end()` 后**同一个 tick** 直接 `abort.abort()`，而 `abort` 又是 spawn 的 signal（`:711`）→ 立即终止子进程；`closeAll()`（`:860-863`）与 `before-quit`（`main.ts:555-559`）都走它。注释声称的「超时由 SDK 强杀」并未实现。
 - v2 参照：`chat_close` 先 `drop(stdin)` 再 `wait_then_kill(child, 3s)`（`chat.rs:1152-1163`、`:912-929`），app 退出 `stop_all` 等 2 秒（`:701-724`）。
 - 验收：流式进行中关 tab / 退出 app，jsonl 尾部完整。
+- **已修**：`close()` 改为 async——关 stdin 后最多等 3s（`GRACEFUL_CLOSE_MS`，对齐 v2 线），超时才 `abort`；`ChatManager.close/closeAll` 同步改异步并给整体设上限（`GRACEFUL_QUIT_MS`），兜底强杀未退出的会话。退出链路一并等齐：`quit_app` 先 `await closeAll()` 再 `app.exit(0)`（`app.exit` 不走 before-quit），`before-quit` 改为 `preventDefault` 一次、关完再 `app.quit()`。验证：`chat-session.test.ts` mock 掉 SDK 断言四种情形（窗口内不强杀 / 超时才强杀 / closeAll 整体超时兜底 / 未启动直接返回），全程不 spawn 真进程。
 
 ### B7【中】「跟随本机 Claude Code」定位退化，且同步阻塞主进程
 
 - 本分支：`electron/backend/chat.ts:533-561` 只猜 `<cwd>/node_modules` 与 `<npm root -g>` 两处，**没有 `where` / `command -v` 探测** → 官方原生安装（如 `%USERPROFILE%\.local\bin\claude.exe`）一律找不到，**静默回退 SDK 自带 CLI**（版本与配置可能与终端不同，无任何提示）；且无缓存，每次会话启动都同步 `execFileSync("npm", …, { timeout: 5000, shell })`，最坏阻塞主进程 5 秒。
 - v2 参照：`where claude` / `command -v claude` 取 PATH 全路径，Windows 按 `.exe > .cmd/.bat` 择优并排除 npm 垫片（`chat.rs:854-870`），结果缓存在 `OnceLock`（`:32`、`:785-790`），找不到**明确报错**。
 - 验收：找得到就用本机那份并给出提示/缓存；找不到时报错或至少显式提示，不静默换实现。
+- **已修**：新增 PATH 探测（Windows `where claude` / POSIX `sh -c "command -v claude"`，超时 3s，`windowsHide`），垫片顺同级 `node_modules` 找真身（`pickClaudeFromPathOutput`，纯函数可测）；结果按进程缓存（`resetClaudeExecutableCache()` 供测试），`npm root -g` 的超时 5s→3s 且整体只跑一次。三条都没命中时留一条主进程 `console.warn` 再回退 SDK 自带——**UI 仍不展示这条回退**（前端要展示得加事件字段与渲染，本次未做，属已知缺口）。验证：真机实测命中 `E:\DevTool\node18-global\node_modules\@anthropic-ai\claude-code\bin\claude.exe`，80ms，二次 0ms；单测覆盖 6 种候选形态。
 
 ### B8–B16【低】纵深防御与边角差异
 
@@ -105,7 +109,7 @@
 | B15 | 搜索片段半径 | `session-extra.ts:120-126` 码点 ±40 字 | `lib.rs:2025-2030` 字节 ±40（中文约 ±13 字；不影响命中/跳转） |
 | B16 | 标题截断 | `electron/backend/text.ts:56` `slice(0,200)` 按 UTF-16 码元（同文件 `:50` 却正确用了 `[...s]`）→ 尾字符是 emoji 时可能切出半个代理对写进 jsonl | Rust `.chars().take(200)` |
 
-**建议修复顺序**：B1（静默、必现）→ B3（`Program Files (x86)` 用户直接不可用）→ B2（数字虚高，影响导出与分页）→ B6 / B7（数据完整性 + 启动路径确定性与阻塞）→ B4 / B5 → B8–B16。
+**剩余修复顺序**：B9 / B10 / B13（权限模式、图片、`defaultMode` 的白名单校验，纵深防御，`chat.rs` 那几条用例已随分支删除、语义见 §3.2）→ B8（`chat_start` 的会话文件校验，现成函数就在 `sessions.ts`）→ B6 / B7 的遗留（B7 的回退提示仍不上 UI）→ B11 / B12 / B14 / B15 / B16。
 
 ---
 

@@ -34,7 +34,7 @@
 - **启动/resume 必须经 `cmd /c start` 链**（`spawnStartChain`）：`start "Claude Code" /d "<项目>" cmd /k claude [--resume <id>]`。⚠️ Electron GUI 主进程（无控制台）+ `stdio:"ignore"` 直接 spawn cmd 时，Windows **不分配新 console**（windowsHide/detached 均救不了；`detached` 反而触发 claude 2.x bash 探测弹多窗）——claude 拿不到 TTY 静默退出、无任何窗口（2026-09 实测根因）。`start` 用 CREATE_NEW_CONSOLE 新开终端、走系统默认终端委托；外层 cmd `/c` 无窗口立即退出。verbatim 传参仍必须（cmd 不认 MSVC 转义的 `\"`）。
 - `resumeSession(file, projectPath, projectsDir)`：新开终端窗口执行 `claude --resume <session-id>`。Windows 走 `buildResumeCmdline` 的 start 链；macOS 写临时 .sh 到系统临时目录再 `open -a Terminal`（无需 osascript 自动化权限）。共用 `validateResumePath`，平台规则不同：Windows 拒绝 cmd 元字符；macOS 路径经 `shQuote` 进 `cd "..."` 后元字符均为字面量，故仅拒控制字符 + 要求路径存在（避免误伤含 `( ) ' \` 的合法 mac 路径）。
   - Windows 口径：**只拒 `"` `%` `!`**（引号截断 / 变量展开 / 延迟展开）——`& | < > ^ ( )` 在双引号内都是字面量。这条与 `v2.0.0`/`v1.0.0` 逐字对齐（那边有回归测试断言含 `(x86) & test` 的合法目录必须放行），**别改回「一律拒 cmd 元字符」**：多拒会让 `C:\Program Files (x86)\…` 这类常见目录「启动能开、继续对话报错」。
-  - ⚠️ 仍缺两条（见 `docs/chat-behavior-spec.md` §2 B4/B5）：`launchProject` **不做字符校验**（v2/main 与 resume 共用同一校验），且它的 macOS 分支用 `JSON.stringify` 拼 `cd`（不转义 `$` 与反引号）——同一文件的 resume 版用的是 `shQuote`。
+  - `launchProject` 与 resume **共用同一校验**（`validateResumePath`），macOS 启动脚本走 `buildLaunchScript`——与 `buildResumeScript` 同为 `shQuote` 转义。（此前这两处是缺口，2026-09-21 修，见 `docs/chat-behavior-spec.md` §2 B4/B5。）
 - `openFolder`：explorer.exe / `open`；`checkClaude`：`where` / `sh -c "command -v claude"`（均 3 秒超时，Promise 不阻塞渲染）。
 - `checkClaude`/`checkLaunchers` 等 spawn 系函数 Windows 一律 `windowsHide: true`，防止后台命令闪黑窗（注意：这只影响探测类调用，启动终端必须走上面的 start 链）。
 
