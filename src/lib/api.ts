@@ -227,6 +227,14 @@ export const api = {
   /** 按会话 id 读会话标题（终端 tab 的会话名兜底）；文件未落盘返回 null */
   sessionTitleFor: (projectPath: string, sessionId: string) =>
     invoke<string | null>("session_title_for", { projectPath, sessionId }),
+  /** app 内新对话的落盘探测：返回会话 jsonl 路径 + 当前标题；文件未落盘/无实质
+   *  内容返回 null。首轮结束后轮询，拿到即把新对话 tab 升级成续聊态
+   *  （头部统计/右上角按钮随之可用，tab 标题同步、左栏会话列表补条目） */
+  chatSessionMeta: (projectPath: string, sessionId: string) =>
+    invoke<{ file: string; title: string } | null>("chat_session_meta", {
+      projectPath,
+      sessionId,
+    }),
   /** 剪贴板里若放着**图片文件**（资源管理器「复制」），返回其路径；否则 null */
   clipboardImagePath: () => invoke<string | null>("clipboard_image_path"),
   /** 订阅某个终端 token 的输出字节流；返回取消订阅函数 */

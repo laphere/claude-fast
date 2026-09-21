@@ -229,6 +229,43 @@ export function readHeadTail(
   }
 }
 
+/** 会话 jsonl 的落盘探测：定位 `<projects>/<mangled>/<id>.jsonl`，head/tail 64KB
+ *  走与列表**同一个** sessionMetaFromLite，返回文件路径 + 当前标题。
+ *  文件未落盘（claude 在第一条消息之前不建 jsonl）返回 null，调用方轮询再问；
+ *  文件存在但解析不出标题（sidechain / 只有命令消息与摘要行的「未命名会话」）
+ *  同样返回 null——那个兜底值是**语义为空**的占位词，两个调用方（终端 tab 标题
+ *  兜底、新对话落盘收编）都是「拿到就当标题用」，回传它会把 tab 标题从项目名
+ *  改成占位词并就此定稿，轮询再也不会纠正。
+ *  非 uuid 形态直接拒绝：该值来自渲染层预生成的会话 id，但仍拼进路径，
+ *  非 uuid 内容可能是 `..` 一类路径段。 */
+export function sessionFileAndTitle(
+  projectsDir: string,
+  projectPath: string,
+  sessionId: string,
+): { file: string; title: string } | null {
+  if (!isValidUuid(sessionId)) throw new Error("非法的会话 id");
+  const file = path.join(projectsDir, mangleProjectPath(projectPath), `${sessionId}.jsonl`);
+  const ht = readHeadTail(file);
+  if (!ht) return null;
+  const info = sessionMetaFromLite(ht.head, ht.tail, sessionId, Math.round(ht.mtime));
+  if (!info || info.title === "未命名会话") return null;
+  return { file, title: info.title };
+}
+
+/** 按会话 id 读标题（内嵌终端 tab 的会话名兜底，对齐 Tauri 线 lib.rs 的
+ *  session_title_in）：拿到的标题与左栏列表逐字一致。
+ *  ⚠️ 直接委托 sessionFileAndTitle，**不另写一份解析**：两处对「什么算解析出了
+ *  标题」（未落盘 / 未命名会话都算没解析出）必须同一口径。历史上这里自己写过一份，
+ *  少了占位词那档过滤，于是同一份「只有摘要行」的会话：终端 tab 拿到「未命名会话」
+ *  定稿显示，新对话收编那边拿到 null 继续轮询——同一份数据两种结论。 */
+export function sessionTitleFor(
+  projectsDir: string,
+  projectPath: string,
+  sessionId: string,
+): string | null {
+  return sessionFileAndTitle(projectsDir, projectPath, sessionId)?.title ?? null;
+}
+
 /** 列出某项目（真实路径）的 Claude Code 会话，按最后修改时间倒序 */
 export function listSessions(projectsDir: string, projectPath: string): SessionInfo[] {
   const dir = path.join(projectsDir, mangleProjectPath(projectPath));

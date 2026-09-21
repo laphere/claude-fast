@@ -59,6 +59,7 @@ import {
   getSessionMessages,
   listSessions,
   renameSession,
+  sessionFileAndTitle,
   sessionTitleFor,
   validateSessionFile,
 } from "./backend/sessions";
@@ -486,6 +487,8 @@ function registerIpc(): void {
   handle("pty_kill", (p) => ptyManager.kill(toInt(p.id) ?? 0));
   handle("session_title_for", (p) =>
     sessionTitleFor(projectsDir(), String(p.projectPath), String(p.sessionId)));
+  handle("chat_session_meta", (p) =>
+    sessionFileAndTitle(projectsDir(), String(p.projectPath), String(p.sessionId)));
   handle("clipboard_image_path", () => clipboardImagePath());
 
   // ---------- 供应商切换 ----------

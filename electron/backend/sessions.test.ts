@@ -16,7 +16,9 @@ import {
   parseUsage,
   readHeadTail,
   renameSession,
+  sessionFileAndTitle,
   sessionMetaFromLite,
+  sessionTitleFor,
   sliceMessages,
   validateSessionFile,
   MAX_SESSION_MESSAGES,
@@ -566,5 +568,73 @@ describe("parseContentBlocks", () => {
     );
     expect(blocks.length).toBe(2);
     expect(blocks[1].mediaType).toBe("image/jpeg");
+  });
+});
+
+describe("sessionTitleFor", () => {
+  // ⚠️ 反斜杠必须写成 `\\`：`"D:\proj\alpha"` 里 `\p`/`\a` 都不是转义序列，会被
+  // 悄悄吃成 `D:projalpha`——断言两侧用同一个塌掉的字面量，测试照样绿，
+  // 但「Windows 真实路径形态」这一条其实从未被验过
+  it("按会话 id 命中：标题链与 listSessions 逐字一致", () => {
+    const dir = path.join(projects, mangleProjectPath("D:\\proj\\alpha"));
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, UUID + ".jsonl"), sampleHead());
+    expect(sessionTitleFor(projects, "D:\\proj\\alpha", UUID)).toBe("修复登录页面");
+    // 同一份文件走列表口径，两边必须同源
+    expect(listSessions(projects, "D:\\proj\\alpha")[0].title).toBe("修复登录页面");
+  });
+
+  it("文件未落盘（第一条消息之前）返回 null——调用方轮询再问", () => {
+    expect(sessionTitleFor(projects, "D:\\proj\\alpha", UUID)).toBeNull();
+  });
+
+  it("只有摘要行（标题解析成占位词「未命名会话」）返回 null——不能拿占位词定稿", () => {
+    const dir = path.join(projects, mangleProjectPath("D:\\proj\\alpha"));
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, UUID + ".jsonl"), '{"type":"summary","summary":"x"}\n');
+    // 列表口径仍会看到它（summary 非空），但「拿它当标题用」的两个调用方不行
+    expect(sessionTitleFor(projects, "D:\\proj\\alpha", UUID)).toBeNull();
+    expect(sessionFileAndTitle(projects, "D:\\proj\\alpha", UUID)).toBeNull();
+  });
+
+  it("customTitle 优先于 aiTitle", () => {
+    const dir = path.join(projects, mangleProjectPath("D:\\proj\\beta"));
+    fs.mkdirSync(dir, { recursive: true });
+    const tail =
+      '{"type":"custom-title","customTitle":"手动名字","sessionId":"' + UUID + '"}';
+    fs.writeFileSync(path.join(dir, UUID + ".jsonl"), sampleHead() + tail + "\n");
+    expect(sessionTitleFor(projects, "D:\\proj\\beta", UUID)).toBe("手动名字");
+  });
+
+  it("非法 id 不进路径（注入面：flag / .. / 引号一律拒绝）", () => {
+    for (const bad of ["--resume", "../evil", "", "3fa85f64-5717-4562-b3fc-2c963f66afa"]) {
+      expect(() => sessionTitleFor(projects, "D:\\proj", bad), bad).toThrow();
+    }
+  });
+});
+
+describe("sessionFileAndTitle", () => {
+  it("落盘后返回 jsonl 路径 + 标题，路径指向真实文件", () => {
+    const dir = path.join(projects, mangleProjectPath("D:\\proj\\alpha"));
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, UUID + ".jsonl");
+    fs.writeFileSync(file, sampleHead());
+    const meta = sessionFileAndTitle(projects, "D:\\proj\\alpha", UUID);
+    expect(meta).not.toBeNull();
+    expect(meta!.title).toBe("修复登录页面");
+    expect(path.resolve(meta!.file)).toBe(path.resolve(file));
+  });
+
+  it("文件未落盘 / 标题解析不出（空标题）返回 null——调用方轮询再问", () => {
+    expect(sessionFileAndTitle(projects, "D:\\proj\\alpha", UUID)).toBeNull();
+    // 落盘了但没有实质内容（纯元数据行）→ 同样 null
+    const dir = path.join(projects, mangleProjectPath("D:\\proj\\alpha"));
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, UUID + ".jsonl"), '{"type":"summary","summary":"x"}\n');
+    expect(sessionFileAndTitle(projects, "D:\\proj\\alpha", UUID)).toBeNull();
+  });
+
+  it("非法 id 不进路径（与 sessionTitleFor 同一注入面）", () => {
+    expect(() => sessionFileAndTitle(projects, "D:\\proj", "../evil")).toThrow();
   });
 });

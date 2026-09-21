@@ -106,6 +106,9 @@ export interface IpcContract {
   pty_kill: { id: number };
   /** 按会话 id 读会话标题（终端 tab 的会话名兜底）；文件未落盘返回 null */
   session_title_for: { projectPath: string; sessionId: string };
+  /** app 内新对话的落盘探测：返回会话 jsonl 路径 + 当前标题；文件未落盘/无实质
+   *  内容 → null。前端首轮结束后轮询，拿到即把新对话 tab 升级成续聊态 */
+  chat_session_meta: { projectPath: string; sessionId: string };
   /** 剪贴板里若放着**图片文件**（资源管理器「复制」），返回其路径；否则 null。
    *  只读不动剪贴板；位图/纯文本/非图片文件/非 Windows 一律 null */
   clipboard_image_path: void;
@@ -188,6 +191,7 @@ export const IPC_CHANNELS = [
   "pty_resize",
   "pty_kill",
   "session_title_for",
+  "chat_session_meta",
   "clipboard_image_path",
   "provider_list",
   "provider_save",
