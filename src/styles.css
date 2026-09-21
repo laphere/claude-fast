@@ -3863,12 +3863,85 @@ mark {
   white-space: nowrap;
 }
 
-/* ---------- 提问卡（AskUserQuestion：模型有分歧时问用户选哪个） ---------- */
+/* ---------- 提问卡（AskUserQuestion：模型有分歧时问用户选哪个） ----------
+   复刻 claude CLI TUI：一次一题 + 顶部 tab 条（每题一格 + 「✔ 提交」格）+
+   复核页。卡片高度是硬约束——它是 .chat 这个列 flex 里的自动高度项，
+   不给上限时会先吃光消息区（.chat-main 压到 0），再把 composer 顶出窗口。 */
 
-.ask-questions {
+.ask-card {
+  /* 护栏：卡片自身封顶，超出部分只有中间的 .ask-body 滚，composer 位置不动 */
+  max-height: 60%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* 卡片整体可聚焦（键盘 ↑↓/Enter 走这里的事件），但焦点环只画在行上——
+   整卡描一圈会把「当前是哪一行」这个信息淹掉 */
+.ask-card:focus,
+.ask-card:focus-visible {
+  outline: none;
+}
+
+.ask-tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  overflow-x: auto; /* header 多/长时横滚，不换行（保持一条 tab 条） */
+}
+
+.ask-tab {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 1;
+  padding: 5px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--muted);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.ask-tab:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.ask-tab:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.ask-tab-on {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.ask-tab-mark {
+  font-size: 11px;
+  opacity: 0.85;
+}
+
+/* 「提交」格推到最右，与 TUI 的 tab 条末格一致 */
+.ask-tab-submit {
+  margin-left: auto;
+}
+
+/* 滚动区：只有它滚（超高时），底部按钮与 composer 都不动 */
+.ask-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
 }
 
 .ask-question-head {
@@ -3953,4 +4026,79 @@ mark {
 .ask-freeinput:focus {
   outline: none;
   border-color: var(--accent);
+}
+
+.ask-question-multi {
+  flex: none;
+  font-size: 11px;
+  font-weight: 400;
+  opacity: 0.6;
+}
+
+/* 键盘焦点行（↑↓ 移动；与 --on 选中态用同一种强调，靠外描边区分） */
+.ask-option-focus {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+/* 「其他」「先在对话里说」：与选项同款外观，用虚线边框区分「不是模型给的选项」 */
+.ask-option-alt {
+  border-style: dashed;
+  background: transparent;
+}
+
+/* 选项列表末尾的「下一题 / 提交」（TUI 的 submitButtonText） */
+.ask-option-next {
+  align-items: center;
+  font-weight: 600;
+  background: var(--panel-2);
+}
+
+/* ---------- 复核页（TUI 的 Review your answers） ---------- */
+
+.ask-review {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ask-review-title {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.ask-warn {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--star);
+  background: var(--star-soft);
+  border-radius: 8px;
+  padding: 6px 9px;
+}
+
+.ask-review-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 0;
+  border-bottom: 1px dashed var(--border);
+}
+
+.ask-review-q {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.ask-review-a {
+  font-size: 12.5px;
+  font-weight: 600;
+  word-break: break-word;
+}
+
+.ask-review-missing {
+  color: var(--dim);
+  font-weight: 400;
 }

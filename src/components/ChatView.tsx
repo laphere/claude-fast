@@ -12,6 +12,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Channel } from "../lib/channel";
 import { api } from "../lib/api";
+import AskQuestionCard, {
+  parseAskQuestions,
+  type AskQuestionItem,
+} from "./AskQuestionCard";
 import {
   ActivityGroup,
   MarkdownText,
@@ -179,44 +183,6 @@ function fileToChatImage(file: File, onToast: (msg: string) => void): Promise<Ch
   });
 }
 
-/** AskUserQuestion 的一道题（字段来自 sdk-tools.d.ts 的 AskUserQuestionInput） */
-interface AskQuestionItem {
-  /** 题目完整文本——回传 answers 的 key 就是它（不是 header） */
-  question: string;
-  /** 短标签（卡片上的小标题） */
-  header?: string;
-  /** 2–4 个选项；系统会自动补「其他」，不用我们自己加 */
-  options: { label: string; description?: string }[];
-  multiSelect?: boolean;
-}
-
-/** 从 canUseTool 的 input 里解析提问（形状防御式：模型/CLI 侧字段缺失时不炸） */
-function parseAskQuestions(input: unknown): AskQuestionItem[] {
-  const raw = (input as { questions?: unknown } | null)?.questions;
-  if (!Array.isArray(raw)) return [];
-  const out: AskQuestionItem[] = [];
-  for (const q of raw) {
-    if (!q || typeof q !== "object") continue;
-    const o = q as Record<string, unknown>;
-    const question = typeof o.question === "string" ? o.question : "";
-    if (!question) continue;
-    const opts = Array.isArray(o.options) ? o.options : [];
-    out.push({
-      question,
-      header: typeof o.header === "string" ? o.header : undefined,
-      multiSelect: o.multiSelect === true,
-      options: opts
-        .filter((x): x is Record<string, unknown> => !!x && typeof x === "object")
-        .map((x) => ({
-          label: typeof x.label === "string" ? x.label : "",
-          description: typeof x.description === "string" ? x.description : undefined,
-        }))
-        .filter((x) => x.label !== ""),
-    });
-  }
-  return out;
-}
-
 export default function ChatView({
   projectPath,
   title,
@@ -250,17 +216,16 @@ export default function ChatView({
   >(null);
   /** 方案审批动作进行中（按钮禁用/文案切换） */
   const [planBusy, setPlanBusy] = useState(false);
-  /** 待作答的提问（AskUserQuestion）：模型有分歧时问用户选哪个。
+  /** 待作答的提问（AskUserQuestion）：模型有分歧时问用户选哪个。卡内状态（当前第几题、
+   *  逐题选择与「其他」文本）由 AskQuestionCard 自己持有，卡片按 requestId 重挂载。
    *  ⚠️ 答案必须经 `updatedInput.answers` 回传，只 allow 不带 answers 等于「用户没选」——
    *  不报错但静默失效（见 docs/agent-sdk-interactive-tools.md） */
   const [question, setQuestion] = useState<
     { requestId: string; items: AskQuestionItem[] } | null
   >(null);
-  /** 每道题选中的选项 label（key = 题目完整文本，与回传格式一致） */
-  const [questionPick, setQuestionPick] = useState<Record<string, string>>({});
-  /** 没选选项、直接打字的自由文本（对应 AskUserQuestionOutput.response） */
-  const [questionText, setQuestionText] = useState("");
   const [questionBusy, setQuestionBusy] = useState(false);
+  /** 输入框 ref：「先在对话里说」退出卡片后把光标送过去（不选中就等于没了下文） */
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
 
   // ---------- 历史 jsonl ----------
   const [history, setHistory] = useState<SessionMessage[]>([]);
@@ -472,8 +437,6 @@ export default function ChatView({
         if (ev.toolName === "AskUserQuestion") {
           const items = parseAskQuestions(ev.input);
           setQuestion({ requestId: ev.requestId, items });
-          setQuestionPick({});
-          setQuestionText("");
           break;
         }
         setPermissions((prev) =>
@@ -740,39 +703,46 @@ export default function ChatView({
   /** 应答一条提问（AskUserQuestion）。
    *  ⚠️ `answers` 是唯一有效回传：只回 allow 不带它 → 模型收到「问题已发出，但你没有
    *  选择任何选项」，不报错但静默失效（见 docs/agent-sdk-interactive-tools.md）。
-   *  一道题都没选且没打字时把空答案交给后端，由后端明确拒绝（比静默失效好定位）。 */
+   *  一道题都没选时把空答案交给后端，由后端明确拒绝（比静默失效好定位）。 */
   const respondQuestion = useCallback(
-    async (submit: boolean) => {
+    async (answers: Record<string, string> | null, response?: string) => {
       const q = question;
       const key = sessionKeyRef.current;
       if (!q || !key) return;
       setQuestionBusy(true);
       try {
-        if (!submit) {
+        if (answers === null) {
           await api.chatPermissionResponse(key, q.requestId, false, "用户取消了这次提问");
         } else {
-          const answers: Record<string, string> = {};
-          for (const [k, v] of Object.entries(questionPick)) if (v) answers[k] = v;
           await api.chatPermissionResponse(
             key,
             q.requestId,
             true,
             undefined,
             Object.keys(answers).length > 0 ? answers : undefined,
-            questionText.trim() || undefined,
+            response,
           );
         }
         setQuestion(null);
-        setQuestionPick({});
-        setQuestionText("");
       } catch (e) {
         onToast("提问应答失败：" + String(e));
       } finally {
         setQuestionBusy(false);
       }
     },
-    [question, questionPick, questionText, onToast],
+    [question, onToast],
   );
+
+  /** 「先在对话里说」（TUI 的 Chat about this）：不选选项、退出卡片回聊天。
+   *  走 `response`（自由文本）回传路径：后端已在实测中确认该字段生效
+   *  （docs/agent-sdk-interactive-tools.md），模型会收到一条「用户说了什么」而非答案。 */
+  const discussQuestion = useCallback(() => {
+    void respondQuestion(
+      {},
+      "（用户选择先在对话里讨论，暂不回答这些问题；请直接回复，必要时再问）",
+    );
+    setTimeout(() => inputRef.current?.focus(), 0);
+  }, [respondQuestion]);
 
   const send = useCallback(async () => {
     const text = input.trim();
@@ -1813,77 +1783,15 @@ export default function ChatView({
       )}
 
       {question && (
-        <div className="plan-approve">
-          <div className="plan-approve-title">模型想先确认几件事</div>
-          <div className="ask-questions">
-            {question.items.map((item) => {
-              const picked = (questionPick[item.question] ?? "").split(", ");
-              return (
-                <div key={item.question} className="ask-question">
-                  <div className="ask-question-head">
-                    {item.header ? <span className="ask-question-tag">{item.header}</span> : null}
-                    <span>{item.question}</span>
-                  </div>
-                  <div className="ask-options">
-                    {item.options.map((opt) => {
-                      const on = picked.includes(opt.label) && opt.label !== "";
-                      return (
-                        <button
-                          key={opt.label}
-                          type="button"
-                          className={on ? "ask-option ask-option-on" : "ask-option"}
-                          disabled={questionBusy}
-                          onClick={() =>
-                            setQuestionPick((prev) => {
-                              const cur = prev[item.question] ?? "";
-                              if (!item.multiSelect) {
-                                return { ...prev, [item.question]: cur === opt.label ? "" : opt.label };
-                              }
-                              // 多选：答案用逗号分隔（CLI 侧就是这么解析的）
-                              const parts = cur ? cur.split(", ") : [];
-                              const next = parts.includes(opt.label)
-                                ? parts.filter((p) => p !== opt.label)
-                                : [...parts, opt.label];
-                              return { ...prev, [item.question]: next.join(", ") };
-                            })
-                          }
-                        >
-                          <span className="ask-option-label">{opt.label}</span>
-                          {opt.description ? (
-                            <span className="ask-option-desc">{opt.description}</span>
-                          ) : null}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-          <input
-            className="ask-freeinput"
-            placeholder="也可以不选，直接在这里打字回答"
-            value={questionText}
-            disabled={questionBusy}
-            onChange={(e) => setQuestionText(e.target.value)}
-          />
-          <div className="plan-approve-actions">
-            <button
-              className="btn btn-primary"
-              disabled={questionBusy}
-              onClick={() => void respondQuestion(true)}
-            >
-              提交回答
-            </button>
-            <button
-              className="btn"
-              disabled={questionBusy}
-              onClick={() => void respondQuestion(false)}
-            >
-              取消
-            </button>
-          </div>
-        </div>
+        // key 用 requestId：换一次提问就重挂载，卡内「当前第几题 / 逐题选择」自动归零
+        <AskQuestionCard
+          key={question.requestId}
+          items={question.items}
+          busy={questionBusy}
+          onSubmit={(answers) => void respondQuestion(answers)}
+          onCancel={() => void respondQuestion(null)}
+          onDiscuss={discussQuestion}
+        />
       )}
 
       {plan && (
@@ -1977,6 +1885,7 @@ export default function ChatView({
           ))}
         </select>
         <textarea
+          ref={inputRef}
           className="chat-input"
           placeholder={
             status.phase === "exited"
