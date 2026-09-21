@@ -7,7 +7,6 @@ import {
   ipcMain,
   Menu,
   nativeImage,
-  screen,
   Tray,
 } from "electron";
 import * as crypto from "node:crypto";
@@ -193,19 +192,22 @@ function appIcon(): { app: string; trayMaster: string } {
 }
 
 /**
- * 托盘图标：Windows 托盘位是 16px × 显示缩放（本机 150% → 24×24），给什么都要被缩到那。
+ * 托盘图标：交 256×256 主图，**不做缩放**，托盘位怎么缩交给系统
+ * （Tauri 版交给系统的也是 .ico 的第 0 帧 = 256×256，见 tauri-codegen image.rs）。
  *
- * ⚠️ **必须自己按精确尺寸缩好再交给 Tray**：直接交 32×32 的位图时，托盘那次缩放是硬的
- * （边缘更实、整体发暗）——实测同一张截图里，本 app 的托盘图标实心占比 0.522 / 均亮度 155，
- * 而 Rust 版（交给系统的是 .ico 的 256 帧）是 0.456 / 176，观感明显偏暗。用 256 帧源 +
- * `quality:"best"` 缩到精确尺寸后，实测 0.452 / 173，与 Rust 版一致。
- * 尺寸匹配后 Tray 内部不再缩放，像素完全由这里决定。
+ * ⚠️ 别在这里自己 resize「凑精确尺寸」：实测（16/24/32/48/256 五种输入各挂一个托盘图标对照）
+ * 本 app 的托盘观感与传入尺寸**基本无关**——因为本进程声明了 `dpiAware=true/pm`
+ * （每显示器 DPI 感知），系统一律按真实托盘位（150% 缩放 → 24×24）重绘。
+ *
+ * ⚠️ 也别把「Rust 版托盘图标更亮更柔」当成自己的 bug 去追：那个 app 的清单里
+ * **没有任何 DPI 声明**（DPI 不感知），系统会把它的图标按 16px 渲染再拉大到 24px，
+ * 于是更糊更淡——同一张截图里量：本 app 实心占比 0.52-0.59 / 均亮度 146-155，
+ * Rust 版 0.456 / 176（spread 更大、更淡）。真要比「谁对」，是本 app 这边更接近原生。
  */
 function trayImage(): Electron.NativeImage {
-  const src = nativeImage.createFromPath(appIcon().trayMaster);
-  const size = Math.max(16, Math.round(16 * (screen.getPrimaryDisplay().scaleFactor || 1)));
-  const small = src.resize({ width: size, height: size, quality: "best" });
-  return small.isEmpty() ? src : small;
+  const p = appIcon().trayMaster;
+  const img = nativeImage.createFromBuffer(fs.readFileSync(p));
+  return img.isEmpty() ? nativeImage.createFromPath(p) : img;
 }
 
 /** 把主窗口显示到最前台（托盘「显示窗口」/ 托盘左键 / 单实例回调共用）。
