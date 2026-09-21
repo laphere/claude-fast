@@ -94,7 +94,7 @@ export default function Header({
           >
             <SearchIcon size={15} />
           </button>
-          <button className="icon-btn" onClick={onNew} title="新建启动项">
+          <button className="icon-btn" onClick={onNew} title="添加项目">
             <PlusIcon size={15} />
           </button>
           <button className="icon-btn" onClick={onBatch} title="扫描 Claude Code 项目目录批量添加">
