@@ -3,6 +3,8 @@
 一键在项目目录启动 Claude Code 的桌面应用：**Electron（Node.js 后端）+ React + TypeScript（前端）+ Vite**，Windows + macOS 双平台，不限定工作区目录。
 
 > **版本线**：仓库已重新规划，当前全部代码为 **v1.0.0**（`package.json` 版本号）。历史上的 PowerShell/WinForms 版、Tauri/Rust 版与 v2.x/v3.x 旧版号均已作废，代码中不要再按旧版本号理解。
+>
+> **引用提示**：本文多处拿 **`v2.0.0`**（Tauri 2 + Rust、含 app 内 GUI 对话的那条线）当行为对照——该分支**已于 2026-09-21 删除**（本地与远端都不在了，只剩本机 tag `v2.0.0-final`），所以那些引用只作历史标注、事后查不到代码。对话层的行为规格与**本分支的待补齐缺口清单（B1–B16）见 `docs/chat-behavior-spec.md`**。
 
 ## 核心文件
 
@@ -31,6 +33,8 @@
 - `scriptExt()` 返回 bat/sh；`legacyMarker()` 兼容旧标记 `claude-claude-fast.<ext>`；`parseCdPath` 兼容 `cd /d` 与 `cd "/path"` 两种语法（现供旧脚本迁移解析用）。
 - **启动/resume 必须经 `cmd /c start` 链**（`spawnStartChain`）：`start "Claude Code" /d "<项目>" cmd /k claude [--resume <id>]`。⚠️ Electron GUI 主进程（无控制台）+ `stdio:"ignore"` 直接 spawn cmd 时，Windows **不分配新 console**（windowsHide/detached 均救不了；`detached` 反而触发 claude 2.x bash 探测弹多窗）——claude 拿不到 TTY 静默退出、无任何窗口（2026-09 实测根因）。`start` 用 CREATE_NEW_CONSOLE 新开终端、走系统默认终端委托；外层 cmd `/c` 无窗口立即退出。verbatim 传参仍必须（cmd 不认 MSVC 转义的 `\"`）。
 - `resumeSession(file, projectPath, projectsDir)`：新开终端窗口执行 `claude --resume <session-id>`。Windows 走 `buildResumeCmdline` 的 start 链；macOS 写临时 .sh 到系统临时目录再 `open -a Terminal`（无需 osascript 自动化权限）。共用 `validateResumePath`，平台规则不同：Windows 拒绝 cmd 元字符；macOS 路径经 `shQuote` 进 `cd "..."` 后元字符均为字面量，故仅拒控制字符 + 要求路径存在（避免误伤含 `( ) ' \` 的合法 mac 路径）。
+  - ⚠️ **本分支的 Windows 规则比 `v2.0.0`/`v1.0.0` 严**：多拒了 `( ) & < > | ^`——`C:\Program Files (x86)\…` 下的项目「启动」能开、「继续对话」会被拒。v2/main 只拒 `"` `%` `!`（双引号内其余字符是字面量），口径原文与验收标准见 `docs/chat-behavior-spec.md` §1.1 与 §2 B3。
+  - ⚠️ `launchProject` **不做字符校验**（v2/main 与 resume 共用同一校验），且 macOS 分支用 `JSON.stringify` 拼 `cd`（不转义 `$` 与反引号）——同一文件的 resume 版却用了 `shQuote`。两条都记在 `docs/chat-behavior-spec.md` §2 B4/B5。
 - `openFolder`：explorer.exe / `open`；`checkClaude`：`where` / `sh -c "command -v claude"`（均 3 秒超时，Promise 不阻塞渲染）。
 - `checkClaude`/`checkLaunchers` 等 spawn 系函数 Windows 一律 `windowsHide: true`，防止后台命令闪黑窗（注意：这只影响探测类调用，启动终端必须走上面的 start 链）。
 
@@ -102,7 +106,9 @@ app 内对话层改用官方 `@anthropic-ai/claude-agent-sdk` 前必须先确认
 - **传 `[]`（SDK isolation mode）**：SDK 加 `--setting-sources=`，**连认证一起丢**——实测报 `Not logged in · Please run /login`，模型回退成 `claude-opus-5[1m]`。**不要传 `[]`**。
 - ⚠️ **但「不传 settingSources」还不够**：SDK 默认会把 `--permission-mode default` 显式传给 CLI，**CLI 的 flag 压过 settings 的 `permissions.defaultMode`**。实测项目 `.claude/settings.json` 写 `permissions.defaultMode: "plan"`，SDK 默认起会话仍是 `default`。要复刻 v2.0.0「继承 settings 的 defaultMode」必须传**未出现在 `sdk.d.ts` 里的内部选项** `resolvePermissionModeInCli: true`（此时 SDK 不传该 flag，实测 `init.permissionMode` 变成 `plan`，`ExitPlanMode` 也随之进入工具表）；或自己用 SDK 导出的 `resolveSettings()` + `filterEscalatingDefaultMode()` 算好初始档位再显式传入。
 
-### 4. 打包：ESM 与 asar 两处必须处理，**真机打包未验**
+### 4. 打包：ESM 与 asar 两处必须处理（真机已实测通过）
+
+**2026-09-21 真机打包实测：安装包可用、app 内对话正常，未发现问题**（此前「真机打包未验」的字样已作废）。下面几条机制是打包前定下的约束，仍照此执行——真机通过只说明现状配置没问题，不代表可以放宽。
 
 已验证的机制（本机 Node 22.22.2 + 项目 `tools/build-electron.mjs` 的 esbuild 配置）：
 
@@ -113,7 +119,7 @@ app 内对话层改用官方 `@anthropic-ai/claude-agent-sdk` 前必须先确认
   - `…\claude.cmd` → 失败（`spawn EINVAL`，SDK 不启 shell）
   - **`…\node_modules\@anthropic-ai\claude-code\bin\claude.exe` → 成功**，且模型/配置与终端一致（`model = deepseek-v4.1-flash[1m]`，即用户 settings 里的值）。→ 「跟随本机 Claude Code」要指到 `bin\claude.exe`，并保留「找不到就回退 SDK 自带」的分支。
 - asar：现有 electron-builder 配置（`files: ["dist/**","dist-electron/**"]`）会把生产依赖的 `node_modules` **打进** `app.asar`（实测解析 `release/win-unpacked/resources/app.asar` 头部，含 `node_modules/`），且未配 `asarUnpack`，`resources/` 下没有 `app.asar.unpacked`。SDK 的平台包（含 237MB `claude.exe`）必须 `asarUnpack`，或用上面的 `pathToClaudeCodeExecutable` 指到 app 包外。
-- **未验**：本机 `node_modules` 未装 `electron`（只有 61 个顶层包），所以「electron-builder 产物里真跑通 SDK」这条本轮**验不了**，留到打包阶段；同理「asar 内 spawn 必然失败」是 Electron 已知限制，本轮未在真实 Electron 运行时复现。
+- **那两条「未验」的现状（2026-09-21 更新）**：① 「electron-builder 产物里真跑通 SDK」——**已真机打包实测通过**（当时本机 `node_modules` 未装 `electron`，只能做静态机制确认，故留到打包阶段）；② 「asar 内可执行文件没法 spawn」是 Electron 已知限制、不是本项目缺陷，对策就是上面的 `asarUnpack`，不必再在真机复现。
 
 ## 铁律
 
