@@ -8,6 +8,9 @@
 // （候选构造 / 响应解析）与 IO（fetch）分离，方便单测。
 const FETCH_TIMEOUT_MS = 15_000;
 const ERROR_BODY_MAX_CHARS = 300;
+/** 响应体上限：v2.0.0 同款防御（异常端点返回超大响应体时不吃光内存） */
+const MAX_BODY_BYTES = 10 * 1024 * 1024;
+const MAX_ERROR_BODY_BYTES = 64 * 1024;
 
 /** 拉到的单个模型（ownedBy 用于前端下拉按厂商分组，缺失归 "Other"） */
 export interface FetchedModel {
@@ -115,9 +118,11 @@ export function parseModelsResponse(body: string): FetchedModel[] {
   return out;
 }
 
+/** 按**码点**截断（Rust 的 `chars().take(300)`；按码元切会把代理对劈成半个字符） */
 function truncateBody(body: string): string {
-  if (body.length <= ERROR_BODY_MAX_CHARS) return body;
-  return body.slice(0, ERROR_BODY_MAX_CHARS) + "…";
+  const chars = [...body];
+  if (chars.length <= ERROR_BODY_MAX_CHARS) return body;
+  return chars.slice(0, ERROR_BODY_MAX_CHARS).join("") + "…";
 }
 
 interface TryResult {
@@ -125,6 +130,29 @@ interface TryResult {
   models?: FetchedModel[];
   retryable: boolean;
   error: string;
+}
+
+/** 读响应体并按字节数限长：**读完上限就停**（保留已读到的部分，与 v2.0.0 的
+ *  `.take(n).read_to_string()` 同语义——那边也是截断而非报错）。
+ *  ⚠️ usage-query.ts 里有一份逐字相同的拷贝（同 truncateBody），改这里要同步那份。 */
+async function readCapped(resp: Response, limit: number): Promise<string> {
+  const reader = resp.body?.getReader();
+  if (!reader) return "";
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    total += value.byteLength;
+    if (total > limit) {
+      chunks.push(value.subarray(0, Math.max(0, limit - (total - value.byteLength))));
+      await reader.cancel().catch(() => {});
+      break;
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString("utf8");
 }
 
 /** 单个候选地址探测：成功解析模型；404/405 可换下一候选；其余错误立即失败 */
@@ -145,14 +173,14 @@ async function fetchModelsFromUrl(url: string, apiKey: string): Promise<TryResul
       return { ok: false, retryable: true, error: `HTTP ${resp.status}` };
     }
     if (!resp.ok) {
-      const body = await resp.text().catch(() => "");
+      const body = await readCapped(resp, MAX_ERROR_BODY_BYTES).catch(() => "");
       return {
         ok: false,
         retryable: false,
         error: `HTTP ${resp.status}: ${truncateBody(body)}`,
       };
     }
-    const text = await resp.text();
+    const text = await readCapped(resp, MAX_BODY_BYTES);
     try {
       return { ok: true, models: parseModelsResponse(text), retryable: false, error: "" };
     } catch (e) {

@@ -11,6 +11,7 @@ import * as path from "node:path";
 import {
   SdkMessageTranslator,
   buildControlRequestEvent,
+  buildPermissionResult,
   buildUserMessage,
   parseUsage,
   toSdkPermissionMode,
@@ -330,5 +331,91 @@ describe("ChatManager 基础契约", () => {
     mgr.send("nope", "hi");
     mgr.respondToPermission("nope", "r", { kind: "deny", message: "x" });
     mgr.closeAll();
+  });
+});
+
+// ---------------- buildPermissionResult（canUseTool 的应答形状） ----------------
+// 这一层最容易踩的坑：AskUserQuestion 只回 {behavior:"allow"} 而不带 updatedInput.answers
+// 不报错，但等于「用户没选」——静默失效、没有错误码（docs/agent-sdk-interactive-tools.md）。
+// 这些用例就是那条分支的回归防线。
+
+describe("buildPermissionResult", () => {
+  const askInput = {
+    questions: [
+      { question: "优先做哪件事？", header: "优先级", options: [{ label: "补文档" }, { label: "加测试" }] },
+    ],
+  };
+
+  it("普通工具：allow 不带 updatedInput（别乱塞字段）", () => {
+    expect(buildPermissionResult("Bash", { command: "ls" }, { kind: "allow" })).toEqual({
+      behavior: "allow",
+    });
+  });
+
+  it("deny：原样透出 message", () => {
+    expect(buildPermissionResult("Bash", {}, { kind: "deny", message: "用户拒绝了该操作" })).toEqual({
+      behavior: "deny",
+      message: "用户拒绝了该操作",
+    });
+  });
+
+  it("提问 + 选项：带 updatedInput.answers（key 是题目完整文本）", () => {
+    const r = buildPermissionResult("AskUserQuestion", askInput, {
+      kind: "allow",
+      answers: { "优先做哪件事？": "加测试" },
+    });
+    expect(r.behavior).toBe("allow");
+    const ui = (r as { updatedInput?: Record<string, unknown> }).updatedInput!;
+    expect(ui.answers).toEqual({ "优先做哪件事？": "加测试" });
+    // 原 input（questions 数组）必须原样带上，CLI 要靠它对齐题目
+    expect(ui.questions).toEqual(askInput.questions);
+  });
+
+  it("提问 + 自由文本：带 updatedInput.response（未选选项直接打字）", () => {
+    const r = buildPermissionResult("AskUserQuestion", askInput, {
+      kind: "allow",
+      response: "先重构",
+    });
+    const ui = (r as { updatedInput?: Record<string, unknown> }).updatedInput!;
+    expect(ui.response).toBe("先重构");
+    expect(ui.answers).toBeUndefined();
+  });
+
+  it("提问 + 选项与自由文本同时给：两个都带上", () => {
+    const r = buildPermissionResult("AskUserQuestion", askInput, {
+      kind: "allow",
+      answers: { "优先做哪件事？": "补文档" },
+      response: "备注",
+    });
+    const ui = (r as { updatedInput?: Record<string, unknown> }).updatedInput!;
+    expect(ui.answers).toEqual({ "优先做哪件事？": "补文档" });
+    expect(ui.response).toBe("备注");
+  });
+
+  it("提问 + 既没选也没打字：明确 deny（而不是静默失效）", () => {
+    expect(buildPermissionResult("AskUserQuestion", askInput, { kind: "allow" }).behavior).toBe("deny");
+    // 空 answers 对象 / 空串 response 同样算「没选」
+    expect(
+      buildPermissionResult("AskUserQuestion", askInput, { kind: "allow", answers: {} }).behavior,
+    ).toBe("deny");
+    expect(
+      buildPermissionResult("AskUserQuestion", askInput, { kind: "allow", response: "" }).behavior,
+    ).toBe("deny");
+  });
+
+  it("用户的答案覆盖 input 里可能已有的同名字段", () => {
+    const polluted = { ...askInput, answers: { "优先做哪件事？": "旧值" } };
+    const r = buildPermissionResult("AskUserQuestion", polluted, {
+      kind: "allow",
+      answers: { "优先做哪件事？": "新值" },
+    });
+    const ui = (r as { updatedInput?: Record<string, unknown> }).updatedInput!;
+    expect(ui.answers).toEqual({ "优先做哪件事？": "新值" });
+  });
+
+  it("提问工具在 deny 时不受特殊处理", () => {
+    expect(
+      buildPermissionResult("AskUserQuestion", askInput, { kind: "deny", message: "用户取消了这次提问" }),
+    ).toEqual({ behavior: "deny", message: "用户取消了这次提问" });
   });
 });

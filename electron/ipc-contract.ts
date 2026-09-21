@@ -68,7 +68,8 @@ export interface IpcContract {
     permissionMode: ChatPermissionMode | null;
     token: string;
   };
-  chat_send: { sessionId: string; text: string | null; images: ChatImage[] };
+  /** text 为 "" + images 非空 = 纯图消息（与 v2.0.0 的 `text: String` 同形） */
+  chat_send: { sessionId: string; text: string; images: ChatImage[] };
   chat_interrupt: { sessionId: string };
   chat_set_permission_mode: { sessionId: string; mode: ChatPermissionMode };
   /** 权限 / 方案审批 / 提问的应答；denyMessage 仅拒绝时生效。
@@ -119,8 +120,11 @@ export interface IpcContract {
 
 export type IpcChannel = keyof IpcContract;
 
-/** 渲染进程可用的通道白名单（preload 运行时校验；新增通道必须同步这里） */
-export const IPC_CHANNELS: readonly IpcChannel[] = [
+/** 渲染进程可用的通道白名单（preload 运行时校验；新增通道必须同步这里）。
+ *  ⚠️ 必须写成 `as const` 的字面量元组，不能声明成 `readonly IpcChannel[]`——
+ *  后者会把元素类型拓宽成整个 `IpcChannel` 联合，下面的穷尽性断言就永远成立、形同虚设
+ *  （实测：漏掉一个通道时 tsc 仍然退出 0）。 */
+export const IPC_CHANNELS = [
   "list_projects",
   "load_config",
   "save_config",
@@ -177,4 +181,15 @@ export const IPC_CHANNELS: readonly IpcChannel[] = [
   "save_file",
   "window_hide",
   "window_destroy",
-];
+] as const;
+
+// ---------------- 白名单与契约的双向断言（编译期） ----------------
+// 只声明成类型数组挡不住「漏项」：新增契约键却忘了加进数组时 tsc 照样通过，
+// 运行期才在 preload 抛「不允许的 IPC 通道：x」。两个方向都钉住：
+/** 多余项：数组里出现契约之外的通道 → 赋值失败 */
+const _channelsInContract: readonly IpcChannel[] = IPC_CHANNELS;
+/** 漏项：契约里有而数组里没有的通道 → MissingChannel 非 never → 不可赋值给 never */
+type MissingChannel = Exclude<IpcChannel, (typeof IPC_CHANNELS)[number]>;
+const _channelsExhaustive: MissingChannel extends never ? true : never = true;
+void _channelsInContract;
+void _channelsExhaustive;

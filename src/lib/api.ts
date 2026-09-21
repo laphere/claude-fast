@@ -41,6 +41,9 @@ function invoke<T>(channel: IpcChannel, payload?: unknown): Promise<T> {
 /** 对话事件推送用的 token 序号：保证同窗口多 tab 的事件不乱串 */
 let chatTokenSeq = 0;
 
+/** 会话 id → 事件订阅的退订函数（chatClose 时调用，避免监听随 tab 关闭而泄漏） */
+const chatUnsubs = new Map<string, () => void>();
+
 /** 系统对话框的过滤器（对应 Tauri plugin-dialog 的 `{ name, extensions }`） */
 export interface DialogFilter {
   name: string;
@@ -142,14 +145,25 @@ export const api = {
     const token = `c${++chatTokenSeq}-${Date.now()}`;
     const off = bridge.onChatEvent(token, (event) => onEvent.onmessage?.(event as ChatEvent));
     try {
-      return await invoke<string>("chat_start", { projectPath, sessionFile, permissionMode, token });
+      const sessionId = await invoke<string>("chat_start", {
+        projectPath,
+        sessionFile,
+        permissionMode,
+        token,
+      });
+      // 记下退订函数：chatClose 时摘掉监听。不摘的话每开过一个对话 tab 就永久
+      // 留一个 ipcRenderer 监听（token 每次唯一，功能上无影响，纯泄漏）。
+      chatUnsubs.get(sessionId)?.();
+      chatUnsubs.set(sessionId, off);
+      return sessionId;
     } catch (e) {
       // 启动失败要立刻退订，否则这个 token 的监听会一直挂着
       off();
       throw e;
     }
   },
-  chatSend: (sessionId: string, text: string | null, images: ChatImage[] = []) =>
+  /** 发一条消息：text 为 "" 且带图片 = 纯图消息 */
+  chatSend: (sessionId: string, text: string, images: ChatImage[] = []) =>
     invoke("chat_send", { sessionId, text, images }),
   /** 中断当前轮（等价终端里的 Esc） */
   chatInterrupt: (sessionId: string) => invoke("chat_interrupt", { sessionId }),
@@ -176,7 +190,12 @@ export const api = {
       response,
     }),
   /** 关闭对话进程（关 stdin 优雅退出，超时强杀） */
-  chatClose: (sessionId: string) => invoke("chat_close", { sessionId }),
+  chatClose: (sessionId: string) => {
+    // 先退订再关进程：进程退出事件不需要再送到已经要销毁的 tab
+    chatUnsubs.get(sessionId)?.();
+    chatUnsubs.delete(sessionId);
+    return invoke("chat_close", { sessionId });
+  },
   // ---------- 供应商切换 ----------
   /** 供应商清单（首次调用自动把 live 配置收编为 default 供应商） */
   providerList: () => invoke<ProviderListState>("provider_list"),

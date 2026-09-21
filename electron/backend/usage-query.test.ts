@@ -20,6 +20,29 @@ function fakeResp(status: number, body: string): Response {
   } as unknown as Response;
 }
 
+/** 带真实流式 body 的替身（httpGetJson 走 readCapped，读的是 resp.body 而不是 text()） */
+function fakeStreamResp(status: number, body: string, chunkBytes = 64 * 1024): Response {
+  const bytes = Buffer.from(body, "utf8");
+  let off = 0;
+  return {
+    status,
+    ok: status >= 200 && status < 300,
+    body: {
+      getReader: () => ({
+        read: async () => {
+          if (off >= bytes.length) return { done: true, value: undefined };
+          const value = bytes.subarray(off, Math.min(off + chunkBytes, bytes.length));
+          off += value.byteLength;
+          return { done: false, value };
+        },
+        cancel: async () => {
+          off = bytes.length;
+        },
+      }),
+    },
+  } as unknown as Response;
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
 });
@@ -188,5 +211,47 @@ describe("queryUsage", () => {
     expect(r.supported).toBe(true);
     expect(r.success).toBe(false);
     expect(r.error).toContain("认证失败");
+  });
+
+  it("2xx 走流式读体（readCapped 的路径被覆盖）", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => fakeStreamResp(200, "{}")),
+    );
+    const r = await queryUsage("https://api.kimi.com/coding", "sk");
+    expect(r.supported).toBe(true);
+    // 读到的是合法 JSON，只是没有可识别的用量字段 → 形态不认识（而不是解析失败）
+    expect(r.success).toBe(false);
+    expect(r.error).toContain("响应形态不认识");
+  });
+
+  it("响应体超过上限：读完上限即停，不整段吃内存、不 hang", async () => {
+    // 12MB 全是 'x'（非 JSON）：若没有限长，这里会先读满 12MB 再解析失败
+    const huge = "x".repeat(12 * 1024 * 1024);
+    let cancelled = false;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        const base = fakeStreamResp(200, huge) as unknown as {
+          body: { getReader: () => Record<string, unknown> };
+        };
+        const reader = base.body.getReader();
+        return {
+          ...base,
+          body: {
+            getReader: () => ({
+              ...reader,
+              cancel: async () => {
+                cancelled = true;
+              },
+            }),
+          },
+        } as unknown as Response;
+      }),
+    );
+    const r = await queryUsage("https://api.kimi.com/coding", "sk");
+    expect(cancelled).toBe(true); // 读完上限后中止了读取
+    expect(r.success).toBe(false);
+    expect(r.error).toContain("响应解析失败"); // 截断后的内容不是合法 JSON
   });
 });

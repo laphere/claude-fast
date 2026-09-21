@@ -382,7 +382,7 @@ function registerIpc(): void {
     return sessionId;
   });
   handle("chat_send", (p) =>
-    chatManager.send(String(p.sessionId), p.text === null ? null : String(p.text), p.images ?? []));
+    chatManager.send(String(p.sessionId), String(p.text ?? ""), p.images ?? []));
   handle("chat_interrupt", (p) => chatManager.interrupt(String(p.sessionId)));
   handle("chat_set_permission_mode", (p) =>
     chatManager.setPermissionMode(String(p.sessionId), p.mode));
@@ -431,7 +431,10 @@ function registerIpc(): void {
   handle("quit_app", () => quitApp());
 
   // ---------- 开机自启动（Windows 注册表 Run 项 / macOS 登录项，官方 API） ----------
-  handle("autostart_supported", () => true);
+  // v2.0.0 是 `cfg!(any(windows, macos, linux))`；本 app 只发布 win/mac，这里刻意
+  // 不含 linux（Linux 上 setLoginItemSettings 的可用性依桌面环境而异，宁可不显示该项）。
+  // 硬编码 `() => true` 会让「不支持」的分支永远走不到，不是同一个意思。
+  handle("autostart_supported", () => process.platform === "win32" || process.platform === "darwin");
   handle("autostart_enabled", () => {
     try {
       return app.getLoginItemSettings().openAtLogin === true;

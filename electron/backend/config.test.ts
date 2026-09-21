@@ -108,9 +108,40 @@ describe("loadConfig", () => {
     );
     const c = loadConfig(tmp);
     expect(c.providers.length).toBe(2);
-    expect(c.providers[0]).toEqual({ id: "p1", name: "智谱", settingsConfig: "{}", extra: 1 });
+    // settingsConfig 归一到**对象**（字符串形态只是历史兼容入口）；
+    // websiteUrl/category 缺失补显式 null（与 v2.0.0 的 Option 序列化一致）
+    expect(c.providers[0]).toEqual({
+      id: "p1",
+      name: "智谱",
+      settingsConfig: {},
+      websiteUrl: null,
+      category: null,
+      extra: 1,
+    });
     expect(c.providers[1].id).toBe("");
     expect(c.pinnedSessions).toEqual([{ file: "C:\\s.jsonl", projectPath: "C:\\p" }]);
+  });
+
+  it("settingsConfig 是对象时原样保留（v2.0.0 落盘形态）", () => {
+    const live = { env: { ANTHROPIC_BASE_URL: "https://x", ANTHROPIC_AUTH_TOKEN: "k" } };
+    fs.writeFileSync(
+      path.join(tmp, "config.json"),
+      JSON.stringify({
+        providers: [{ id: "p1", name: "A", settingsConfig: live, websiteUrl: "https://x", category: "custom" }],
+      }),
+    );
+    const p = loadConfig(tmp).providers[0];
+    expect(p.settingsConfig).toEqual(live);
+    expect(p.websiteUrl).toBe("https://x");
+    expect(p.category).toBe("custom");
+  });
+
+  it("settingsConfig 是早期构建写坏的字符串时退化成空对象（而不是留着 [object Object]）", () => {
+    fs.writeFileSync(
+      path.join(tmp, "config.json"),
+      JSON.stringify({ providers: [{ id: "p1", name: "A", settingsConfig: "[object Object]" }] }),
+    );
+    expect(loadConfig(tmp).providers[0].settingsConfig).toEqual({});
   });
 });
 
@@ -181,7 +212,10 @@ describe("updateConfig / mutateConfig（读改写）", () => {
     const disk = readDisk();
     expect(disk.dark).toBe(true);
     expect(disk.closeAction).toBe("quit");
-    expect(disk.providers).toEqual([{ id: "p1", name: "智谱", settingsConfig: "{}" }]);
+    // settingsConfig 由历史字符串形态升格成对象；其余字段一字未动
+    expect(disk.providers).toEqual([
+      { id: "p1", name: "智谱", settingsConfig: {}, websiteUrl: null, category: null },
+    ]);
     expect(disk.currentProvider).toBe("p1");
     expect(disk.pinnedSessions).toEqual([{ file: "C:\\s.jsonl", projectPath: "D:\\a" }]);
     expect(disk.order).toEqual(["D:\\a"]);
@@ -195,8 +229,23 @@ describe("updateConfig / mutateConfig（读改写）", () => {
   });
 
   it("closeAction 非法值归一为 null", async () => {
+    // 先造一份有内容的盘（内容无变化时不落盘，见下一条用例）
+    fs.writeFileSync(path.join(tmp, "config.json"), JSON.stringify({ dark: false, closeAction: "quit" }));
     await updateConfig(tmp, { closeAction: "nonsense" as unknown as null });
     expect(readDisk().closeAction).toBe(null);
+  });
+
+  it("内容一字未变时不落盘（.bak 不被无意义轮换）", async () => {
+    fs.writeFileSync(path.join(tmp, "config.json"), JSON.stringify({ dark: false }));
+    fs.writeFileSync(path.join(tmp, "config.json.bak"), JSON.stringify({ dark: true, projects: ["X"] }));
+    const mainBefore = fs.readFileSync(path.join(tmp, "config.json"), "utf8");
+    const bakBefore = fs.readFileSync(path.join(tmp, "config.json.bak"), "utf8");
+    await updateConfig(tmp, { dark: false }); // 与盘上一致
+    await mutateConfig(tmp, (cfg) => {
+      cfg.projects = cfg.projects; // 空操作
+    });
+    expect(fs.readFileSync(path.join(tmp, "config.json"), "utf8")).toBe(mainBefore);
+    expect(fs.readFileSync(path.join(tmp, "config.json.bak"), "utf8")).toBe(bakBefore);
   });
 
   it("同一数据根的并发写被串行化，不会互相覆盖（无丢失更新）", async () => {

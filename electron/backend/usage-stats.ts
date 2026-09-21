@@ -217,7 +217,12 @@ function daysFromCivil(y: number, m: number, d: number): number {
   const yy = m <= 2 ? y - 1 : y;
   const era = truncDiv(yy >= 0 ? yy : yy - 399, 400);
   const yoe = yy - era * 400;
-  const doy = truncDiv(153 * m - 457, 5) + d - 1;
+  // ⚠️ 必须走 Hinnant 的 `mp = (m+9) % 12`：把 3–12 月的 `(153m-457)/5` 直接套到
+  // 1/2 月会得到 d-61 / d-31，而年调整（m<=2 时 y-1）照旧生效 → 1 月整批落到
+  // 上一年（实测 2026-01-15 → 2025-01-14）。下面 civilFromDays 是它的反函数
+  // （已经用的是 mp 形式），两者必须互为逆运算。
+  const mp = (m + 9) % 12;
+  const doy = truncDiv(153 * mp + 2, 5) + d - 1;
   const doe = yoe * 365 + truncDiv(yoe, 4) - truncDiv(yoe, 100) + doy;
   return era * 146097 + doe - 719468;
 }
@@ -547,16 +552,118 @@ function defaultLedger(): StatsLedger {
   return { version: 0, tzOffsetMinutes: 0, files: {} };
 }
 
+// ---------------- 台账磁盘形态 ----------------
+//
+// ⚠️ 字段名与 v2.0.0 的 `StatsLedger` / `LedgerEntry`（lib.rs:2547-2585，**没有**
+// `rename_all`）逐字一致：snake_case + 整数毫秒 mtime。两个 app 共用同一个数据根，
+// 台账也是共用的——本进程曾按 camelCase 写、按 camelCase 读，结果是
+// ①读不了 Tauri 版写的台账（条目字段全 undefined → 聚合时崩在 unmangleCandidates 上）
+// ②本进程写出的台账 v2.0.0 整本反序列化失败（serde 报错即 `unwrap_or_default()` 清零，
+//   version 随之归零 → 下次全量重扫，已删会话的历史永久丢失）。
+// 读的一侧两种拼写都收（本分支早期构建写过 camelCase），写的一侧只写 snake_case。
+
+const num = (v: unknown, fallback = 0): number =>
+  typeof v === "number" && Number.isFinite(v) ? v : fallback;
+const str = (v: unknown): string => (typeof v === "string" ? v : "");
+
+/** date/model → [tokens, messages] 的字典（过滤掉不是二元数字数组的值）。
+ *  两侧都取整：v2.0.0 是 `(u64, usize)`，小数会让它整本反序列化失败。 */
+function pairsFrom(v: unknown): Record<string, [number, number]> {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return {};
+  const out: Record<string, [number, number]> = {};
+  for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+    if (Array.isArray(val) && val.length >= 2) {
+      out[k] = [Math.trunc(num(val[0])), Math.trunc(num(val[1]))];
+    }
+  }
+  return out;
+}
+
+/** date → model → [tokens, messages] 的两层字典 */
+function nestedPairsFrom(v: unknown): Record<string, Record<string, [number, number]>> {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return {};
+  const out: Record<string, Record<string, [number, number]>> = {};
+  for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+    if (val && typeof val === "object" && !Array.isArray(val)) out[k] = pairsFrom(val);
+  }
+  return out;
+}
+
+/** 磁盘条目 → 内存条目（缺字段按 v2.0.0 的 `#[serde(default)]` 语义填默认值）。
+ *  没有任何「指向某个会话文件」的字段（sessionId/projectDir/mtime/size 全空）的条目
+ *  直接丢掉：v2.0.0 的 `LedgerEntry` 除 `per_day_model` 外**没有** `serde(default)`，
+ *  这种 `{}` 条目在那边会让**整本**反序列化失败清零（`unwrap_or_default`）。本分支按
+ *  字段兜底读，那就得把这类空壳挡在门外——否则统计里会多出一个空名项目的幽灵会话。 */
+function entryFromDisk(raw: unknown): LedgerEntry | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const o = raw as Record<string, unknown>;
+  const pick = (...keys: string[]): unknown => {
+    for (const k of keys) if (o[k] !== undefined) return o[k];
+    return undefined;
+  };
+  const e: LedgerEntry = {
+    mtime: num(pick("mtime")),
+    size: num(pick("size")),
+    sessionId: str(pick("session_id", "sessionId")),
+    projectDir: str(pick("project_dir", "projectDir")),
+    projectName: str(pick("project_name", "projectName")),
+    projectPath: str(pick("project_path", "projectPath")),
+    messages: num(pick("messages")),
+    tokens: num(pick("tokens")),
+    inputTokens: num(pick("input_tokens", "inputTokens")),
+    outputTokens: num(pick("output_tokens", "outputTokens")),
+    cacheReadTokens: num(pick("cache_read_tokens", "cacheReadTokens")),
+    cacheCreationTokens: num(pick("cache_creation_tokens", "cacheCreationTokens")),
+    perDay: pairsFrom(pick("per_day", "perDay")),
+    perModel: pairsFrom(pick("per_model", "perModel")),
+    perDayModel: nestedPairsFrom(pick("per_day_model", "perDayModel")),
+  };
+  const hasIdentity = e.sessionId !== "" || e.projectDir !== "" || e.mtime !== 0 || e.size !== 0;
+  return hasIdentity ? e : null;
+}
+
+/** 内存条目 → 磁盘条目（只有这一种写出形态，键序对齐 v2.0.0 的字段声明顺序）。
+ *  所有计数一律取整：早期构建写过浮点 `mtime`，直接回写会让 v2.0.0 的 u64 反序列化
+ *  失败（serde 报错 → `unwrap_or_default()` 把整本台账清零）。 */
+export function entryToDisk(e: LedgerEntry): Record<string, unknown> {
+  const t = (n: number): number => Math.trunc(n);
+  return {
+    mtime: t(e.mtime),
+    size: t(e.size),
+    session_id: e.sessionId,
+    project_dir: e.projectDir,
+    project_name: e.projectName,
+    project_path: e.projectPath,
+    messages: t(e.messages),
+    tokens: t(e.tokens),
+    input_tokens: t(e.inputTokens),
+    output_tokens: t(e.outputTokens),
+    cache_read_tokens: t(e.cacheReadTokens),
+    cache_creation_tokens: t(e.cacheCreationTokens),
+    per_day: e.perDay,
+    per_model: e.perModel,
+    per_day_model: e.perDayModel,
+  };
+}
+
 /** 读取台账：文件缺失/损坏时返回空台账（丢失的只是已删会话历史，现存文件会重建） */
 export function loadLedger(root: string, fs: FileSystemLike = nodeFs): StatsLedger {
   try {
     const s = fs.readFileSync(ledgerPath(root), "utf8");
-    const parsed = JSON.parse(s) as Partial<StatsLedger> | null;
-    if (!parsed || typeof parsed !== "object") return defaultLedger();
+    const parsed = JSON.parse(s) as Record<string, unknown> | null;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return defaultLedger();
+    const files: Record<string, LedgerEntry> = {};
+    const rawFiles = parsed.files;
+    if (rawFiles && typeof rawFiles === "object" && !Array.isArray(rawFiles)) {
+      for (const [k, v] of Object.entries(rawFiles as Record<string, unknown>)) {
+        const e = entryFromDisk(v);
+        if (e) files[k] = e;
+      }
+    }
     return {
-      version: typeof parsed.version === "number" ? parsed.version : 0,
-      tzOffsetMinutes: typeof parsed.tzOffsetMinutes === "number" ? parsed.tzOffsetMinutes : 0,
-      files: parsed.files && typeof parsed.files === "object" ? (parsed.files as Record<string, LedgerEntry>) : {},
+      version: num(parsed.version),
+      tzOffsetMinutes: num(parsed.tz_offset_minutes ?? parsed.tzOffsetMinutes),
+      files,
     };
   } catch {
     return defaultLedger();
@@ -567,7 +674,14 @@ export function loadLedger(root: string, fs: FileSystemLike = nodeFs): StatsLedg
 export function saveLedger(root: string, ledger: StatsLedger, fs: FileSystemLike = nodeFs): void {
   const p = ledgerPath(root);
   const tmp = `${p}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(ledger));
+  const onDisk = {
+    version: ledger.version,
+    tz_offset_minutes: ledger.tzOffsetMinutes,
+    files: Object.fromEntries(
+      Object.entries(ledger.files).map(([k, v]) => [k, entryToDisk(v)]),
+    ),
+  };
+  fs.writeFileSync(tmp, JSON.stringify(onDisk));
   fs.renameSync(tmp, p);
 }
 
@@ -826,7 +940,10 @@ export function aggregateStatsLedger(
     for (const { path: p, sessionId } of usageJsonlFiles(proj.dir, fs)) {
       const key = p;
       const st = fs.statSync(p);
-      const mtime = st?.mtimeMs ?? 0;
+      // 取整毫秒：v2.0.0 的 mtime 是 u64（serde 收不了小数——实测本机 234 个 jsonl
+      // 里 208 个 stat.mtimeMs 带小数），比对与落盘必须用同一个取整值，否则
+      // 每次启动都因 mtime 不等而全量重扫。
+      const mtime = Math.trunc(st?.mtimeMs ?? 0);
       const size = st?.size ?? 0;
       // 命中台账且未变更（且时区未变、版本一致）→ 无需重扫；项目显示名/路径随扫描刷新
       if (!fullRescan) {
@@ -908,14 +1025,46 @@ export interface GetUsageStatsOptions {
   execPath?: string;
 }
 
+/** 台账读改写的串行链（key = 数据根；与 config.ts 的 withConfigLock 同款，不嵌套取锁）。 */
+const LEDGER_CHAINS = new Map<string, Promise<unknown>>();
+
+function withLedgerLock<T>(root: string, fn: () => T): Promise<T> {
+  const key = path.resolve(root);
+  const prev = LEDGER_CHAINS.get(key) ?? Promise.resolve();
+  const next = prev.then(fn, fn);
+  LEDGER_CHAINS.set(
+    key,
+    next.then(
+      () => undefined,
+      () => undefined,
+    ),
+  );
+  return next;
+}
+
 /**
  * 全局使用统计（仪表盘）入口。口径：excluded 项目不统计；已删除项目仍统计（台账保留）；
  * 会话文件删除后其历史用量保留在台账中（统计 = 历史累计消耗）。
  *
  * 主代理接线时：前端传本地时区偏移（tzOffsetMinutes），本函数定位项目目录与数据根、
- * 读取 excluded、跑台账聚合并把台账落盘；并发由调用方串行化（参考 config 的写串行）。
+ * 读取 excluded、跑台账聚合并把台账落盘。
+ * ⚠️ 台账的 load → 聚合 → save 是一条**读改写**链，必须串行（本函数自己加锁，调用方
+ * 不需要再做）：两个并发调用各自 load、各自 save，后写的会把先写的成果覆盖掉
+ * （开发态 React.StrictMode 会让 StatsDialog 的 effect 跑两次，就够触发）。v2.0.0
+ * 侧由 `LEDGER_LOCK` 保证同一件事。
  */
 export async function getUsageStats(opts: GetUsageStatsOptions = {}): Promise<UsageStats> {
+  const lockKey =
+    opts.dataRoot ??
+    resolveRootDir(
+      opts.execPath ?? process.execPath,
+      opts.platform ?? process.platform,
+      opts.env ?? process.env,
+    ).root;
+  return withLedgerLock(lockKey, () => getUsageStatsInner(opts));
+}
+
+async function getUsageStatsInner(opts: GetUsageStatsOptions): Promise<UsageStats> {
   const platform = opts.platform ?? process.platform;
   const env = opts.env ?? process.env;
   const execPath = opts.execPath ?? process.execPath;

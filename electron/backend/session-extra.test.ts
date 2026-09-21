@@ -275,3 +275,32 @@ describe("listPinnedSessions", () => {
     expect(out[0].file).toBe(fileA);
   });
 });
+
+describe("搜索片段的下标口径（码元 vs 码点）", () => {
+  it("命中处前面有代理对时片段窗口不缩水", () => {
+    // hit 来自 indexOf（UTF-16 码元），切片按码点。混用会让窗口整体前移
+    // （实测 3 个 emoji 时少 3 个字符）。这里 5 个 emoji = 10 个码元。
+    const prefix = "😀".repeat(5);
+    const body = "a".repeat(50);
+    const p = writeSession(UUID_A, [line("user", `${prefix}${body}NEEDLE`)]);
+    const hits = searchSessionMessages(p, "NEEDLE", projects);
+    expect(hits.length).toBe(1);
+    // 命中前恰好保留 radius=40 个字符（不含 emoji，emoji 在窗口之外）
+    expect(hits[0].snippet).toBe("a".repeat(40) + "NEEDLE");
+  });
+
+  it("关键词本身含代理对时命中长度正确（不吞掉后面的字符）", () => {
+    const p = writeSession(UUID_A, [line("user", `${"x".repeat(10)}🔍needle${"y".repeat(10)}`)]);
+    const hits = searchSessionMessages(p, "🔍needle", projects);
+    expect(hits.length).toBe(1);
+    expect(hits[0].snippet).toContain("🔍needle");
+    expect(hits[0].snippet).toContain("y");
+  });
+
+  it("中文（BMP，1 码元 = 1 码点）行为不变", () => {
+    const p = writeSession(UUID_A, [line("user", `${"中文".repeat(30)}关键词`)]);
+    const hits = searchSessionMessages(p, "关键词", projects);
+    expect(hits.length).toBe(1);
+    expect(hits[0].snippet).toContain("关键词");
+  });
+});

@@ -5,8 +5,9 @@
 // 不注册 IPC——main 进程负责接线。所有清单写入都经 config.ts 的 mutateConfig
 // （读改写 + 持锁），绝不直接 loadConfig+saveConfig 重建（会清掉未知字段）。
 //
-// 注意：本分支的 ProviderInfo.settingsConfig 是「整份 settings.json 的 JSON 字符串」
-// （v2.0.0 Rust 侧是 serde_json::Value）。切换/回填时按需 解析↔字符串化。
+// 注意：ProviderInfo.settingsConfig 是**整份 settings.json 的 JSON 对象**
+// （与 v2.0.0 Rust 侧的 serde_json::Value、前端 src/types.ts 的 Record 一致）。
+// 字符串形态只是入口的兼容接受面（历史构建误写），落盘一律存对象。
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -14,10 +15,11 @@ import { spawn } from "node:child_process";
 import {
   loadConfig,
   mutateConfig,
+  normalizeSettingsConfig,
   type Config,
   type ProviderInfo,
 } from "./config";
-import { queryUsage, type UsageResult } from "./usage-query";
+import { detectVendor, queryUsage, type UsageResult } from "./usage-query";
 
 /** 供应商清单（供 list/save/... 命令返回） */
 export interface ProviderListState {
@@ -115,6 +117,18 @@ export function writeJsonAtomic(filePath: string, value: unknown): void {
   writeFileAtomic(filePath, JSON.stringify(value, null, 2));
 }
 
+/**
+ * 写 live：内容（sanitize 后的 JSON 值语义）与磁盘一致就不写。
+ * 与 config.ts 的 `mutateConfig` 同一条原则：`.bak` 是覆盖前的唯一退路，
+ * 不能因为一次「什么都没改」的保存/切换把它轮换成刚写出的同一份内容。
+ */
+function writeLiveIfChanged(settingsPath: string, next: Record<string, unknown>): void {
+  const sanitized = sanitizeClaudeSettings(next);
+  const current = readJsonObject(settingsPath);
+  if (current && deepEqual(sanitizeClaudeSettings(current), sanitized)) return;
+  writeJsonAtomic(settingsPath, sanitized);
+}
+
 // ---------------- sanitize ----------------
 
 /**
@@ -138,16 +152,21 @@ export function sanitizeClaudeSettings(value: unknown): unknown {
 
 // ---------------- settingsConfig 解析 ----------------
 
-/** settingsConfig 字符串 → 对象（非法 JSON 返回 null） */
-function parseSettingsConfig(s: string): Record<string, unknown> | null {
-  try {
-    const v = JSON.parse(s);
-    return v && typeof v === "object" && !Array.isArray(v)
-      ? (v as Record<string, unknown>)
-      : null;
-  } catch {
-    return null;
+/** settingsConfig → 对象（**严格**：对象原样、JSON 字符串解析、其余返回 null）。
+ *  入口校验用——非法输入必须报错，不能像 load 归一那样静默退化成空对象。 */
+function parseSettingsConfig(v: unknown): Record<string, unknown> | null {
+  if (v && typeof v === "object" && !Array.isArray(v)) return v as Record<string, unknown>;
+  if (typeof v === "string") {
+    try {
+      const parsed = JSON.parse(v);
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : null;
+    } catch {
+      return null;
+    }
   }
+  return null;
 }
 
 /**
@@ -166,12 +185,12 @@ function extractFingerprint(
     ? envObj.ANTHROPIC_BASE_URL
     : null;
   if (!base) return null;
-  let cred: string | null = null;
-  if (typeof envObj.ANTHROPIC_AUTH_TOKEN === "string") {
-    cred = envObj.ANTHROPIC_AUTH_TOKEN;
-  } else if (typeof envObj.ANTHROPIC_API_KEY === "string") {
-    cred = envObj.ANTHROPIC_API_KEY;
-  }
+  // 回退口径与 v2.0.0 的 `.get(AUTH_TOKEN).or_else(|| .get(API_KEY))` 一致：
+  // 只有 AUTH_TOKEN 这个**键不存在**时才看 API_KEY；键在但值不是字符串（如 null）
+  // 判为「无法判定」，不回退——否则两侧指纹会对同一个 live 得出不同结论。
+  const tokenPresent = Object.prototype.hasOwnProperty.call(envObj, "ANTHROPIC_AUTH_TOKEN");
+  const rawCred = tokenPresent ? envObj.ANTHROPIC_AUTH_TOKEN : envObj.ANTHROPIC_API_KEY;
+  const cred: string | null = typeof rawCred === "string" ? rawCred : null;
   return { base, cred };
 }
 
@@ -189,12 +208,14 @@ function fingerprintEqual(
  * 返回 null 表示 live 不存在（无配置可收编）。
  */
 export function importDefaultFrom(configDir: string): ProviderInfo | null {
-  const live = readJsonFile(claudeSettingsPathFrom(configDir));
+  // 只收编对象形态的 live。v2.0.0 的 Value 能存 null/数组/标量（照常收编），
+  // 本分支 settingsConfig 固定为对象——收编非对象只会让该条目的切换必然报错。
+  const live = readJsonObject(claudeSettingsPathFrom(configDir));
   if (live === null) return null;
   return {
     id: "default",
     name: "default",
-    settingsConfig: JSON.stringify(live),
+    settingsConfig: live,
     category: "custom",
   };
 }
@@ -215,8 +236,10 @@ export interface SwitchResult {
  * 切换核心（顺序固定，与 v2.0.0 一致）：
  * 1) 回填：live 整文件写回离任供应商（吸收用户在 Claude Code 里的手工修改；
  *    live 缺失/损坏仅告警不阻塞；live 指纹与离任条目不符时跳过回填仅告警）。
- * 2) current 指向目标（先记后写，写失败时 current 已指向新供应商）。
- * 3) sanitize 后整文件原子替换 live。
+ * 2) current 指向目标（函数用返回值报出，由调用方 decide 落盘时机）。
+ * 3) sanitize 后整文件原子替换 live；**这一步失败会抛错**，调用方随即中止，
+ *    配置里的 current 保持原值（不会留下「清单说切了、磁盘没切」的脱节状态）。
+ * 顺序上「写 live」在「落清单」之前，所以两侧不会互相谎报。
  * 切给自己时不回填（live 被存储配置整文件覆盖）。
  */
 export function switchProviderFrom(
@@ -235,16 +258,17 @@ export function switchProviderFrom(
     if (cur) {
       const slot = providers.find((p) => p.id === cur);
       if (slot) {
-        const live = readJsonFile(settingsPath);
+        // 同 importDefaultFrom：只吸收对象形态的 live（非对象/损坏一律 backfill_failed）
+        const live = readJsonObject(settingsPath);
         if (live !== null) {
           const liveFp = extractFingerprint(live);
-          const slotFp = extractFingerprint(parseSettingsConfig(slot.settingsConfig));
+          const slotFp = extractFingerprint(slot.settingsConfig);
           // 两侧指纹可判定且不一致 = live 已不属于离任供应商，跳过回填仅告警
           if (liveFp && slotFp && !fingerprintEqual(liveFp, slotFp)) {
             warnings.push(`backfill_skipped:${cur}`);
           } else {
             // 指纹一致（吸收手工修改）或无法判定（无 env 等退化情况）→ 整文件吸收
-            slot.settingsConfig = JSON.stringify(live);
+            slot.settingsConfig = live;
           }
         } else {
           warnings.push(`backfill_failed:${cur}`);
@@ -254,13 +278,22 @@ export function switchProviderFrom(
   }
 
   const newCurrent = targetId;
+  // sanitize 后整文件写盘（v2.0.0 provider.rs:194 同款，只有这一条路）。
+  // ⚠️ 不做「解析不了就原样写入」的保底：条目值曾是字符串，那条保底会把
+  // settings.json 整份写成非 JSON 的废文本（实测写入 "[object Object]"）；
+  // v2.0.0 侧条目是 Value，原样写仍是合法 JSON，所以它不需要这条分支。
+  // 注：走 providerSwitchFrom 进来的条目都已过 loadConfig 归一（非对象形态在上游就变成
+  // 空对象了），所以生产路径命中的是下面那条空配置守卫；这一行是给「直接调用本函数、
+  // 未经归一」的调用方兜底（单测就是这么用的）。
   const targetObj = parseSettingsConfig(target.settingsConfig);
-  // sanitize 后整文件写盘；无法解析则原样写入（保底，正常不会发生）
-  const content =
-    targetObj !== null
-      ? JSON.stringify(sanitizeClaudeSettings(targetObj), null, 2)
-      : target.settingsConfig;
-  writeFileAtomic(settingsPath, content);
+  if (targetObj === null) throw new Error(`供应商 ${targetId} 的配置不是 JSON 对象，已中止切换`);
+  // 空配置同样拒绝：settings.json 空对象 = 丢掉 base_url 与凭证、终端里的 claude 直接不可用。
+  // 这类条目只会由「早期构建把对象 String() 成 "[object Object]" 写盘、本进程读回时空对象兜底」
+  // 产生（见 config.ts 的 normalizeSettingsConfig），用空的覆盖 live 只会造成破坏。
+  if (Object.keys(targetObj).length === 0) {
+    throw new Error(`供应商 ${targetId} 的配置为空，拒绝用它覆盖 settings.json`);
+  }
+  writeLiveIfChanged(settingsPath, targetObj);
   return { warnings, currentId: newCurrent };
 }
 
@@ -274,12 +307,11 @@ export function reanchorCurrentFrom(
   providers: ProviderInfo[],
   currentId: string | null,
 ): string | null {
-  const live = readJsonFile(claudeSettingsPathFrom(configDir));
+  const live = readJsonObject(claudeSettingsPathFrom(configDir));
   if (live === null) return currentId;
-  const matched = providers.filter((p) => {
-    const obj = parseSettingsConfig(p.settingsConfig);
-    return obj !== null && deepEqual(sanitizeClaudeSettings(obj), live);
-  });
+  const matched = providers.filter((p) =>
+    deepEqual(sanitizeClaudeSettings(p.settingsConfig), live),
+  );
   if (matched.length === 1) {
     if (currentId === matched[0].id) return currentId;
     return matched[0].id;
@@ -488,9 +520,13 @@ export function parseCcswitchSql(
     if (b[i] !== 0x28) continue; // (
     i++;
     const columns: string[] = [];
+    let malformedCols = false;
     for (;;) {
       const col = parseSqlIdent(b, i);
-      if (!col) break;
+      if (!col) {
+        malformedCols = true;
+        break;
+      }
       columns.push(col[0]);
       i = col[1];
       i = skipWs(b, i);
@@ -498,8 +534,14 @@ export function parseCcswitchSql(
       else if (b[i] === 0x29) {
         i++;
         break;
-      } else break;
+      } else {
+        malformedCols = true;
+        break;
+      }
     }
+    // 列清单残缺同样整条作废（v2.0.0 provider.rs:389/398 两处都是 `continue 'stmts`）：
+    // 列名表截断后照样能读到后面的 VALUES，于是按残缺列名去取值——宁可整条不导。
+    if (malformedCols) continue;
 
     i = skipWs(b, i);
     if (b.slice(i, i + 6).toString("utf8").toUpperCase() !== "VALUES") continue;
@@ -510,9 +552,13 @@ export function parseCcswitchSql(
       if (b[i] !== 0x28) break; // (
       i++;
       const values: SqlVal[] = [];
+      let malformed = false;
       for (;;) {
         const v = parseSqlValue(b, i);
-        if (!v) break;
+        if (!v) {
+          malformed = true;
+          break;
+        }
         values.push(v[0]);
         i = v[1];
         i = skipWs(b, i);
@@ -520,8 +566,15 @@ export function parseCcswitchSql(
         else if (b[i] === 0x29) {
           i++;
           break;
-        } else break;
+        } else {
+          malformed = true;
+          break;
+        }
       }
+      // 取值失败 / 分隔符异常 → 整条语句作废（v2.0.0 的 `continue 'stmts`：本语句后面
+      // 几个元组一起丢，且不告警）。残缺的 values 交给 handleSqlRow 会按列名错位取值，
+      // 把半行当有效数据写进清单。
+      if (malformed) break;
       handleSqlRow(columns, values, providers, (id) => {
         currentId = id;
       }, warnings);
@@ -575,6 +628,12 @@ function handleSqlRow(
     warnings.push(`跳过「${name.v}」：settings_config 不是合法 JSON`);
     return;
   }
+  // 本分支的存储形态固定为对象（v2.0.0 的 Value 能存数组/标量）。收进来只会变成
+  // 一条「切换必被拒」的空条目，不如在这里就跳过并告警。
+  if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
+    warnings.push(`跳过「${name.v}」：settings_config 不是 JSON 对象`);
+    return;
+  }
 
   if (providers.some((p) => p.id === id.v)) return; // 同批次内按 id 去重
 
@@ -585,8 +644,8 @@ function handleSqlRow(
   providers.push({
     id: id.v,
     name: name.v,
-    // 本分支 settingsConfig 是字符串：把 JSON 对象字符串化整份保留
-    settingsConfig: JSON.stringify(settings),
+    // 整份保留（存储形态是对象，同 v2.0.0 的 Value）
+    settingsConfig: normalizeSettingsConfig(settings),
     ...(websiteUrl && websiteUrl.t === "str"
       ? { websiteUrl: websiteUrl.v }
       : {}),
@@ -636,10 +695,22 @@ export async function providerSaveFrom(
   if (!name) throw new Error("供应商名称不能为空");
   const parsed = parseSettingsConfig(input.settingsConfig);
   if (parsed === null) throw new Error("settingsConfig 必须是 JSON 对象");
+  // id 为空 = 新增（生成 uuid）。非字符串（含 slug 化的 undefined）一律当空，
+  // 否则会落盘一条 id 为 undefined 的条目、后续切换/删除都找不到它。
+  const inputId = typeof input.id === "string" ? input.id : "";
 
   const cfg = await mutateConfig(root, (c) => {
-    const savedCurrent = input.id !== "" && c.currentProvider === input.id;
-    const entry: ProviderInfo = { ...input, id: input.id, name: input.name };
+    const savedCurrent = inputId !== "" && c.currentProvider === inputId;
+    // 落盘一律存**对象**（入口兼容字符串，但存储形态只有一种）
+    const entry: ProviderInfo = {
+      ...input,
+      id: inputId,
+      // 存调用方给的原值（v2.0.0 同样只用 trim 后的副本判空，不改写 name 本身）
+      name: input.name,
+      settingsConfig: parsed,
+      websiteUrl: typeof input.websiteUrl === "string" ? input.websiteUrl : null,
+      category: typeof input.category === "string" ? input.category : null,
+    };
     if (entry.id === "") {
       entry.id = randomUUID();
       c.providers.push(entry);
@@ -650,8 +721,12 @@ export async function providerSaveFrom(
     }
     // 先写 live 后落清单：live 写失败时清单未动，两侧不脱节
     if (savedCurrent) {
-      const settingsPath = claudeSettingsPathFrom(configDir);
-      writeJsonAtomic(settingsPath, sanitizeClaudeSettings(parsed));
+      // 与切换同一条守卫：空配置写进 live = 丢掉 base_url 与凭证、终端里的 claude 直接
+      // 不可用。表单的 JSON 编辑器只校验「是对象」，用户把内容删空存 {} 就走到这里。
+      if (Object.keys(parsed).length === 0) {
+        throw new Error("配置为空，拒绝用它覆盖 settings.json（请先填好再保存为当前供应商）");
+      }
+      writeLiveIfChanged(claudeSettingsPathFrom(configDir), parsed);
     }
   });
   return { providers: cfg.providers, currentId: cfg.currentProvider };
@@ -786,7 +861,7 @@ export async function providerQueryUsageFrom(
       error: `供应商 ${id} 不存在`,
     };
   }
-  const env = parseSettingsConfig(p.settingsConfig)?.env;
+  const env = p.settingsConfig.env;
   if (!env || typeof env !== "object" || Array.isArray(env)) {
     return {
       success: false,
@@ -814,19 +889,45 @@ export async function providerQueryUsageFrom(
       error: "供应商配置缺少 ANTHROPIC_BASE_URL",
     };
   }
-  return queryUsage(base, key ?? "");
+  // 只判 base 不够：缺 key 时照样发请求，回来的是 401，文案会指向「Key 无效」这个
+  // 错误原因（真实原因是从没配过）。v2.0.0 两个都判（lib.rs:890-898）且返回
+  // **supported:true + vendor**——前端对 supported:false 是整行 `aria-hidden` 隐藏
+  // （连 error 一起不渲染），回 supported:false 等于这条提示谁都看不见。
+  if (!key) {
+    const vendor = detectVendor(base);
+    return {
+      success: false,
+      supported: vendor !== null,
+      vendor,
+      data: [],
+      error: "未配置接入地址或 API Key",
+    };
+  }
+  return queryUsage(base, key);
 }
 
 // ---------------- openUrl ----------------
 
 /**
  * 用系统默认浏览器打开外部链接（官网 / 获取 API Key）。Windows 走 explorer.exe
- * 免 cmd 转义（避免 URL 里的 & 等被 shell 解释），macOS 走 open。
+ * 免 cmd 转义（避免 URL 里的 & 等被 shell 解释），macOS 走 open（Linux 走 xdg-open）。
+ * ⚠️ 只放行 http/https：`spawn` 不启 shell，但 `explorer.exe`/`open` 会把参数当
+ * 「要打开的路径」处理，其它 scheme（file:、自定义协议）等于把任意路径交给系统外壳。
+ * v2.0.0 同样只放行这两个 scheme（lib.rs:909-927）。
  */
 export function openUrl(url: string): void {
+  let scheme = "";
+  try {
+    scheme = new URL(url).protocol;
+  } catch {
+    return; // 不是合法 URL：不打开
+  }
+  if (scheme !== "http:" && scheme !== "https:") return;
   if (process.platform === "win32") {
     spawn("explorer.exe", [url], { detached: true, stdio: "ignore" }).unref();
-  } else {
+  } else if (process.platform === "darwin") {
     spawn("open", [url], { detached: true, stdio: "ignore" }).unref();
+  } else {
+    spawn("xdg-open", [url], { detached: true, stdio: "ignore" }).unref();
   }
 }

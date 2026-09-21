@@ -72,12 +72,13 @@ export type ChatEvent =
   | { type: "exited"; code: number | null; stderrTail?: string | null }
   | { type: "error"; message: string };
 
-/** 前端对一条权限/方案/提问请求的应答（主代理从 IPC 收来后调 respondToPermission） */
+/** 前端对一条权限/方案/提问请求的应答（主代理从 IPC 收来后调 respondToPermission）。
+ *  ⚠️ 这里**没有**「批准并自动接受编辑」档位：那种档位由前端在 allow 之后另发一条
+ *  `chat_set_permission_mode` 完成（见 ChatView 的 respondPlan）。曾经本类型带过
+ *  `acceptEdits?: boolean`，但契约与 main 进程都不传它，是个永不触发的死参数。 */
 export type PermissionDecision =
   | {
       kind: "allow";
-      /** 方案审批选「批准并自动接受编辑」时置位（allow 下发后再热切档位，顺序不能反） */
-      acceptEdits?: boolean;
       /** AskUserQuestion 的选项答案：key = 题目**完整文本**（不是 header），多选逗号分隔。
        *  必须回传，否则等于「用户没选」——不报错但静默失效 */
       answers?: Record<string, string>;
@@ -103,6 +104,9 @@ const MAX_IMAGE_BYTES = 4.5 * 1024 * 1024;
 
 /** 方案审批工具名：计划模式下 CLI 调它请求退出计划模式，方案正文在 input.plan */
 const EXIT_PLAN_TOOL = "ExitPlanMode";
+
+/** 提问工具名：答案必须经 updatedInput.answers 回传，否则静默失效 */
+const ASK_TOOL = "AskUserQuestion";
 
 const ZERO_USAGE: ChatUsage = {
   inputTokens: 0,
@@ -190,6 +194,37 @@ export function buildControlRequestEvent(
     return { type: "plan_approval", requestId, plan };
   }
   return { type: "permission_request", requestId, toolName, input };
+}
+
+/**
+ * 权限/方案/提问请求的应答 → SDK 的 `PermissionResult`（纯函数，见配套单测）。
+ *
+ * ⚠️ `AskUserQuestion` 的答案**必须**经 `updatedInput.answers` 回传：只回
+ * `{behavior:"allow"}` 不报错，但模型收到的是「问题已发出，但你没有选择任何选项」——
+ * 静默失效、没有任何错误码（见 docs/agent-sdk-interactive-tools.md）。同一条路径上
+ * `updatedInput.response`（用户不选选项、直接打字的自由文本）已实测生效。
+ */
+export function buildPermissionResult(
+  toolName: string,
+  input: Record<string, unknown>,
+  decision: PermissionDecision,
+): PermissionResult {
+  if (decision.kind === "deny") return { behavior: "deny", message: decision.message };
+  if (toolName !== ASK_TOOL) return { behavior: "allow" };
+
+  const answers = decision.answers ?? {};
+  const hasAnswers = Object.keys(answers).length > 0;
+  const hasResponse = typeof decision.response === "string" && decision.response.length > 0;
+  if (!hasAnswers && !hasResponse) {
+    // 既没选选项也没打字：与其静默失效，不如明确拒绝——模型能据此重问一次
+    return { behavior: "deny", message: "用户未选择任何选项" };
+  }
+  // 展开原 input 再覆盖：CLI 侧按 `question` 完整文本取答案，原 input 里的
+  // questions 数组必须原样带上（用户答案优先于 input 里可能已有的同名字段）
+  const updated: Record<string, unknown> = { ...input };
+  if (hasAnswers) updated.answers = answers;
+  if (hasResponse) updated.response = decision.response;
+  return { behavior: "allow", updatedInput: updated };
 }
 
 /**
@@ -495,22 +530,30 @@ export function defaultPermissionMode(
  * （无扩展名 shim 会 failed to launch、claude.cmd 会 spawn EINVAL）。
  * 找不到就返回 undefined —— 上层不传 pathToClaudeCodeExecutable，SDK 用自带的 claude.exe。
  */
-export function findClaudeExecutable(): string | undefined {
-  const binName = process.platform === "win32" ? "claude.exe" : "claude";
-  const localCandidate = path.join(
-    process.cwd(),
-    "node_modules",
-    "@anthropic-ai",
-    "claude-code",
-    "bin",
-    binName,
-  );
-  if (fs.existsSync(localCandidate)) return localCandidate;
-  // 全局 npm 安装目录
+export function findClaudeExecutable(
+  platform: NodeJS.Platform = process.platform,
+): string | undefined {
+  const binName = platform === "win32" ? "claude.exe" : "claude";
+  const probe = (prefix: string): string | undefined => {
+    if (!prefix) return undefined;
+    const p = path.join(prefix, "@anthropic-ai", "claude-code", "bin", binName);
+    return fs.existsSync(p) ? p : undefined;
+  };
+  // ① 开发目录：node_modules 里装了 claude-code 时直接命中
+  const local = probe(path.join(process.cwd(), "node_modules"));
+  if (local) return local;
+  // ② 全局 npm 安装目录。⚠️ Windows 上必须带 `shell: true`：npm 是 npm.cmd，
+  // execFileSync 不启 shell 时连命令都找不到（实测 `spawnSync npm ENOENT`），错误被
+  // 下面的 catch 吞掉后这条分支**等于不存在**——「跟随本机 Claude Code」会静默退化成
+  // SDK 自带的那份 claude.exe。参数是常量，走 shell 没有注入面。
   try {
-    const prefix = execFileSync("npm", ["root", "-g"], { encoding: "utf8", timeout: 5000 }).trim();
-    const globalCandidate = path.join(prefix, "@anthropic-ai", "claude-code", "bin", binName);
-    if (fs.existsSync(globalCandidate)) return globalCandidate;
+    const prefix = execFileSync("npm", ["root", "-g"], {
+      encoding: "utf8",
+      timeout: 5000,
+      shell: platform === "win32",
+    }).trim();
+    const global = probe(prefix);
+    if (global) return global;
   } catch {
     // 忽略：回退到 SDK 自带可执行文件
   }
@@ -575,8 +618,14 @@ class ChatSession {
   private abort = new AbortController();
   private query: Query | undefined;
   private child: SpawnedProcess | undefined;
-  private started = false;
+  /** 启动中的 promise（并发 send 共用同一次启动；失败时清空以便重试） */
+  private starting: Promise<void> | null = null;
   private exited = false;
+
+  /** 进程是否已退出（ChatManager.send 据此拒绝往死会话里塞消息） */
+  hasExited(): boolean {
+    return this.exited;
+  }
   private pendingPermissions = new Map<string, (d: PermissionDecision) => void>();
 
   constructor(id: string, opts: StartChatOptions, emit: (e: ChatEvent) => void) {
@@ -587,11 +636,27 @@ class ChatSession {
     this.emit = emit;
   }
 
-  /** 首条消息才真正 spawn 会话（懒启动） */
+  /**
+   * 首条消息才真正 spawn 会话（懒启动）。
+   * ⚠️ 失败必须可重试：早先「先置 started 再 await」，一次失败（模块解析不上、
+   * SDK 起不来）之后这个会话就永久哑掉——ensureStarted 立刻 return、消息进队列
+   * 无人消费，而 chat_send 的 IPC 还照常返回成功，用户看到「发消息毫无反应」。
+   * 现在以 `this.query` 为成功标志，`starting` 兼作并发去重（两次并发 send 共用同一次启动）。
+   */
   async ensureStarted(): Promise<void> {
-    if (this.started) return;
-    this.started = true;
+    if (this.query) return;
+    if (this.starting) return this.starting;
+    const p = this.start();
+    this.starting = p;
+    try {
+      await p;
+    } catch (e) {
+      this.starting = null; // 允许重试（下一次 send 会重新起进程）
+      throw e;
+    }
+  }
 
+  private async start(): Promise<void> {
     // 动态 import：SDK 是 ESM-first，主进程打成 CJS，不能用顶层静态 import（会进 bundle 炸）。
     const sdk = await import("@anthropic-ai/claude-agent-sdk");
 
@@ -642,6 +707,8 @@ class ChatSession {
       cwd: o.cwd,
       env: o.env as NodeJS.ProcessEnv,
       signal: o.signal,
+      // 与全仓其它 spawn 一致：Windows 上不加这个会为控制台子进程另开一个窗口
+      windowsHide: true,
     });
     child.on("exit", (code) => this.onExit(code ?? null));
     this.child = child as unknown as SpawnedProcess;
@@ -689,40 +756,15 @@ class ChatSession {
 
     // 原生请求会一直阻塞在 control 协议上、不会超时，所以每条都必须有应答：
     // 用 Promise 一直等前端 respondToPermission（切走计划模式 / 卡在场时发消息也会补 deny）。
+    // 注意：请求被 CLI 撤销（interrupt → control_cancel_request）时这条 promise **不会**
+    // 被 resolve，SDK 紧接着会把 cancel 事件转发给前端收卡；此处留下的待定 promise
+    // 只占一次内存，不会阻塞消息泵（SDK 对 control_request 是 fire-and-forget）。
     const decision = await new Promise<PermissionDecision>((resolve) => {
       this.pendingPermissions.set(requestId, resolve);
     });
     this.pendingPermissions.delete(requestId);
 
-    if (decision.kind === "deny") {
-      return { behavior: "deny", message: decision.message };
-    }
-
-    // allow
-    if (decision.acceptEdits) {
-      // ⚠️ 顺序不能反：先返回 allow（CLI 批准 ExitPlanMode 后会自己恢复 prePlanMode），
-      // 再切到 acceptEdits，否则会被 CLI 自动恢复动作盖掉（v2.0.0 踩过的坑）。
-      // 用 setTimeout 把 setPermissionMode 推到 allow 的 control_response 下发之后。
-      setTimeout(() => {
-        void this.query?.setPermissionMode("acceptEdits").catch(() => {});
-      }, 0);
-    }
-
-    // ⚠️ 提问类工具的答案**必须**经 `updatedInput.answers` 回传：只回 `{behavior:"allow"}`
-    // 不报错，但模型收到的是「问题已发出，但你没有选择任何选项」——静默失效，没有任何错误码
-    // （见 docs/agent-sdk-interactive-tools.md）。key 用题目的完整文本，不是 header。
-    if (toolName === "AskUserQuestion") {
-      const answers = decision.answers ?? {};
-      const updated: Record<string, unknown> = { ...input };
-      if (Object.keys(answers).length > 0) updated.answers = answers;
-      if (decision.response) updated.response = decision.response;
-      if (Object.keys(updated).length === Object.keys(input).length) {
-        // 既没选选项也没打字：与其静默失效，不如明确拒绝——模型能据此重问一次
-        return { behavior: "deny", message: "用户未选择任何选项" };
-      }
-      return { behavior: "allow", updatedInput: updated };
-    }
-    return { behavior: "allow" };
+    return buildPermissionResult(toolName, input, decision);
   }
 
   /** 前端应答（主代理从 IPC 转来） */
@@ -766,12 +808,18 @@ export class ChatManager {
     this.sessions.set(sessionId, session);
   }
 
-  /** 发送一条消息（文本 + 可选图片）。懒启动进程；图片超限转 error 事件报前端 */
-  async send(sessionId: string, text: string | null, images?: ChatImage[]): Promise<void> {
+  /** 发送一条消息（文本 + 可选图片；text 为 "" 即纯图消息）。懒启动进程；图片超限转 error 事件报前端。
+   *  启动失败会**抛出**（IPC 层转成 reject 让前端提示），不会静默丢掉这条消息。 */
+  async send(sessionId: string, text: string, images?: ChatImage[]): Promise<void> {
     const session = this.sessions.get(sessionId);
     if (!session) {
       this.emit(sessionId, { type: "error", message: "会话不存在" });
       return;
+    }
+    // 进程已退出：再发就是往一条没人消费的队列里塞（chat_send 还会照常返回成功）。
+    // 前端在 exited 态本来就不让发，这里是兜住竞态：报错比静默丢消息好。
+    if (session.hasExited()) {
+      throw new Error("会话进程已退出，请重新打开对话");
     }
     let userMsg: SDKUserMessage;
     try {

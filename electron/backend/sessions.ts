@@ -25,7 +25,7 @@ export interface SessionInfo {
 }
 
 export interface ContentBlock {
-  /** text | thinking | tool_use | tool_result */
+  /** text | thinking | tool_use | tool_result | image */
   kind: string;
   text?: string | null;
   /** tool_use 工具名 */
@@ -35,6 +35,10 @@ export interface ContentBlock {
   /** tool_result 关联的 tool_use id */
   toolUseId?: string | null;
   isError?: boolean | null;
+  /** image 块的 media_type（image/png 等） */
+  mediaType?: string | null;
+  /** image 块的 base64 裸数据（无 data: 前缀） */
+  data?: string | null;
 }
 
 export interface SessionMessage {
@@ -353,6 +357,28 @@ export function parseContentBlocks(
             input: null,
             toolUseId: asString(b.tool_use_id),
             isError: typeof b.is_error === "boolean" ? b.is_error : null,
+          });
+        }
+      } else if (ty === "image") {
+        // 用户贴图/拖图的消息在 jsonl 里是 image 块（source.type=base64）。
+        // 少这一支的后果：查看器里历史图片整块消失（ChatView 本来就会渲染
+        // kind === "image"，只是后端从来不产出），导出 markdown 的图片占位也成了死代码。
+        // 判据逐字对齐 v2.0.0 的 parse_content_blocks（lib.rs:1723-1736）：只看
+        // source.media_type / source.data **两者都非空**，不额外要求 source.type——
+        // 否则会为一个空壳 image 块多导出一行「🖼️ [图片]」。
+        const src = (b.source ?? {}) as Json;
+        const mediaType = asString(src.media_type);
+        const data = asString(src.data);
+        if (mediaType && data) {
+          out.push({
+            kind: "image",
+            text: null,
+            name: null,
+            input: null,
+            toolUseId: null,
+            isError: null,
+            mediaType,
+            data,
           });
         }
       }

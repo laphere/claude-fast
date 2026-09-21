@@ -4,9 +4,10 @@
 // render_session_markdown / purge_claude_project_data / list_pinned_sessions）。
 //
 // 只新建本文件，不改动任何既有模块；可复用 sessions.ts / config.ts / mangle.ts /
-// text.ts / paths.ts 的导出，但会话文件校验一律走本文件的 resolveSessionFile——
-// 因为它会先 canonicalize 再做前缀判断（见下方铁律注释），而 sessions.ts 的
-// validateSessionFile 用的是 path.relative 词法比较，不满足「规范化 `..`」要求。
+// text.ts / paths.ts 的导出，会话文件校验一律走本文件的 resolveSessionFile——
+// 它会先 canonicalize 再做前缀判断（见下方铁律注释）。
+// 注：sessions.ts 的 validateSessionFile 现在也先 realpath 再比较，两份**语义等价**；
+// 保留自建的一份是把「文件必须存在」「返回规范化路径」等要求写在一处，改任一处都要同步。
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -111,13 +112,16 @@ function resolveSessionFile(
 
 /**
  * 构造命中上下文片段：命中处前后各 radius 个字符切片并单行化。
- * Rust 用 floor/ceil_char_boundary 防 panic；这里用代码点切片（[...str]），
- * 对 ASCII 测试内容完全等价，偶发代理对边界漂移可接受。
+ * ⚠️ 两套下标不能混用：`hit` 来自 `indexOf`（UTF-16 码元），切片是按**码点**做的
+ * （`[...str]`）。命中处前面若有代理对（emoji、部分生僻字），直接用码元下标去切
+ * 码点数组会让整个窗口前移——实测 `"😀😀😀" + "a"×50 + "NEEDLE"` 少了 3 个字符。
+ * 故先把 hit 与关键词长度都折算成码点数。
  */
-function makeSnippet(text: string, hit: number, kwLen: number, radius: number): string {
+function makeSnippet(text: string, hit: number, kw: string, radius: number): string {
   const chars = [...text];
-  const start = Math.max(0, hit - radius);
-  const end = Math.min(chars.length, hit + kwLen + radius);
+  const startCp = [...text.slice(0, hit)].length;
+  const start = Math.max(0, startCp - radius);
+  const end = Math.min(chars.length, startCp + [...kw].length + radius);
   return chars.slice(start, end).join("").replace(/\n/g, " ");
 }
 
@@ -162,7 +166,7 @@ export function searchSessionMessages(
         index,
         blockIndex,
         kind: m.kind,
-        snippet: makeSnippet(hay, hit, kw.length, 40),
+        snippet: makeSnippet(hay, hit, kw, 40),
       });
       if (out.length >= MAX_SEARCH_HITS) return out; // 命中上限，提前结束
     }

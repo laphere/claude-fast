@@ -7,12 +7,20 @@ import {
   type FetchedModel,
 } from "./model-fetch";
 
-/** 造一个最小 Response 替身（只用到 status / ok / text） */
+/** 造一个最小 Response 替身（用到 status / ok / body.getReader——读取走流式限长） */
 function fakeResp(status: number, body: string): Response {
+  const bytes = Buffer.from(body, "utf8");
+  let sent = false;
   return {
     status,
     ok: status >= 200 && status < 300,
-    text: async () => body,
+    body: {
+      getReader: () => ({
+        read: async () =>
+          sent ? { done: true, value: undefined } : ((sent = true), { done: false, value: bytes }),
+        cancel: async () => undefined,
+      }),
+    },
   } as unknown as Response;
 }
 

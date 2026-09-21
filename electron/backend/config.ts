@@ -2,13 +2,15 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-/** 供应商条目（供应商切换功能；settingsConfig = 切换时整文件替换 ~/.claude/settings.json 的内容） */
+/** 供应商条目（供应商切换功能；settingsConfig = 切换时整文件替换 ~/.claude/settings.json 的内容）。
+ *  ⚠️ settingsConfig 必须是 **JSON 对象**，与前端的 `src/types.ts` 及 v2.0.0 的
+ *  `settings_config: Value` 一致——存字符串会让 `String(对象)` 静默写成 "[object Object]"。 */
 export interface ProviderInfo {
   id: string;
   name: string;
-  settingsConfig: string;
-  websiteUrl?: string;
-  category?: string;
+  settingsConfig: Record<string, unknown>;
+  websiteUrl?: string | null;
+  category?: string | null;
   /** 未知的额外键原样保留（本进程不认识 ≠ 可以丢） */
   [k: string]: unknown;
 }
@@ -91,6 +93,24 @@ function stringArray(v: unknown): string[] {
   return Array.isArray(v) ? v.map(String) : [];
 }
 
+/** settingsConfig 归一成对象。正规形态是对象（v2.0.0 与本进程都这么写）；
+ *  字符串形态只可能来自早期构建的误写，尽力 JSON.parse 还原，还原不了给空对象
+ *  （留 `"[object Object]"` 这种字面量只会让后续每一次保存把它固化下去）。 */
+export function normalizeSettingsConfig(v: unknown): Record<string, unknown> {
+  if (v && typeof v === "object" && !Array.isArray(v)) return v as Record<string, unknown>;
+  if (typeof v === "string") {
+    try {
+      const parsed = JSON.parse(v);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      // 落到空对象
+    }
+  }
+  return {};
+}
+
 function normalizeProviders(v: unknown): ProviderInfo[] {
   if (!Array.isArray(v)) return [];
   const out: ProviderInfo[] = [];
@@ -101,9 +121,10 @@ function normalizeProviders(v: unknown): ProviderInfo[] {
       ...o,
       id: o.id === undefined ? "" : String(o.id),
       name: o.name === undefined ? "" : String(o.name),
-      settingsConfig: o.settingsConfig === undefined ? "" : String(o.settingsConfig),
-      ...(o.websiteUrl === undefined ? {} : { websiteUrl: String(o.websiteUrl) }),
-      ...(o.category === undefined ? {} : { category: String(o.category) }),
+      settingsConfig: normalizeSettingsConfig(o.settingsConfig),
+      // v2.0.0 是 `Option<String>` 且无 skip_serializing_if → 缺失/null 一律写成显式 null
+      websiteUrl: typeof o.websiteUrl === "string" ? o.websiteUrl : null,
+      category: typeof o.category === "string" ? o.category : null,
     });
   }
   return out;
@@ -216,8 +237,11 @@ const WRITE_CHAINS = new Map<string, Promise<unknown>>();
 
 /**
  * 串行化「读 → 改 → 写」：同一数据根上的写操作排队执行。
- * ⚠️ **持锁期间不得再调用另一个会取锁的函数**（本函数 / `updateConfig`）——链式锁不可重入，
- * 嵌套即自锁（Rust 侧 std Mutex 同款约束）。
+ * ⚠️ **持锁期间不得再调用另一个会取锁的函数**（本函数 / `updateConfig`）——链式锁不可重入。
+ * 两种嵌套的实际后果不同，但都别写：回调里 `await` 一个取锁函数会把这个回调自己排在
+ * 未完成的链条后面 → 真死锁（`withConfigLock` 内 `await updateConfig` 实测永不返回）；
+ * 回调里同步调 `mutateConfig` 不死锁，但内层被推迟到外层结束之后执行，**期间读到的
+ * 是外层写盘前的旧内容**，且改动顺序与代码书写顺序相反。Rust 侧 std Mutex 同款约束。
  */
 export function withConfigLock<T>(root: string, fn: () => T): Promise<T> {
   const key = path.resolve(root);
@@ -256,12 +280,17 @@ function applyPatch(cfg: Config, patch: ConfigPatch): void {
  * 配置更新的通用入口：**读改写**而非从参数重建。
  * 从参数重建会静默清掉调用方没传的字段（v2.0.0 踩过：设置对话框一保存就把供应商清单清空），
  * 这里先读盘、只改调用方要改的部分，再走三步保护落盘；整个过程持锁串行。
+ *
+ * 内容一字未变则不落盘：`.bak` 是主文件损坏时的唯一退路，而每次启动都无条件保存
+ * 会把上一份 `.bak` 轮换成刚写出的 main（备份被无意义地冲掉，且让用户真正需要
+ * 回滚时只剩同一份坏数据）。v2.0.0 同样只在确有改动时写。
  */
 export function mutateConfig(root: string, mutate: (cfg: Config) => void): Promise<Config> {
   return withConfigLock(root, () => {
     const cfg = loadConfig(root);
+    const before = encodeConfig(cfg);
     mutate(cfg);
-    saveConfig(root, cfg);
+    if (encodeConfig(cfg) !== before) saveConfig(root, cfg);
     return cfg;
   });
 }

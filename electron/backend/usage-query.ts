@@ -326,6 +326,37 @@ export function parseOpencodeGoTiers(body: unknown): UsageTier[] {
 
 // ---------------- HTTP ----------------
 
+/** 响应体上限：**本进程新增**的防御（v2.0.0 的 `usage_query.rs` 读体不设限，
+ *  读体失败还单独报「读取响应失败」）。上限取值与 model_fetch.rs 的 10MB/64KB 对齐。 */
+const MAX_BODY_BYTES = 10 * 1024 * 1024;
+const MAX_ERROR_BODY_BYTES = 64 * 1024;
+
+/** 读响应体并按字节数限长：**读完上限就停**（保留已读到的部分，与 v2.0.0 的
+ *  `.take(n).read_to_string()` 同语义——那边也是截断而非报错）。
+ *  ⚠️ model-fetch.ts 里有一份逐字相同的拷贝（同 truncateBody），改这里要同步那份。 */
+async function readCapped(resp: Response, limit: number): Promise<string> {
+  const reader = resp.body?.getReader();
+  if (!reader) return "";
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    total += value.byteLength;
+    if (total > limit) {
+      chunks.push(value.subarray(0, Math.max(0, limit - (total - value.byteLength))));
+      await reader.cancel().catch(() => {});
+      break;
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+/** 已经是「面向用户说清楚了」的错误前缀：不再套「网络错误」外壳 */
+const FINAL_ERROR_PREFIXES = ["认证失败", "接口错误", "响应解析失败"];
+
 /** GET JSON：401/403 单独报认证失败；其余状态码/网络错误原样带回 */
 async function httpGetJson(url: string, headers: [string, string][]): Promise<unknown> {
   const ctrl = new AbortController();
@@ -338,23 +369,30 @@ async function httpGetJson(url: string, headers: [string, string][]): Promise<un
       throw new Error(`认证失败 (HTTP ${resp.status})：API Key 无效或无权限`);
     }
     if (!resp.ok) {
-      const body = await resp.text().catch(() => "");
+      const body = await readCapped(resp, MAX_ERROR_BODY_BYTES).catch(() => "");
       throw new Error(`接口错误 (HTTP ${resp.status}): ${truncateBody(body)}`);
     }
-    const text = await resp.text();
+    const text = await readCapped(resp, MAX_BODY_BYTES);
     return JSON.parse(text);
   } catch (e) {
-    if (e instanceof Error && e.message.startsWith("认证失败")) throw e;
     if (e instanceof SyntaxError) throw new Error(`响应解析失败: ${e.message}`);
-    throw e instanceof Error ? e : new Error(String(e));
+    // 网络层错误（含超时中止）统一加前缀，别把 undici 的原文（如 "This operation was aborted"）
+    // 直接甩给用户——v2.0.0 是「网络错误: {e}」
+    const msg = e instanceof Error ? e.message : String(e);
+    if (FINAL_ERROR_PREFIXES.some((p) => msg.startsWith(p))) throw e;
+    throw new Error(`网络错误: ${msg}`);
   } finally {
     clearTimeout(timer);
   }
 }
 
+/** 截断到 300：**长度判据看字节、截断按码点**——这是 v2.0.0 `usage_query.rs:137`
+ *  的原样（`body.len()` 是字节数，`chars().take(300)` 是码点），与本文件同名函数在
+ *  model_fetch.rs 那份（两边都按码点）刻意不同，别"顺手统一"掉。
+ *  结论：≥100 个汉字（>300 字节）时会比 model-fetch 那份**多**加一个省略号。 */
 function truncateBody(body: string): string {
-  if (body.length <= 300) return body;
-  return body.slice(0, 300) + "…";
+  if (Buffer.byteLength(body) <= 300) return body;
+  return [...body].slice(0, 300).join("") + "…";
 }
 
 // ---------------- 查询编排 ----------------
@@ -418,20 +456,24 @@ export async function queryUsage(
           ["Accept", "application/json"],
         ]);
         if (asObj(body)?.success !== true) {
-          throw new Error(asStr(asObj(body)?.message) ?? "Unknown error");
+          // 与 v2.0.0 同款前缀：裸 message 看不出是「接口返回了业务失败」
+          throw new Error(`接口错误: ${asStr(asObj(body)?.message) ?? "Unknown error"}`);
         }
         const data = asObj(body)?.data;
         if (!data) throw new Error("响应缺少 data 字段");
         tiers = parseZenmuxTiers(data);
         break;
       }
-      case "opencode_go":
-        tiers = parseOpencodeGoTiers(
+      case "opencode_go": {
+        const parsed = parseOpencodeGoTiers(
           await httpGetJson("https://opencode.ai/zen/go/v1/usage", [
             ["Authorization", `Bearer ${apiKey}`],
           ]),
         );
-        break;
+        // 这一家的空 tiers 单独报（v2.0.0 同文案）：端点没数据与端点变更要区分
+        if (parsed.length === 0) return err(vendor, "响应形态不认识（端点可能已变更）");
+        return ok(vendor, parsed);
+      }
       default:
         return unsupported();
     }

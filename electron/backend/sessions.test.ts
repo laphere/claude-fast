@@ -399,4 +399,49 @@ describe("parseContentBlocks", () => {
     expect(blocks[0].kind).toBe("thinking");
     expect(blocks[0].text).toBe("想一想");
   });
+
+  it("image 块带出 mediaType 与 base64 数据（查看器与导出都靠它）", () => {
+    const blocks = parseContentBlocks(
+      [
+        { type: "text", text: "看这张图" },
+        { type: "image", source: { type: "base64", media_type: "image/png", data: "aGVsbG8=" } },
+      ],
+      "user",
+    );
+    expect(blocks.map((b) => b.kind)).toEqual(["text", "image"]);
+    expect(blocks[1].mediaType).toBe("image/png");
+    expect(blocks[1].data).toBe("aGVsbG8=");
+  });
+
+  it("非 base64 来源（url 等）不产 image 块", () => {
+    const blocks = parseContentBlocks(
+      [{ type: "image", source: { type: "url", url: "https://x/y.png" } }],
+      "user",
+    );
+    expect(blocks).toEqual([]);
+  });
+
+  it("空壳 image 块（缺 media_type / data）不产块——否则导出会多一行图片占位", () => {
+    // v2.0.0 要求 source.media_type 与 source.data 都非空（lib.rs:1723-1736）
+    expect(parseContentBlocks([{ type: "image", source: { type: "base64" } }], "user")).toEqual([]);
+    expect(
+      parseContentBlocks(
+        [{ type: "image", source: { type: "base64", media_type: "image/png" } }],
+        "user",
+      ),
+    ).toEqual([]);
+    expect(parseContentBlocks([{ type: "image" }], "user")).toEqual([]);
+  });
+
+  it("多个 image 块都保留（纯图消息 → 只有 image 块）", () => {
+    const blocks = parseContentBlocks(
+      [
+        { type: "image", source: { type: "base64", media_type: "image/png", data: "AQ==" } },
+        { type: "image", source: { type: "base64", media_type: "image/jpeg", data: "Ag==" } },
+      ],
+      "user",
+    );
+    expect(blocks.length).toBe(2);
+    expect(blocks[1].mediaType).toBe("image/jpeg");
+  });
 });

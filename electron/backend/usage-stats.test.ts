@@ -91,6 +91,25 @@ describe("本地时区归属", () => {
     expect(localDateOf(ms, 480)).toBe("2026-08-18");
   });
 
+  it("十二个月都能原样往返（1/2 月曾是错的：整批落到上一年）", () => {
+    // daysFromCivil 误用 3–12 月的公式处理 1/2 月：2026-01-15 → 2025-01-14。
+    // 逐月钉死，避免只有夏季数据时看不出来。
+    for (let m = 1; m <= 12; m++) {
+      const mm = String(m).padStart(2, "0");
+      const iso = `2026-${mm}-15T12:00:00.000Z`;
+      const ms = isoToEpochMs(iso);
+      expect(ms, iso).not.toBeNull();
+      expect(localDateOf(ms as number, 0), iso).toBe(`2026-${mm}-15`);
+      expect(localDateOf(ms as number, 480), iso).toBe(`2026-${mm}-15`);
+    }
+  });
+
+  it("跨年边界：1 月 1 日与 12 月 31 日归属正确", () => {
+    expect(localDateOf(isoToEpochMs("2026-01-01T00:30:00.000Z") as number, 480)).toBe("2026-01-01");
+    expect(localDateOf(isoToEpochMs("2026-01-01T00:30:00.000Z") as number, -480)).toBe("2025-12-31");
+    expect(localDateOf(isoToEpochMs("2026-12-31T16:30:00.000Z") as number, 480)).toBe("2027-01-01");
+  });
+
   it("scanFileUsage 按本地时区把跨日消息归属到不同日期", () => {
     const jsonl = [
       `{"type":"assistant","message":{"id":"a","role":"assistant","content":[{"type":"text","text":"x"}],"usage":{"input_tokens":100,"output_tokens":1}},"timestamp":"2026-08-17T16:00:00.000Z"}`,
@@ -165,7 +184,8 @@ describe("台账命中 / LEDGER_VERSION / 时区变化 / mtime+size 跳过", () 
       files: {
         [file]: entry({
           sessionId: sid,
-          mtime: st.mtimeMs,
+          // 落盘/比对都用取整毫秒（v2.0.0 的 mtime 是 u64，收不了小数）
+          mtime: Math.trunc(st.mtimeMs),
           size: st.size,
           tokens: 999, // 故意与文件真实值不同：命中即不应重扫
           messages: 5,
@@ -191,7 +211,8 @@ describe("台账命中 / LEDGER_VERSION / 时区变化 / mtime+size 跳过", () 
       files: {
         [file]: entry({
           sessionId: sid,
-          mtime: st.mtimeMs,
+          // 落盘/比对都用取整毫秒（v2.0.0 的 mtime 是 u64，收不了小数）
+          mtime: Math.trunc(st.mtimeMs),
           size: st.size,
           tokens: 999,
           messages: 5,
@@ -219,7 +240,8 @@ describe("台账命中 / LEDGER_VERSION / 时区变化 / mtime+size 跳过", () 
       files: {
         [file]: entry({
           sessionId: sid,
-          mtime: st.mtimeMs,
+          // 落盘/比对都用取整毫秒（v2.0.0 的 mtime 是 u64，收不了小数）
+          mtime: Math.trunc(st.mtimeMs),
           size: st.size,
           tokens: 999,
           messages: 5,
@@ -323,5 +345,173 @@ describe("excluded 项目不计（含其台账历史）", () => {
     const stats = aggregateStatsLedger([], ["D:\\excluded"], 0, ledger, nodeFs);
     expect(stats.tokens).toBe(10); // 被排除的历史 500 被剔除
     expect(Object.keys(ledger.files)).toEqual(["/kept.jsonl"]);
+  });
+});
+
+// ---------------- 台账磁盘形态：与 v2.0.0 双向可读 ----------------
+// 两个 app 共用同一数据根，stats-ledger.json 也是共用的。v2.0.0（Tauri 版）落盘的是
+// snake_case + 整数毫秒（serde 结构无 rename_all）；本进程曾按 camelCase 读写，导致
+// ①读不了对方写的台账（条目字段全 undefined，聚合时崩在 unmangleCandidates 上）
+// ②对方读不了本进程写的（整本反序列化失败 → unwrap_or_default 清零 → 全量重扫、
+//   已删会话历史丢失）。下面两节分别钉住读与写。
+
+describe("台账磁盘形态（v2.0.0 兼容）", () => {
+  /** v2.0.0 实际落盘的一段（取自本机 %APPDATA%\claude-fast\stats-ledger.json 的结构） */
+  const v2Ledger = {
+    version: 3,
+    tz_offset_minutes: 480,
+    files: {
+      "C:\p\abc.jsonl": {
+        mtime: 1789653470324,
+        size: 482715,
+        session_id: "1f9990e9-0000-4000-8000-000000000000",
+        project_dir: "D--MyWorkspaces-yaotu-tdc",
+        project_name: "tdc",
+        project_path: "D:\MyWorkspaces\yaotu\tdc",
+        messages: 205,
+        tokens: 509727,
+        input_tokens: 100,
+        output_tokens: 200,
+        cache_read_tokens: 300,
+        cache_creation_tokens: 400,
+        per_day: { "2026-09-17": [509727, 11] },
+        per_model: { "deepseek-v4": [509727, 11] },
+        per_day_model: { "2026-09-17": { "deepseek-v4": [509727, 11] } },
+      },
+    },
+  };
+
+  it("读 snake_case 台账：字段与 map 都被读进来（不再 undefined）", () => {
+    const root = tmpDir("ledger-read-");
+    fs.writeFileSync(path.join(root, "stats-ledger.json"), JSON.stringify(v2Ledger));
+    const l = loadLedger(root, nodeFs);
+    expect(l.version).toBe(3);
+    expect(l.tzOffsetMinutes).toBe(480);
+    const e = l.files["C:\p\abc.jsonl"];
+    expect(e.sessionId).toBe("1f9990e9-0000-4000-8000-000000000000");
+    expect(e.projectDir).toBe("D--MyWorkspaces-yaotu-tdc");
+    expect(e.tokens).toBe(509727);
+    expect(e.cacheCreationTokens).toBe(400);
+    expect(e.perDay["2026-09-17"]).toEqual([509727, 11]);
+    expect(e.perDayModel["2026-09-17"]["deepseek-v4"]).toEqual([509727, 11]);
+  });
+
+  it("v2.0.0 形态的台账能喂进聚合（曾经崩在 unmangleCandidates）", () => {
+    const root = tmpDir("ledger-agg-");
+    fs.writeFileSync(path.join(root, "stats-ledger.json"), JSON.stringify(v2Ledger));
+    const l = loadLedger(root, nodeFs);
+    const stats = aggregateStatsLedger([], [], 480, l, nodeFs);
+    expect(stats.tokens).toBe(509727);
+    expect(stats.sessions).toBe(1);
+    expect(stats.perProject[0].name).toBe("tdc");
+  });
+
+  it("缺字段的旧条目按 serde default 语义补默认值（不整本作废）", () => {
+    const root = tmpDir("ledger-default-");
+    fs.writeFileSync(
+      path.join(root, "stats-ledger.json"),
+      JSON.stringify({
+        version: 2,
+        tz_offset_minutes: 480,
+        files: {
+          "/old.jsonl": { mtime: 1, size: 2, project_dir: "D--proj", tokens: 50 },
+          "/junk.jsonl": "garbage",
+          "/null.jsonl": null,
+        },
+      }),
+    );
+    const l = loadLedger(root, nodeFs);
+    expect(Object.keys(l.files)).toEqual(["/old.jsonl"]);
+    expect(l.files["/old.jsonl"].sessionId).toBe("");
+    expect(l.files["/old.jsonl"].perDay).toEqual({});
+  });
+
+  it("空壳条目（{} 之类）被丢弃，不进统计（不留幽灵会话）", () => {
+    const root = tmpDir("ledger-shell-");
+    fs.writeFileSync(
+      path.join(root, "stats-ledger.json"),
+      JSON.stringify({
+        version: 3,
+        tz_offset_minutes: 480,
+        files: {
+          "/empty.jsonl": {},
+          "/tokens-only.jsonl": { tokens: 5 },
+          "/real.jsonl": {
+            mtime: 1,
+            size: 2,
+            session_id: "s1",
+            project_dir: "D--proj",
+            project_name: "proj",
+            project_path: "D:/proj",
+            messages: 1,
+            tokens: 10,
+            per_day: { "2026-01-15": [10, 1] },
+          },
+        },
+      }),
+    );
+    const l = loadLedger(root, nodeFs);
+    expect(Object.keys(l.files)).toEqual(["/real.jsonl"]);
+    const stats = aggregateStatsLedger([], [], 480, l, nodeFs);
+    expect(stats.sessions).toBe(1);
+    expect(stats.perProject.length).toBe(1);
+    expect(stats.tokens).toBe(10);
+  });
+
+  it("落盘是 snake_case + 整数 mtime（v2.0.0 才读得进去）", () => {
+    const root = tmpDir("ledger-write-");
+    saveLedger(
+      root,
+      {
+        version: 3,
+        tzOffsetMinutes: 480,
+        files: {
+          "/a.jsonl": entry({
+            mtime: 1789653470324,
+            size: 7,
+            sessionId: "s1",
+            projectDir: "D--proj",
+            perDay: { "2026-01-15": [10, 1] },
+            perModel: { m1: [10, 1] },
+            perDayModel: { "2026-01-15": { m1: [10, 1] } },
+          }),
+        },
+      },
+      nodeFs,
+    );
+    const disk = JSON.parse(fs.readFileSync(path.join(root, "stats-ledger.json"), "utf8"));
+    expect(Object.keys(disk)).toEqual(["version", "tz_offset_minutes", "files"]);
+    expect(disk.tz_offset_minutes).toBe(480);
+    const e = disk.files["/a.jsonl"];
+    expect(Object.keys(e)).toEqual([
+      "mtime",
+      "size",
+      "session_id",
+      "project_dir",
+      "project_name",
+      "project_path",
+      "messages",
+      "tokens",
+      "input_tokens",
+      "output_tokens",
+      "cache_read_tokens",
+      "cache_creation_tokens",
+      "per_day",
+      "per_model",
+      "per_day_model",
+    ]);
+    expect(Number.isInteger(e.mtime)).toBe(true);
+    expect(e.per_day_model["2026-01-15"].m1).toEqual([10, 1]);
+  });
+
+  it("写→读往返不丢值", () => {
+    const root = tmpDir("ledger-rt-");
+    const ledger: StatsLedger = {
+      version: LEDGER_VERSION,
+      tzOffsetMinutes: 480,
+      files: { "/a.jsonl": entry({ mtime: 1234567890123, tokens: 42, perDay: { "2026-02-01": [42, 2] } }) },
+    };
+    saveLedger(root, ledger, nodeFs);
+    expect(loadLedger(root, nodeFs)).toEqual(ledger);
   });
 });

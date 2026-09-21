@@ -782,7 +782,11 @@ export default function ChatView({
     if (!text && images.length === 0) return;
     // 原生方案请求在等应答时不按「忙碌」拦：那条路径下 status 停在 thinking（模型
     // 阻塞在 ExitPlanMode 上，本轮没结束），但用户此刻正需要打字提修改意见
-    if (!pendingNative && isBusy(status)) return;
+    if (!pendingNative && isBusy(status)) {
+      // 静默 no-op 最难受（提问卡在场时按 Enter 尤其容易撞上）：说清楚为什么没发出去
+      if (text || images.length > 0) onToast("本轮还在进行中：等它跑完，或点「停止」再发");
+      return;
+    }
     // 先应答再动 UI：deny 没送达就整条中止——输入与气泡都不动，用户可原样重试。
     // 顺序也不能反：CLI 阻塞在那条 control_request 上，不先应答，发出去的消息要等
     // 工具调用被解开之后才会被读到。planBusy 顺带按住卡上按钮，防同一 request_id
