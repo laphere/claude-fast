@@ -2,21 +2,26 @@
 
 一键在项目目录启动 Claude Code 的桌面应用：**Tauri 2 + React + TypeScript（前端）+ Rust（后端）**，Windows + macOS 双平台，不限定工作区目录。
 
-> **版本线**：`v1.0.0` 分支（= `main`）= 查看器/启动器 + **app 内嵌终端**，版本号 **1.1.0**（`package.json` / `Cargo.toml` / `tauri.conf.json` 三处一致）；`v2.0.0` 分支 = 与 `v1.0.0` 共用查看器/启动器底座，但把会话交互层换成 app 内 **GUI 对话**（`chat.rs` 托管 claude stream-json 子进程 + 自建 `ChatView`），**不含内嵌终端**，版本号 2.0.0。历史上的 PowerShell/WinForms 版与旧 v2.x/v3.x 版号均已作废，代码中不要再按旧版本号理解。另有 **Node.js（Electron）后端重构分支** `claude-fast-electron`（见下「分支结构」）。
+> **版本线**：**本分支 `embedded-terminal`** = 查看器/启动器 + **app 内嵌终端**（真 claude TUI，PTY + xterm.js），版本号 **1.1.0**（`package.json` / `Cargo.toml` / `tauri.conf.json` 三处一致）。
+>
+> **2026-09-21 分支重组**（一条线一个分支，不再有按版本号命名的分支）：原 `v1.0.0` 分支（与本分支同一内容）**先 ff 进本分支、再删掉本地与远端**，只留本机 tag `v1.0.0-final`；`v2.0.0`（Tauri + app 内 GUI 对话）同日删除，只留本机 tag `v2.0.0-final`——它的目标（页面内对话）已由 `claude-fast-electron`（Electron + 官方 Agent SDK）实现。历史上的 PowerShell/WinForms 版与旧 v2.x/v3.x 版号同样早已作废，代码中不要按旧版本号理解。
+>
+> **引用提示**：本文多处拿 `v1.0.0` / `v2.0.0` 当行为对照或对齐目标（如「与 `v2.0.0` 的字段声明顺序一致」）——两个分支都已删除，那些引用只是历史标注，代码要看 `main`/本分支当前实现。
 >
 > **项目清单（重要）**：为**路径模型**——`config.json` 的 `order`/`projects` 存的都是**项目绝对路径**（`order` 是项目显示顺序），`+` 号启动直接 `cmd /k cd /d "项目" && claude`，不生成/执行任何启动脚本。项目列表 = Claude 会话目录扫描（unmangle 反解）∪ config.projects 手动清单。
 
-## 分支结构（双后端）
+## 分支结构
 
 | 分支 | 后端 | 说明 |
 |---|---|---|
-| `v1.0.0`（当前）/ `main` | **Tauri 2 + Rust** | 本 CLAUDE.md 描述的主版本线：查看器/启动器 + app 内嵌终端（`pty.rs` + xterm.js），版本号 1.1.0，后端在 `src-tauri/` |
-| `v2.0.0` | **Tauri 2 + Rust** | 与 `v1.0.0` 共用查看器/启动器底座，会话交互层换成 app 内 **GUI 对话**（`chat.rs` + `ChatView.tsx`）而非内嵌终端，版本号 2.0.0；细节见该分支的 CLAUDE.md |
-| `claude-fast-electron` | **Electron + Node.js** | Node 重构后端服务的分支（自 `f76a56f` 分叉）：**前端技术栈不变**（React + TS + Vite），后端改为 `electron/main.ts`（主进程/窗口/托盘/IPC）+ `electron/backend/*.ts`（业务模块：paths/scriptnames/config/mangle/sessions/trash/platform/text，vitest 单测）；构建走 npm（vite + esbuild + electron-builder）。细节见该分支的 CLAUDE.md / README.md |
+| `embedded-terminal`（当前） | **Tauri 2 + Rust** | 本 CLAUDE.md 描述的那条线：查看器/启动器 + app 内嵌终端（`pty.rs` + xterm.js），版本号 1.1.0，后端在 `src-tauri/` |
+| `main` | **Tauri 2 + Rust** | 与本分支**同一个提交对象**（本线的改动 ff 同步后一起推） |
+| `claude-fast-electron` | **Electron + Node.js** | 当前**主线**：查看器/启动器 + 页面内 **GUI 对话**（官方 `@anthropic-ai/claude-agent-sdk` 托管 CLI；`electron/backend/chat.ts`）。前端技术栈不变（React + TS + Vite），后端改为 `electron/main.ts`（主进程/窗口/托盘/IPC）+ `electron/backend/*.ts`（vitest 单测）；构建走 npm（vite + esbuild + electron-builder）。细节见该分支的 CLAUDE.md / README.md |
+| ~~`v1.0.0`~~ / ~~`v2.0.0`~~ | — | **均已删除**（2026-09-21），只在本机留 tag `v1.0.0-final` / `v2.0.0-final`（**未推远端**） |
 
-两分支各自独立演进，**去脚本化（路径模型）与「从列表移除 → excluded 排除清单」已在两端对齐**；不要跨分支混用实现细节（IPC 通道、构建命令、配置读写互不通用），在 `claude-fast-electron` 分支工作时以其分支内 CLAUDE.md 为准。
+两条线各自独立演进，**去脚本化（路径模型）与「从列表移除 → excluded 排除清单」已在两端对齐**；不要跨分支混用实现细节（IPC 通道、构建命令、配置读写互不通用），在 `claude-fast-electron` 分支工作时以其分支内 CLAUDE.md 为准。
 
-另有 `embedded-terminal` 分支（内嵌终端的开发分支，自 `1a7a2da` 拉出）已**并入 `v1.0.0`**，其内容即本分支的「功能」首条；该分支暂留作存档、不再单独演进。
+> 本分支名沿用内嵌终端开发期的分支名（原 `embedded-terminal` 自 `1a7a2da` 拉出，终端做完后并入 `v1.0.0`）。`v1.0.0` 删除后，**它就是这条 Tauri 线的存活分支**，承接原 `v1.0.0` 的全部提交。
 
 ## 核心文件
 
