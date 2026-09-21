@@ -30,7 +30,7 @@
    验证方式：PTY 里跑 `cmd.exe` → 用 `start /b` 起一条长命 node 孙进程（自己把 pid 写进临时文件）→ `taskkill /T /F` 后 `tasklist` 查，孙进程已消失。
 3. **仓库当前状态**：`node-pty@1.1.0` 已用 `npm i node-pty --no-save --no-package-lock` 装进 `node_modules`（**未写进 `package.json`**）；`node_modules/@xterm/` 是个**空残留目录**，xterm 一个包都没装。
 
-> 探针脚本当时放在 `%TEMP%\pty-spike\`（`probe.js` 验 1、`probe-kill.js` 验 2），系统可能已清理；要重跑照上面两条的描述重写即可，都不到 60 行。
+> 上面两项的探针脚本已存到 **`.workbuddy/terminal-port-spike/`**（`probe.js` 验 1、`probe-kill.js` 验 2；该目录被 `.gitignore` 忽略、不入库）。跑法：`./node_modules/.bin/electron .workbuddy/terminal-port-spike/probe.js`（`probe.js` 用绝对路径 require 仓库里的 `node-pty`）。**harness 也放这个目录**。
 
 ---
 
