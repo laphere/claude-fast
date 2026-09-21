@@ -213,6 +213,32 @@ describe("queryUsage", () => {
     expect(r.error).toContain("认证失败");
   });
 
+  it("智谱：解析 body.data 信封（漏解包会退化成「响应形态不认识」）", async () => {
+    const envelope = {
+      code: 200,
+      msg: "成功",
+      success: true,
+      data: {
+        limits: [
+          { type: "TOKENS_LIMIT", unit: 3, percentage: 70, nextResetTime: 1_790_000_000_000 },
+          { type: "TOKENS_LIMIT", unit: 6, number: 1, percentage: 12, nextResetTime: 1_790_500_000_000 },
+        ],
+      },
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => fakeStreamResp(200, JSON.stringify(envelope))),
+    );
+    const r = await queryUsage("https://open.bigmodel.cn/api/anthropic", "sk-zhipu");
+    expect(r.supported).toBe(true);
+    expect(r.vendor).toBe("zhipu");
+    expect(r.error).toBeNull();
+    expect(r.data.length).toBe(2);
+    expect(r.data[0].name).toBe("five_hour");
+    expect(r.data[0].utilization).toBeCloseTo(70);
+    expect(r.data[1].name).toBe("weekly_limit");
+  });
+
   it("2xx 走流式读体（readCapped 的路径被覆盖）", async () => {
     vi.stubGlobal(
       "fetch",

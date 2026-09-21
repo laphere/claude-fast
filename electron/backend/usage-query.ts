@@ -418,18 +418,21 @@ export async function queryUsage(
           ]),
         );
         break;
-      case "zhipu":
-        tiers = parseZhipuTokenTiers(
-          await httpGetJson(
-            `${zhipuQuotaBase(baseUrl)}/api/monitor/usage/quota/limit`,
-            [
-              ["Authorization", apiKey], // 注意：智谱不加 Bearer 前缀
-              ["Content-Type", "application/json"],
-              ["Accept-Language", "en-US,en"],
-            ],
-          ),
+      case "zhipu": {
+        const body = await httpGetJson(
+          `${zhipuQuotaBase(baseUrl)}/api/monitor/usage/quota/limit`,
+          [
+            ["Authorization", apiKey], // 注意：智谱不加 Bearer 前缀
+            ["Content-Type", "application/json"],
+            ["Accept-Language", "en-US,en"],
+          ],
         );
+        // v2.0.0 的 query_zhipu：响应是 {code,msg,data:{limits}} 信封，解析的是 body.data，
+        // 不是整个 body（此前漏了这层解包，任何真实响应都解析出 0 桶 →「响应形态不认识」）。
+        const data = asObj(body)?.data;
+        tiers = parseZhipuTokenTiers(data === undefined ? body : data);
         break;
+      }
       case "minimax": {
         const isCn = baseUrl.toLowerCase().includes("minimaxi.com");
         const domain = isCn ? "api.minimaxi.com" : "api.minimax.io";
