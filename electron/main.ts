@@ -1,6 +1,15 @@
 // Electron 主进程：窗口 / 托盘 / 单实例 / 关闭拦截 / 全部 IPC 命令
 // （对齐 v2.0.0 后端 lib.rs 的 commands 面；对话层改用官方 Agent SDK，见 backend/chat.ts）
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Tray } from "electron";
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  Menu,
+  nativeImage,
+  screen,
+  Tray,
+} from "electron";
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -168,14 +177,35 @@ async function ensureProjectsMigrated(): Promise<void> {
 
 // ---------------- 窗口与托盘 ----------------
 
-function appIcon(): { app: string; tray: string } {
-  // nativeImage 不能从 asar 内读图——打包后图标放 extraResources（resources/），
-  // 开发模式直接读 build/；icon.ico 仍由 electron-builder 嵌入 exe 与安装包
+/**
+ * 图标文件路径。nativeImage 不能从 asar 内读图——打包后图标放 extraResources
+ * （resources/），开发模式直接读 build/；icon.ico 仍由 electron-builder 嵌入 exe 与安装包。
+ *
+ * ⚠️ 开发模式的 `128x128@2x.png` 带 `@2x` 后缀，Electron 会按「2 倍图」解读
+ * （`getSize()` 返回逻辑尺寸 128×128），像素仍是 256×256，缩放按物理像素走，
+ * 与打包后的 `icon128.png` 同一份内容。旧版这里在 dev 下指向不存在的
+ * `icon128.png`，窗口图标其实是空的（静默退回 Electron 默认图标）。
+ */
+function appIcon(): { app: string; trayMaster: string } {
   const base = app.isPackaged ? process.resourcesPath : path.join(app.getAppPath(), "build");
-  return {
-    app: path.join(base, "icon128.png"),
-    tray: path.join(base, "icon.png"),
-  };
+  const big = path.join(base, app.isPackaged ? "icon128.png" : "128x128@2x.png");
+  return { app: big, trayMaster: big };
+}
+
+/**
+ * 托盘图标：Windows 托盘位是 16px × 显示缩放（本机 150% → 24×24），给什么都要被缩到那。
+ *
+ * ⚠️ **必须自己按精确尺寸缩好再交给 Tray**：直接交 32×32 的位图时，托盘那次缩放是硬的
+ * （边缘更实、整体发暗）——实测同一张截图里，本 app 的托盘图标实心占比 0.522 / 均亮度 155，
+ * 而 Rust 版（交给系统的是 .ico 的 256 帧）是 0.456 / 176，观感明显偏暗。用 256 帧源 +
+ * `quality:"best"` 缩到精确尺寸后，实测 0.452 / 173，与 Rust 版一致。
+ * 尺寸匹配后 Tray 内部不再缩放，像素完全由这里决定。
+ */
+function trayImage(): Electron.NativeImage {
+  const src = nativeImage.createFromPath(appIcon().trayMaster);
+  const size = Math.max(16, Math.round(16 * (screen.getPrimaryDisplay().scaleFactor || 1)));
+  const small = src.resize({ width: size, height: size, quality: "best" });
+  return small.isEmpty() ? src : small;
 }
 
 /** 把主窗口显示到最前台（托盘「显示窗口」/ 托盘左键 / 单实例回调共用）。
@@ -196,9 +226,7 @@ function quitApp(): void {
 }
 
 function createTray(): void {
-  const { tray: trayIconPath } = appIcon();
-  const image = nativeImage.createFromPath(trayIconPath);
-  tray = new Tray(image);
+  tray = new Tray(trayImage());
   tray.setToolTip("Claude助手");
   const menu = Menu.buildFromTemplate([
     { label: "显示窗口", click: () => showMainWindow() },
