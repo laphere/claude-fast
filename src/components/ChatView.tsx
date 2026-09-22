@@ -2259,36 +2259,41 @@ export default function ChatView({
         )}
       </div>
 
-      {permissions.length > 0 && (
-        <div className="chat-permissions">
-          {permissions.map((p) => (
-            <div key={p.requestId} className="chat-perm">
-              <div className="chat-perm-title">
-                🔐 请求执行工具：<b>{p.toolName}</b>
-              </div>
-              <pre className="chat-perm-input">
-                {p.input ? JSON.stringify(p.input, null, 2).slice(0, 2000) : ""}
-              </pre>
-              <div className="chat-perm-actions">
-                <button
-                  className="btn btn-primary"
-                  onClick={() => void respondPermission(p.requestId, true)}
-                >
-                  允许
-                </button>
-                <button className="btn" onClick={() => void respondPermission(p.requestId, false)}>
-                  拒绝
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {(question || plan) && (
+      {(permissions.length > 0 || question || plan) && (
         // 卡槽：与 .chat-composer 同款——通栏但自身不画底色，只负责左右留白，
         // 卡体在里面对齐消息列（两侧始终空白，2026-09-22 用户定稿）
         <div className="card-slot">
+          {/* 权限确认卡：与方案卡/提问卡同款卡体（.plan-approve），宽度跟着输入框走。
+              可能同时来好几张（一轮里并行调多个工具），所以外面套一层自己滚的槽 */}
+          {permissions.length > 0 && (
+            <div className="chat-permissions">
+              {permissions.map((p) => (
+                <div key={p.requestId} className="plan-approve chat-perm">
+                  <div className="chat-perm-title">
+                    🔐 请求执行工具：<b>{p.toolName}</b>
+                  </div>
+                  <pre className="chat-perm-input">
+                    {p.input ? JSON.stringify(p.input, null, 2).slice(0, 2000) : ""}
+                  </pre>
+                  <div className="chat-perm-actions">
+                    <button
+                      className="btn btn-primary"
+                      onClick={() => void respondPermission(p.requestId, true)}
+                    >
+                      允许
+                    </button>
+                    <button
+                      className="btn"
+                      onClick={() => void respondPermission(p.requestId, false)}
+                    >
+                      拒绝
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
           {question && (
             // key 用 requestId：换一次提问就重挂载，卡内「当前第几题 / 逐题选择」自动归零
             <AskQuestionCard

@@ -3041,46 +3041,44 @@ mark {
   }
 }
 
-/* 权限确认卡 */
+/* 权限确认卡：卡体沿用 .plan-approve（与提问卡/方案卡同一套外观），宽度/居中由
+   .card-slot > * 统一给——**与输入框同宽、两侧留白**（2026-09-22 用户定稿）。
+   ⚠️ 别改回通栏色带（border-top + panel-2 底色铺满整行）：那是老版的样子，
+   卡体两侧会各留一道底色，且比输入框宽出一截。
+   这一层只负责「一次来好几张时槽内自己滚」——它们塞得进卡槽的 70% 上限就照常显示。 */
 .chat-permissions {
-  border-top: 1px solid var(--border);
-  padding: 10px 16px;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  max-height: 40%;
+  min-height: 0;
   overflow-y: auto;
-  background: var(--panel-2);
-}
-
-.chat-perm {
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--panel);
-  padding: 10px 12px;
 }
 
 .chat-perm-title {
   font-size: 12.5px;
-  margin-bottom: 6px;
 }
 
+/* 工具入参块：与 .plan-approve-preview 同款（卡体底色是 panel-2，内容块取 panel 才分得出层） */
 .chat-perm-input {
   font-size: 12px;
-  background: var(--bg);
+  background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius);
   padding: 6px 8px;
   max-height: 140px;
   overflow: auto;
   white-space: pre-wrap;
   word-break: break-all;
-  margin: 0 0 8px;
+  margin: 0;
+  line-height: 1.5;
 }
 
+/* 按钮靠右（用户定稿）：与方案卡不同，这张卡只有「允许/拒绝」两个动作，
+   左对齐会在卡片左下方拖出一条尾巴，靠右才收在卡角 */
 .chat-perm-actions {
   display: flex;
   gap: 8px;
+  justify-content: flex-end;
 }
 
 /* 交互卡槽（提问卡 / 方案审批卡）：与 .chat-composer 同款——通栏、但自身不画底色，
