@@ -401,7 +401,10 @@ export default function StatsDialog({ onClose }: Props) {
   const maxProjectVal = projectRows[0]?.[projSort] || 1;
   const maxModelTokens = modelRows[0]?.tokens || 1;
 
-  // 悬停柱的堆叠明细（只列当日真有量的序列，按用量倒序）
+  // 悬停柱的堆叠明细（只列当日真有量的序列，按用量倒序）。
+  // ⚠️ **单条也照列**：当天只跑一个模型（或只有「未归属」）时，明细行是唯一能看出
+  // 「这是哪个模型」的地方——按条数 ≥2 才显示的话，那天就只剩日期与总量，用户
+  // 在图上无从得知模型 id（2026-09-22 用户实测反馈）。
   const hoverSegs = useMemo(() => {
     if (hoverDay === null) return [];
     return series
@@ -523,7 +526,7 @@ export default function StatsDialog({ onClose }: Props) {
                           activeSessions 逐日相加是「会话·天」，跨天会话重复计，虚高 */}
                       {(range === "all" ? bars[hoverDay].sessions : bars[hoverDay].activeSessions)} 个会话
                     </div>
-                    {hoverSegs.length > 1 && (
+                    {hoverSegs.length > 0 && (
                       <div className="stat-tip-list">
                         {hoverSegs.map((s) => (
                           <div key={s.model} className="stat-tip-row">
