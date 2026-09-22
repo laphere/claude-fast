@@ -22,27 +22,42 @@ export function isModalOpen(): boolean {
   return modalStack.length > 0;
 }
 
-/** 通用模态框外壳：遮罩 + 居中面板 + Esc 关闭 */
-export default function Modal({ title, width = 520, onClose, children, footer }: Props) {
+/** 把一个「关掉这一层」的处理器压进弹层栈（挂载时入栈、卸载时出栈）：Esc 只派发给
+ *  栈顶那一层。Modal 与自绘弹层（图片预览）共用——自绘弹层也必须走这里，否则
+ *  isModalOpen() 对它不成立，会话页里按 Esc 会既关预览又打断本轮。
+ *
+ *  可选 `onKey`：本层在栈顶时收到**除 Esc 以外**的按键（图片预览的左右方向键）。
+ *  走这个口子而不是自己再挂一个 window 监听，键盘行为就统一归栈顶那一层管。 */
+export function useModalLayer(onClose: () => void, onKey?: (e: KeyboardEvent) => void) {
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
+  const onKeyRef = useRef(onKey);
+  onKeyRef.current = onKey;
 
   useEffect(() => {
     const close = () => onCloseRef.current();
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape") return;
+    const handler = (e: KeyboardEvent) => {
       // 只有关闭处理器在栈顶的实例才响应；弹层内部自行处理 Esc 的不受影响
       if (modalStack[modalStack.length - 1] !== close) return;
-      close();
+      if (e.key === "Escape") {
+        close();
+        return;
+      }
+      onKeyRef.current?.(e);
     };
     modalStack.push(close);
-    window.addEventListener("keydown", onKey);
+    window.addEventListener("keydown", handler);
     return () => {
       const i = modalStack.indexOf(close);
       if (i >= 0) modalStack.splice(i, 1);
-      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("keydown", handler);
     };
   }, []);
+}
+
+/** 通用模态框外壳：遮罩 + 居中面板 + Esc 关闭 */
+export default function Modal({ title, width = 520, onClose, children, footer }: Props) {
+  useModalLayer(onClose);
 
   return (
     <div className="overlay" onMouseDown={onClose}>

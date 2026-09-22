@@ -2828,6 +2828,7 @@ mark {
   display: block;
   border-radius: 8px;
   border: 1px solid var(--border);
+  cursor: zoom-in; /* 点开大图预览（ImageLightbox） */
 }
 
 /* 待发送附件预览条（输入卡片上方）。
@@ -2862,6 +2863,7 @@ mark {
   height: 100%;
   object-fit: cover;
   display: block;
+  cursor: zoom-in; /* 同会话里的图片：点开大图预览 */
 }
 
 .chat-attachment-remove {
@@ -2885,6 +2887,100 @@ mark {
 
 .chat-attachment-remove:hover {
   background: rgba(0, 0, 0, 0.75);
+}
+
+/* 图片大图预览（ImageLightbox）：深底遮罩 + 居中图。z-index 高过 Modal(900)，
+   免得预览被同时存在的弹窗压住 */
+.overlay.lightbox {
+  z-index: 950;
+  background: rgba(0, 0, 0, 0.78);
+  overflow: auto;
+}
+
+.lightbox-img {
+  /* ⚠️ 居中必须靠 margin:auto，不能用 overlay 的 align-items:center —— 图片放大到
+     超出容器时，flex 居中会把顶部/左侧裁掉且滚不到（margin:auto 在超出时归零、
+     退化成从头对齐，才能滚）。max-* 只缩不放：小图保持原始尺寸 */
+  margin: auto;
+  max-width: calc(100vw - 80px);
+  max-height: calc(100vh - 80px);
+  object-fit: contain;
+  border-radius: 6px;
+  cursor: zoom-in;
+}
+
+/* 切到原始尺寸（点图切换）：取消上限 + 遮罩可滚动查看细节 */
+.lightbox-img.is-actual {
+  max-width: none;
+  max-height: none;
+  cursor: zoom-out;
+}
+
+.lightbox-close {
+  position: fixed;
+  top: 14px;
+  right: 16px;
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  cursor: pointer;
+}
+
+.lightbox-close:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* 上一张 / 下一张（仅当有多张图时渲染）：到两端即禁用，不循环 */
+.lightbox-nav {
+  position: fixed;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 38px;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  cursor: pointer;
+}
+
+.lightbox-nav:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.lightbox-nav:disabled {
+  opacity: 0.25;
+  cursor: default;
+}
+
+.lightbox-prev {
+  left: 16px;
+}
+
+.lightbox-next {
+  right: 16px;
+}
+
+/* 第几张 / 共几张 */
+.lightbox-counter {
+  position: fixed;
+  top: 20px;
+  left: 20px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
 }
 
 /* ⚠️ 别给助手消息加 border-left 之类「轮次锚点」（2026-09-22 试过并否掉）：

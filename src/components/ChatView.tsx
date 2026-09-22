@@ -36,6 +36,7 @@ import {
   formatTime,
 } from "./MessageParts";
 import { isModalOpen } from "./Modal";
+import ImageLightbox from "./ImageLightbox";
 import ModePicker from "./ModePicker";
 import {
   ArrowDownIcon,
@@ -261,6 +262,12 @@ export default function ChatView({
   const [input, setInput] = useState("");
   /** 待发送的图片附件（粘贴/拖拽进入，随消息发送后清空） */
   const [pendingImages, setPendingImages] = useState<ChatImage[]>([]);
+  /** 大图预览的当前状态：可切换的那几张图 + 从哪张打开（点会话里的图片 / 待发送
+   *  附件打开；null = 没开）。`images` 传的是**同一条消息**里的图片，不是整段会话
+   *  ——一次发 3 张，就在这 3 张里前后翻 */
+  const [preview, setPreview] = useState<{ images: ChatImage[]; startIndex: number } | null>(
+    null,
+  );
   /** 当前选中权限模式（原始字符串，"default" 归一为 manual；null = 配置读取中）。
    *  初始值 = settings.json 解析结果；session_ready 后以 CLI init 上报的实际
    *  模式为准。用户改选后显式传 flag（spawn 时）/热切换（运行中） */
@@ -1869,6 +1876,9 @@ export default function ChatView({
     for (const e of stream) {
       if (e.t === "userText") {
         flush();
+        // 本条消息的图片提出成局部变量：map 的回调里 TS 不再收窄 e.images，
+        // 直接在回调里读属性会报「possibly undefined」
+        const imgs = e.images ?? [];
         nodes.push(
           <div
             key={e.key}
@@ -1876,13 +1886,17 @@ export default function ChatView({
             data-msg-index={e.msgIndex}
             data-live-user={e.liveId}
           >
-            {e.images && e.images.length > 0 && (
+            {imgs.length > 0 && (
               <div className="chat-user-images">
-                {e.images.map((img, i) => (
+                {imgs.map((img, i) => (
                   <img
                     key={i}
                     src={`data:${img.mediaType};base64,${img.data}`}
                     alt="发送的图片"
+                    title={imgs.length > 1 ? "点击查看大图（可左右切换）" : "点击查看大图"}
+                    // 切换范围 = **这一条消息**里的这几张（不是整段会话）：
+                    // 一次发 3 张，就在这 3 张里前后翻
+                    onClick={() => setPreview({ images: imgs, startIndex: i })}
                   />
                 ))}
               </div>
@@ -2277,7 +2291,12 @@ export default function ChatView({
         <div className="chat-attachments">
           {pendingImages.map((img, i) => (
             <div key={`${i}-${img.data.length}`} className="chat-attachment">
-              <img src={`data:${img.mediaType};base64,${img.data}`} alt="待发送图片" />
+              <img
+                src={`data:${img.mediaType};base64,${img.data}`}
+                alt="待发送图片"
+                title="点击查看大图"
+                onClick={() => setPreview({ images: pendingImages, startIndex: i })}
+              />
               <button
                 className="chat-attachment-remove"
                 title="移除图片"
@@ -2389,6 +2408,16 @@ export default function ChatView({
           </div>
         </div>
       </div>
+      )}
+
+      {/* 图片大图预览（只读页也照样能看大图——它不启进程、纯展示）。
+          挂在整棵树的最外层：它是 fixed 遮罩，不该被 .chat 的布局影响 */}
+      {preview && (
+        <ImageLightbox
+          images={preview.images}
+          startIndex={preview.startIndex}
+          onClose={() => setPreview(null)}
+        />
       )}
     </div>
   );
