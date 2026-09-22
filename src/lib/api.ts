@@ -235,7 +235,7 @@ export const api = {
    *  内容返回 null。首轮结束后轮询，拿到即把新对话 tab 升级成续聊态
    *  （头部统计/右上角按钮随之可用，tab 标题同步、左栏会话列表补条目） */
   chatSessionMeta: (projectPath: string, sessionId: string) =>
-    invoke<{ file: string; title: string } | null>("chat_session_meta", {
+    invoke<{ file: string; title: string; titleFromPrompt: boolean } | null>("chat_session_meta", {
       projectPath,
       sessionId,
     }),

@@ -19,6 +19,8 @@ import {
   normalizeDefaultMode,
   defaultPermissionMode,
   pickClaudeFromPathOutput,
+  titleDescriptionFor,
+  TITLE_DESCRIPTION_MAX,
   ChatManager,
   type SDKMessage,
   type ChatImage,
@@ -324,6 +326,33 @@ describe("图片消息拼装", () => {
     const len = Math.floor((4.5 * 1024 * 1024 * 4) / 3);
     const ok = "A".repeat(len);
     expect(() => buildUserMessage("x", [{ mediaType: "image/png", data: ok }])).not.toThrow();
+  });
+});
+
+describe("会话标题描述（titleDescriptionFor）", () => {
+  it("新建会话：用首条用户文本", () => {
+    expect(titleDescriptionFor(undefined, "帮我把构建脚本改快一点")).toBe("帮我把构建脚本改快一点");
+  });
+
+  it("首尾空白去掉（描述只喂给起名那次调用）", () => {
+    expect(titleDescriptionFor(undefined, "  看下这个 bug\n")).toBe("看下这个 bug");
+  });
+
+  it("续聊（有 resumeId）不起名：历史会话不补标题", () => {
+    expect(titleDescriptionFor("afc29ea3-0000-4000-8000-000000000000", "接着说")).toBeNull();
+  });
+
+  it("纯图消息（无文本）不起名", () => {
+    expect(titleDescriptionFor(undefined, null)).toBeNull();
+    expect(titleDescriptionFor(undefined, "")).toBeNull();
+    expect(titleDescriptionFor(undefined, "   \n ")).toBeNull();
+  });
+
+  it("超长首条消息截断（不带巨长日志去起名）", () => {
+    const long = "日".repeat(TITLE_DESCRIPTION_MAX + 100);
+    const got = titleDescriptionFor(undefined, long);
+    expect(got).not.toBeNull();
+    expect([...(got as string)].length).toBe(TITLE_DESCRIPTION_MAX);
   });
 });
 

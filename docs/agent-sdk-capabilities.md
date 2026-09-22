@@ -139,6 +139,7 @@ queue.push({ type: "user", message: { role: "user", content: "…" }, parent_too
 | 热重载 | `reloadPlugins()` / `reloadSkills()` / `reloadOutputStyles()` |
 | 输入 | `streamInput(stream)`（SDK 内部用于多轮，本项目不需要直接调） |
 | MCP 权限 | `setMcpPermissionModeOverride(serverName, 'default' \| 'auto' \| null)`（**只能收紧，不会放宽**） |
+| 标题 | `generateSessionTitle(desc, { persist? })`（**实**，2026-09-22；**d.ts 未声明**，见 §6.12） |
 
 > `setMcpPermissionModeOverride` 的「tighten-only」设计值得注意：它只在会话本身已经会自动放行（`bypassPermissions` / `auto`）时才生效，且只接受收紧档——所以可以放心暴露给 UI，不会变成提权后门。
 
@@ -316,11 +317,34 @@ getContextUsage({ detail: 'summary' })
 - **返回里带 `model`** ✓——比只靠 `system/init` 更早拿到模型名（原因见 §8 第 9 条）。
 - **调用时机**：`detail:'summary'` 在**一轮都没跑过**时也返回（新会话是 0%），所以「进程一起来就显示」是能做到的——但必须**主动问**，不能挂在 init 事件上（§8 第 9 条）。刚 `query()` 完的那一瞬间可能撞上传输层 initialize 握手，对话层因此试两次（间隔 800ms）。
 
+### 6.12 会话标题：`generateSessionTitle()`（**实**，2026-09-22）
+
+**先记住这条：CLI 的自动起名只发生在交互式 TUI 里。** SDK / stream-json 宿主不管，跑完一轮 jsonl 里也不会出现 `ai-title` 行。实测（本机 CLI 2.1.278）：
+
+- `~/.claude/projects/*/*.jsonl` 全量核对：凡有 `{"type":"ai-title","aiTitle":…}` 行的会话，文件里都有 `"origin":{"kind":"human"}` 的用户行（TUI 手输）；没有该 origin 行的会话（= 走 SDK 的 app 内对话）一个 `ai-title` 都没有。
+- 探针（`%TEMP%\title-probe\`）：`prompt` 用**字符串**跑完一整轮 → 不写；用**流式输入**、且给 `SDKUserMessage` 加 `origin: {kind:'human'}` → 仍然不写。**所以这不是 origin 的事，是宿主面的事**，别指望靠标 origin 让 CLI 自己起名。
+- 起名函数在 CLI 内部只从 TUI 的提交路径调用；SDK 宿主要起名只能走这条控制请求（CLI 侧 control_request `generate_session_title`，SDK 侧 `Query` 上的同名方法）。
+
+```ts
+// ⚠️ sdk.d.ts 里没有这个方法（也不是导出函数），只有 sdk.mjs 里实现了 —— 与
+// resolvePermissionModeInCli 同一类「内部面」，升级时要回归。对话层用 @ts-expect-error
+// 风格的类型断言调用（chat.ts 的 ChatSession.generateTitle）。
+generateSessionTitle(description: string, opts?: { persist?: boolean }) → Promise<string>
+```
+
+实测行为（2026-09-22，本机 + 第三方供应商都验过）：
+
+- **`persist: true` 会把 `{"type":"ai-title","aiTitle":…}` 追加进 jsonl**，与 TUI 生成的逐字同形——于是左栏列表（回退链 `customTitle > aiTitle > 首条用户消息`）自然读到 AI 标题，不需要宿主自己写文件。`persist` 缺省/`false` 只返回标题、不落盘。
+- **已有 `customTitle` / `aiTitle` 的会话直接返回既有标题、不花模型调用**（幂等）。所以「要不要先读 jsonl 判断有没有标题」是不必要的。
+- **本轮还在跑时调用同样成功**：init 帧一到就调（`+2077ms`），标题 `+4300ms` 返回并落盘，两者互不干扰——控制请求与消息流是两条车道。
+- **调用失败会 reject**（起名用的那个模型不可用时），宿主该降级：标题退回「首条用户消息」那档，不要让它影响对话。
+- 描述文本就是「首条用户消息」（TUI 也是这么传的）；纯图消息没有可读文本，TUI 会跳过，宿主同理。
+
 ---
 
 ## 7. 本项目现状对照
 
-**用的（`chat.ts` 全部家当）**：`cwd`、`canUseTool`、`includePartialMessages`、`abortController`、`spawnClaudeCodeProcess`、`permissionMode`（条件）、`resolvePermissionModeInCli`（内部选项，`@ts-expect-error`）、`resume` \| `sessionId`、`pathToClaudeCodeExecutable`；运行中只调 `interrupt()` / `setPermissionMode()` / `close()`。
+**用的（`chat.ts` 全部家当）**：`cwd`、`canUseTool`、`includePartialMessages`、`abortController`、`spawnClaudeCodeProcess`、`permissionMode`（条件）、`resolvePermissionModeInCli`（内部选项，`@ts-expect-error`）、`resume` \| `sessionId`、`pathToClaudeCodeExecutable`；运行中调 `interrupt()` / `setPermissionMode()` / `close()` / `getContextUsage()` / `generateSessionTitle()`（后两个也是内部/未声明面，见 §6.11、§6.12）。
 
 **没用但值得排队的**（按「对本 app 的收益 ÷ 落地成本」粗排）：
 
@@ -334,7 +358,7 @@ getContextUsage({ detail: 'summary' })
 | `outputFormat` | 会话导出 / 批量分析的结构化输出 | 只在特定功能里用 |
 | `enableFileCheckpointing` + `rewindFiles()` | 变更文件面板加「撤销本轮改动」 | 需先验证与自家面板的数据口径 |
 | `maxTurns` / `maxBudgetUsd` | 成本护栏（设置项） | 客户端侧，不依赖账单 |
-| `options.title` | 新会话标题**开进程时直接给** | 现在靠轮询 `chat_session_meta` 等 jsonl 里出现标题（头部统计 / 四按钮都挂在「拿到标题」上）；这个字段能把那一段等待直接省掉 |
+| `options.title` | 新会话标题**开进程时直接给** | 注意与 §6.12 分工：那个是**宿主自己定**一个写死的标题（且给了就不再自动起名）；要让 CLI 起名走 `generateSessionTitle()`。头部统计 / 四按钮现在仍靠轮询 `chat_session_meta` 等 jsonl 里出现标题 |
 | `tool()` + `createSdkMcpServer()` | 把会话搜索 / 用量查询 / 回收站做成工具 | 需先显式加 `zod` 依赖 |
 | `PreToolUse` hook | 逐工具审计 / 策略（`canUseTool` 覆盖不到的那部分） | 见 §6.3 |
 | `USAGE_*_PREFIXES` | 配额类错误的差异化 UI | 常量，直接可用 |
@@ -355,6 +379,7 @@ getContextUsage({ detail: 'summary' })
    - 实测日志（预热后）：`prewarm done: process up` 之后**没有**任何 `session_ready`。
 10. **`init.effort` 在 SDK 宿主上确实拿不到**（**实**，2026-09-22）：`sdk.d.ts` 自己写着「Present on Remote Control bridge init frames (terminal- / Desktop- / VS Code-hosted sessions); absent on hosts that do not publish it」——我们是 SDK 宿主，实测 composer 里那一项一直空着。**全 SDK 没有任何读取接口**（`getContextUsage()` 与 `initializationResult()` 都不带 `effort`；带它的只有 ① `Options.effort`（可写）② hook 输入 ③ `CLAUDE_EFFORT` 环境变量）。要显示就只能**反过来自己设**（`Options.effort` / `applyFlagSettings({ effortLevel })` / `updateSettings('userSettings', { effortLevel })`——后者就是 `/effort` 那条路，且 `SDKModelInfo` 里有 `supportsEffort` 与可选档位，够搭一个选择器）。
 11. **`Query.interrupt()` 是无参的，`cancel_queued` 够不着**（**实**）：CLI 侧的 `cancel_queued: true` 才是「一次点击停掉整个队列」的开关，`interrupt_cancel_queued_v1` 能力位也承认它——但 SDK 没把它暴露出来（`Query` 上也没有 `cancel_async_message` 方法）。**能拿到的只有回执**：`interrupt()` 返回 `{ still_queued: string[], cancelled?: string[] }`，`still_queued` 是「这次中断后仍会执行」的消息 uuid，可据此判断"没停干净"。对话层现在的 `MessageQueue.withdraw()` 只管得住**自己那侧**的队列。
+12. **SDK 宿主不会自动得到会话标题**（**实**，2026-09-22）：CLI 的自动起名只在交互式 TUI 里发生，SDK / stream-json 那条路跑完也不写 `ai-title`（标 `origin:{kind:'human'}` 也没用）。宿主不主动问，jsonl 里就永远没有 AI 标题，读会话文件的界面只能退回「首条用户消息」那一档。要标题得自己发 `generateSessionTitle()`（§6.12）。**同一个坑在终端侧还有另一个面**：CLI 自己写进终端 OSC 标题的那条回退链 **不含「首条用户消息」**（`customTitle > aiTitle > 'Claude Code'`），所以没生成 aiTitle 的会话在终端里连兜底名都没有。
 
 ## 9. 采用前先跑探针的清单
 

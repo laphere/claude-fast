@@ -221,6 +221,10 @@ export type ChatEvent =
        * 界面据此不显示这一项，别给它编默认值 */
       effort?: string | null;
     }
+  /** 新会话由 CLI 生成的 AI 标题（jsonl 里 `ai-title` 行落盘后下发）。终端 TUI 里这个
+   *  名字由 CLI 自己起；app 内对话走 SDK，CLI 不会自动起名（实测 2.1.278），得后端主动
+   *  发 `generate_session_title` 问一次。收到后 tab 标题与左栏那条一起换成它 */
+  | { type: "session_title"; title: string }
   | { type: "status"; state: "thinking" | "idle" }
   | {
       /** CLI 实际生效的权限模式变了（进/出计划模式靠它同步底部选择器；

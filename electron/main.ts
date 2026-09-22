@@ -385,7 +385,14 @@ function registerIpc(): void {
   });
 
   // ---------- 会话管理 ----------
-  handle("list_sessions", (p) => listSessions(projectsDir(), String(p.projectPath)));
+  handle("list_sessions", (p) => {
+    const list = listSessions(projectsDir(), String(p.projectPath));
+    // 正在起名的新会话先不进列表：它的标题此刻还只是「首条用户消息」那档兜底，显示了会先闪
+    // 一下完整首条消息、两秒后再被 CLI 起的名字替换（2026-09-22 用户实测反馈）。标题到手后
+    // 前端会带着 `session_title` 事件再刷一次，那时它带着真名字出现（起名失败会推兜底标题）。
+    const pending = chatManager.titlePendingIds();
+    return pending.size === 0 ? list : list.filter((s) => !pending.has(s.sessionId));
+  });
   handle("list_pinned_sessions", () =>
     listPinnedSessions(projectsDir(), loadConfig(rootDir()).pinnedSessions));
   handle("rename_session", (p) => renameSession(String(p.file), String(p.newTitle), projectsDir()));

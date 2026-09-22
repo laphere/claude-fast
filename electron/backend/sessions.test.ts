@@ -66,6 +66,30 @@ describe("sessionMetaFromLite", () => {
     expect(info.summary).toBe("修复登录页面的 bug");
   });
 
+  it("titleFromPrompt：两条真标题都没有时才为真（新会话起名期间据此不采纳）", () => {
+    // 只有首条用户消息 = 兜底档
+    const onlyPrompt = [
+      '{"type":"user","message":{"role":"user","content":"帮我把构建脚本改快一点"},"isSidechain":false}',
+      "",
+    ].join("\n");
+    const fallback = sessionMetaFromLite(onlyPrompt, "", UUID, 0)!;
+    expect(fallback.title).toBe("帮我把构建脚本改快一点");
+    expect(fallback.titleFromPrompt).toBe(true);
+    // aiTitle / customTitle 任一在场即为真标题
+    expect(sessionMetaFromLite(sampleHead(), "", UUID, 0)!.titleFromPrompt).toBe(false);
+    expect(sessionMetaFromLite(onlyPrompt, '{"type":"ai-title","aiTitle":"构建提速"}', UUID, 0)!.titleFromPrompt).toBe(false);
+    expect(sessionMetaFromLite(onlyPrompt, '{"type":"custom-title","customTitle":"我起的"}', UUID, 0)!.titleFromPrompt).toBe(false);
+    // 占位词那档也算兜底（没有真标题可显示）
+    const namedBySummary = sessionMetaFromLite(
+      '{"type":"user","message":{"role":"user","content":"<command-name>/init</command-name>"}}',
+      '{"type":"last-prompt","lastPrompt":"继续"}',
+      UUID,
+      0,
+    )!;
+    expect(namedBySummary.title).toBe("未命名会话");
+    expect(namedBySummary.titleFromPrompt).toBe(true);
+  });
+
   it("命令后跟普通对话：标题用第一条普通消息", () => {
     const head = [
       '{"type":"mode","mode":"normal","sessionId":"x"}',
@@ -622,7 +646,20 @@ describe("sessionFileAndTitle", () => {
     const meta = sessionFileAndTitle(projects, "D:\\proj\\alpha", UUID);
     expect(meta).not.toBeNull();
     expect(meta!.title).toBe("修复登录页面");
+    expect(meta!.titleFromPrompt).toBe(false); // 有 aiTitle = 真标题
     expect(path.resolve(meta!.file)).toBe(path.resolve(file));
+  });
+
+  it("只有首条用户消息时把 titleFromPrompt 透出去（前端据此先不采纳）", () => {
+    const dir = path.join(projects, mangleProjectPath("D:\\proj\\alpha"));
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, UUID + ".jsonl"),
+      '{"type":"user","message":{"role":"user","content":"先发的一条"},"isSidechain":false}\n',
+    );
+    const meta = sessionFileAndTitle(projects, "D:\\proj\\alpha", UUID);
+    expect(meta!.title).toBe("先发的一条");
+    expect(meta!.titleFromPrompt).toBe(true);
   });
 
   it("文件未落盘 / 标题解析不出（空标题）返回 null——调用方轮询再问", () => {

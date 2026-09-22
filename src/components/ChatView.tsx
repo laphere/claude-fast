@@ -78,8 +78,14 @@ interface Props {
   /** 对话状态变化上报（多会话 tab 的进行中标记） */
   onStatusChange?: (phase: ChatStatus["phase"]) => void;
   /** 新对话首轮落盘后回传（App 据此把 tab 升级成续聊态：标题同步 + 统计/按钮 +
-   *  左栏会话列表补条目）；续聊 tab 自带 session，不走这里 */
-  onSessionReady?: (meta: { file: string; title: string }) => void;
+   *  左栏会话列表补条目）；续聊 tab 自带 session，不走这里。
+   *  `titleFromPrompt` = jsonl 里还只有「首条用户消息」那档兜底标题（CLI 起的名字在路上），
+   *  App 据此**先不采纳**它，等 `onTitle` 那条真名字 */
+  onSessionReady?: (meta: { file: string; title: string; titleFromPrompt: boolean }) => void;
+  /** 新会话由 CLI 起好的 AI 标题（后端 `generate_session_title` 落盘后推来）。
+   *  收到时 tab 可能还没收编——那时不用管：收编轮询下一次 tick 读到的就是刚落盘的
+   *  ai-title，收编带的就是它（两边都收敛到同一个标题） */
+  onTitle?: (title: string) => void;
   /** 只读会话页（点会话行进来的默认形态）：只渲染历史，不给输入框、**绝不启动进程**。
    *  历史会话要不要继续得先看一眼，误触 resume 会写 jsonl、把旧会话顶到列表最前 */
   readOnly?: boolean;
@@ -250,6 +256,7 @@ export default function ChatView({
   onToast,
   onStatusChange,
   onSessionReady,
+  onTitle,
   readOnly = false,
   onContinue,
   continueHint,
@@ -392,6 +399,10 @@ export default function ChatView({
   const bodyRef = useRef<HTMLDivElement>(null);
   /** 初始加载完成后滚动到底部 */
   const scrollToBottomRef = useRef(true);
+  /** AI 标题回传（后端推来）。与 onSessionReady 同一套路走 ref：App 传的是内联箭头，
+   *  进 handleEvent 依赖会让事件订阅反复重挂 */
+  const onTitleRef = useRef(onTitle);
+  onTitleRef.current = onTitle;
 
   // ---------- 事件处理 ----------
 
@@ -415,6 +426,11 @@ export default function ChatView({
             modeTouchedRef.current = false;
           }
         }
+        break;
+      case "session_title":
+        // 新会话的 AI 标题（CLI 起好并落盘了）。只往上报：tab 名与左栏那条由 App 改，
+        // 本组件的正文/状态一概不动（它不是一轮对话的开始，也不该进 REPLY_EVENTS）
+        onTitleRef.current?.(ev.title);
         break;
       case "permission_mode":
         // CLI 自己切的模式（进/出计划模式是主要场景）：与 session_ready 同口径——

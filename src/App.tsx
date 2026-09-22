@@ -722,11 +722,16 @@ export default function App() {
 
   /** app 内新对话落盘升级（ChatView 首轮结束后回传）：把「无会话」的新对话 tab
    *  升级成续聊态——会话文件挂上 tab 后，头部统计与右上角按钮（搜索/变更文件/
-   *  导出/刷新）随之可用；tab 标题同步成会话真名（首条用户消息）；左栏会话列表
-   *  立即补上这条新会话。顺带修复隐性问题：升级前点左栏同名会话会另开一个进程
-   *  续写同一份 jsonl，升级后按 file 去重只激活已有 tab。 */
+   *  导出/刷新）随之可用；左栏会话列表立即补上这条新会话。顺带修复隐性问题：
+   *  升级前点左栏同名会话会另开一个进程续写同一份 jsonl，升级后按 file 去重只激活
+   *  已有 tab。
+   *  ⚠️ **标题**：`meta.titleFromPrompt` 为真 = jsonl 里还只有「首条用户消息」那档兜底
+   *  （CLI 起的名字还在路上），这时**不采纳**它——tab 名保持原样（新对话 tab 是项目名），
+   *  等 CLI 起的名字到了由 applyChatTitle 落到 tab 名上。不这么做的话：标题会先变成一整条
+   *  首条消息、两三秒后再被替换（2026-09-22 用户实测反馈）。`session.title` 仍记兜底那档
+   *  （它就是此刻 jsonl 的真名，列表里显示的也是它），二者都是临时的。 */
   const adoptChatSession = useCallback(
-    (tabId: string, meta: { file: string; title: string }) => {
+    (tabId: string, meta: { file: string; title: string; titleFromPrompt: boolean }) => {
       const tab = tabsRef.current.find((t) => t.id === tabId);
       if (!tab || tab.kind !== "chat" || tab.session) return;
       const sessionId = sessionIdFromFile(meta.file);
@@ -736,7 +741,7 @@ export default function App() {
           t.kind === "chat" && t.id === tabId && !t.session
             ? {
                 ...t,
-                title: meta.title,
+                title: meta.titleFromPrompt ? t.title : meta.title,
                 session: {
                   sessionId,
                   title: meta.title,
@@ -751,6 +756,27 @@ export default function App() {
       refreshSessions(tab.key);
     },
     [updateTabs, refreshSessions],
+  );
+
+  /** 新会话的 AI 标题到位（后端向 CLI 要来的，已落进 jsonl）：tab 名与左栏那条一起换。
+   *  · 未收编（`tab.session` 为 null）时什么都不做：此刻它还没有会话文件，收编轮询下一次
+   *    tick 读到的就是刚落盘的 ai-title，收编带的标题本来就是它——两条时序都收敛。
+   *  · 标题没变就不 setState（与 setTabTitle 同口径：避免无谓重渲染 + 列表重读）。 */
+  const applyChatTitle = useCallback(
+    (tabId: string, title: string) => {
+      const tab = tabsRef.current.find((t) => t.id === tabId);
+      if (!tab || tab.kind !== "chat" || !tab.session) return;
+      if (tab.title === title && tab.session.title === title) return;
+      updateTabs((prev) =>
+        prev.map((t) =>
+          t.id === tabId && t.kind === "chat" && t.session
+            ? { ...t, title, session: { ...t.session, title } }
+            : t,
+        ),
+      );
+      refreshSessionsForPath(tab.projectPath);
+    },
+    [updateTabs, refreshSessionsForPath],
   );
 
   // ---------- 窗口过窄自动收起左栏 ----------
@@ -1440,6 +1466,7 @@ export default function App() {
                   onToast={showToast}
                   onStatusChange={(phase) => updateChatPhase(t.id, phase)}
                   onSessionReady={(meta) => adoptChatSession(t.id, meta)}
+                  onTitle={(title) => applyChatTitle(t.id, title)}
                   readOnly={t.readOnly === true}
                   continueHint={
                     defaultInteraction === "terminal"

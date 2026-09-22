@@ -138,3 +138,9 @@
 ### 3.3 本分支 `chat.test.ts` 的对应关系
 
 审计时 v2 的 `chat.rs` 有 26 个单测（`cli_args_*` / `permission_response_*` / `translate_*` / `pick_claude_candidate_*` / `unsupported_or_empty_images_are_skipped`），本分支 `electron/backend/chat.test.ts`（14 种 `ChatEvent` 全覆盖）已覆盖大部分；**缺的正是上面 B9 / B10 / B13 那几条白名单用例**。
+
+---
+
+## §4 本分支相对 v2.0.0 规格的新增
+
+- **新会话的 AI 标题（2026-09-22）**：v2.0.0 的规格与 Rust 实现都没有「起名」这一步——TUI 之外的会话在列表里只有「首条用户消息」那档兜底标题（SDK 宿主不会自动拿到，见 `docs/agent-sdk-capabilities.md` §8 第 12 条）。本分支补上：新会话首帧 `session_ready` 时向 CLI 发一次 `generateSessionTitle(首条用户文本, {persist:true})`，由 CLI 把 `{"type":"ai-title",…}` 写进 jsonl（与终端 TUI 生成的逐字同形），列表回退链与「新对话收编」轮询随之读到 AI 标题。起名那几秒**不许让兜底标题露脸**（用户实测反馈：先显示一整条首条消息、再被真名字替换），做法见 `CLAUDE.md` 对话层「会话标题」条：`titleFromPrompt` 挡住收编时采纳 + `ChatManager.titlePendingIds()` 让 `list_sessions` 暂时不列这条 + 起名失败推一次兜底标题。口径（只问一次 / 只对新会话 / 纯图不问 / 失败静默降级）与落地细节见 `CLAUDE.md` 同条与 `docs/agent-sdk-capabilities.md` §6.12，单测在 `electron/backend/chat-title.test.ts`。

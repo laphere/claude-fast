@@ -19,6 +19,11 @@ export interface SessionInfo {
   sessionId: string;
   /** 最终显示标题：customTitle > aiTitle > 首条用户消息 */
   title: string;
+  /** 上面那个 title 是不是**只有兜底档**——jsonl 里既没有 customTitle 也没有 aiTitle，
+   *  显示的其实是「首条用户消息」（或占位词「未命名会话」）。
+   *  用途：新会话由 CLI 起名的那几秒里，标题还停在兜底档，前端据此**先不采纳**它
+   *  （采纳了会先闪一下完整首条消息、两秒后再被真名字替换，2026-09-22 用户实测反馈）。 */
+  titleFromPrompt: boolean;
   /** 副行摘要：customTitle > lastPrompt > summary 字段 > 首条用户消息 */
   summary: string;
   /** 最后修改时间（文件 mtime，epoch ms） */
@@ -189,7 +194,9 @@ export function sessionMetaFromLite(
   if (title === "") title = "未命名会话";
   // 只有元数据（无任何内容）的会话跳过：含只执行了 /init 等命令的会话
   if (summary === "" && title === "未命名会话") return null;
-  return { sessionId, title, summary, lastModified, file: "" };
+  // 两条真标题都没有 = 显示的是兜底档（首条用户消息 / 占位词）
+  const titleFromPrompt = customTitle === null && aiTitle === null;
+  return { sessionId, title, titleFromPrompt, summary, lastModified, file: "" };
 }
 
 /** 读取会话 jsonl 的 head/tail（单 fd 两次 read），返回原始文本。空文件返回 null。 */
@@ -242,14 +249,14 @@ export function sessionFileAndTitle(
   projectsDir: string,
   projectPath: string,
   sessionId: string,
-): { file: string; title: string } | null {
+): { file: string; title: string; titleFromPrompt: boolean } | null {
   if (!isValidUuid(sessionId)) throw new Error("非法的会话 id");
   const file = path.join(projectsDir, mangleProjectPath(projectPath), `${sessionId}.jsonl`);
   const ht = readHeadTail(file);
   if (!ht) return null;
   const info = sessionMetaFromLite(ht.head, ht.tail, sessionId, Math.round(ht.mtime));
   if (!info || info.title === "未命名会话") return null;
-  return { file, title: info.title };
+  return { file, title: info.title, titleFromPrompt: info.titleFromPrompt };
 }
 
 /** 按会话 id 读标题（内嵌终端 tab 的会话名兜底，对齐 Tauri 线 lib.rs 的

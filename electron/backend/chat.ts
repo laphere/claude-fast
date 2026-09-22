@@ -13,6 +13,8 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { spawn, execFileSync } from "node:child_process";
+// 起名失败退回兜底标题时与列表同一口径（首条消息的清洗规则）
+import { cleanSummary } from "./text";
 
 // 仅类型导入：编译期擦除，安全。
 import type {
@@ -66,6 +68,10 @@ export type ChatEvent =
       /** init.effort（低/中/高/极高/最高）。CLI 只在 Remote Control 类宿主上发，取不到为 null */
       effort?: string | null;
     }
+  /** 新会话由 CLI 生成的 AI 标题（`ai-title` 行落盘后下发，见 ChatSession.generateTitle）。
+   *  TUI 里这条是 CLI 自己起的名；SDK 宿主（本 app）得主动问，不问就只剩「首条用户消息」
+   *  那一档兜底标题。 */
+  | { type: "session_title"; title: string }
   | { type: "status"; state: "thinking" | "idle" }
   /** CLI 实际生效的权限模式变了（system/status 帧带 permissionMode 时下发）。
    *  进/出计划模式就靠它同步底部那个模式选择器：CLI 在 EnterPlanMode / ExitPlanMode
@@ -275,6 +281,24 @@ export function buildUserMessage(text: string | null, images: ChatImage[]): SDKU
     throw new Error("消息不能为空：纯文本或至少一张图片");
   }
   return { type: "user", message: { role: "user", content } } as SDKUserMessage;
+}
+
+/** 起名用的描述文本（`generate_session_title` 的 `description`）：只有**新建会话**的
+ *  第一条非空文本才算数。
+ *  · 续聊/历史会话返回 null（不补标题）：它们该有自己的标题，不该拿这次说的话重起一个。
+ *  · 纯图消息（text 为 ""）返回 null，拿不到可读描述——CLI 自己的 TUI 路径也跳过这类。
+ *  · 截断到 400 字：描述只喂给起名那次调用，首条消息黏一大段日志进去没必要（与
+ *    sessions.ts 的 last-prompt 截断、toolSummaryLine 的 clip 同一思路）。 */
+export const TITLE_DESCRIPTION_MAX = 400;
+
+export function titleDescriptionFor(
+  resumeId: string | undefined,
+  firstPromptText: string | null,
+): string | null {
+  if (resumeId) return null;
+  const t = (firstPromptText ?? "").trim();
+  if (t === "") return null;
+  return t.length > TITLE_DESCRIPTION_MAX ? t.slice(0, TITLE_DESCRIPTION_MAX) : t;
 }
 
 // ---------------- 翻译层（SdkMessageTranslator，纯逻辑可测） ----------------
@@ -755,6 +779,14 @@ class ChatSession {
   private id: string;
   private projectPath: string;
   private resumeId?: string;
+  /** 本 sitting 第一条非空用户文本（新建会话的 AI 标题拿它当描述；续聊不记） */
+  private firstPromptText: string | null = null;
+  /** 标题只问一次：init 每轮开头都发（session_ready 每轮都会有），不问一次就每轮起一次名 */
+  private titleAsked = false;
+  /** 正在起名（发出去到结果回来之间为真）。`list_sessions` 据此把这条会话从列表里滤掉：
+   *  它此刻的标题还只是「首条用户消息」那档兜底，显示了会先闪一下完整首条消息、再被
+   *  CLI 起的名字替换（2026-09-22 用户实测反馈）。 */
+  private titlePending = false;
   private explicitMode: ChatPermissionMode | null;
   private emit: (e: ChatEvent) => void;
 
@@ -886,6 +918,13 @@ class ChatSession {
     try {
       for await (const msg of q) {
         const events = this.translator.translate(msg);
+        // 首帧 init（session_ready）= 首条用户消息已被处理、进程与 jsonl 都齐了：此刻去要
+        // 一次 AI 标题（终端里这一步由 CLI 自己完成，SDK 宿主得自己问，见 generateTitle）。
+        // 放在开头、先把 titleAsked 置上：起名是异步的，不挡住事件下发，也避免重复问。
+        if (!this.titleAsked && events.some((e) => e.type === "session_ready")) {
+          this.titleAsked = true;
+          void this.generateTitle();
+        }
         for (const e of events) this.emit(e);
         // 每轮结束刷一次上下文占用（起进程那次由 start() 里的 pullContextUsageSoon 负责，
         // 因为 init 要等第一条消息才到 —— 光靠这里会漏掉"一启动就显示"）。
@@ -950,6 +989,61 @@ class ChatSession {
       if (await this.emitContextUsage()) return;
       await new Promise((r) => setTimeout(r, 800));
     }
+  }
+
+  /** 记下本 sitting 第一条非空用户文本（新建会话的 AI 标题描述用它）。
+   *  续聊不记、记过了不覆盖：标题描述只认「这个会话是怎么开起来的」那一条。 */
+  noteUserText(text: string): void {
+    if (this.resumeId || this.firstPromptText !== null) return;
+    if (text.trim() !== "") this.firstPromptText = text;
+  }
+
+  /**
+   * 向 CLI 要一个 AI 标题（新建会话专属）。
+   *
+   * ⚠️ 为什么必须显式要：CLI 的自动起名**只发生在交互式 TUI 里**（TUI 提交消息时调它的
+   * 内部起名函数）。SDK/stream-json 这条路不触发——2026-09-22 实测 2.1.278：一整轮跑完
+   * 不写 `ai-title`；给用户消息加 `origin:{kind:"human"}` 也不写。于是 app 内对话建出来的
+   * 会话在左栏只有「首条用户消息」那一档兜底标题。宿主能做的就是自己发这条控制请求。
+   *
+   * `generateSessionTitle` 在 `sdk.d.ts` 里**没有声明**（运行时方法，与 `resolvePermissionModeInCli`
+   * 同一类，见 start() 里的注释与 docs/agent-sdk-capabilities.md）。`persist: true` 让它把
+   * `{"type":"ai-title","aiTitle":…}` 追进 jsonl——与 TUI 生成的逐字同形，于是左栏列表
+   * （回退链 customTitle > aiTitle > 首条用户消息，见 sessions.ts）与新对话收编轮询
+   * 都自然读到 AI 标题。探针实测：本轮还在跑时调用同样成功（返回标题、同时落盘）。
+   *
+   * 静默降级（与 emitContextUsage 同一口径）：起名失败不致命——标题就停在首条消息那档，
+   * 只留一行 warn 供排查。只问一次，失败不重试（重试要再花一次模型调用）。
+   */
+  private async generateTitle(): Promise<void> {
+    const desc = titleDescriptionFor(this.resumeId, this.firstPromptText);
+    const q = this.query;
+    if (desc === null || !q || this.exited) return;
+    this.titlePending = true; // 起名期间把自己从 list_sessions 里摘掉（见字段注释）
+    try {
+      const raw = await (
+        q as unknown as {
+          generateSessionTitle(d: string, o?: { persist?: boolean }): Promise<string>;
+        }
+      ).generateSessionTitle(desc, { persist: true });
+      const title = typeof raw === "string" ? raw.trim() : "";
+      if (title !== "" && !this.exited) this.emit({ type: "session_title", title });
+    } catch (e) {
+      // ASCII 输出：中文在这台机器的控制台里会被按 GBK 解成乱码
+      console.warn("[chat] generateSessionTitle failed:", e);
+      // 起名失败：退回「首条用户消息」那档兜底（与列表回退链同一口径）——不推的话 tab 会
+      // 一直挂着项目名，跟左栏那条的名字对不上
+      const fallback = cleanSummary(this.firstPromptText ?? "");
+      if (fallback !== "" && !this.exited) this.emit({ type: "session_title", title: fallback });
+    } finally {
+      this.titlePending = false;
+    }
+  }
+
+  /** 起名中的**会话 id**（jsonl 的 uuid 而不是 tab key）：新建会话的 `this.id` 就是它。
+   *  null = 没在起名（含续聊——那条路根本不起名）。 */
+  pendingTitleSessionId(): string | null {
+    return this.titlePending && !this.resumeId ? this.id : null;
   }
 
   enqueue(msg: SDKUserMessage): void {
@@ -1084,6 +1178,8 @@ export class ChatManager {
       this.emit(sessionId, { type: "error", message: (e as Error).message });
       return false;
     }
+    // 首条用户文本要给标题当描述（新会话首轮跑完才会去要标题，得先记下）
+    session.noteUserText(text);
     const delivered = await session.deliver(userMsg);
     if (!delivered) {
       // 启动期间用户就按了停止：消息撤回、没有入队。状态得交回 idle，
@@ -1116,6 +1212,17 @@ export class ChatManager {
   /** 前端对权限/方案审批的应答 */
   respondToPermission(sessionId: string, requestId: string, decision: PermissionDecision): void {
     this.sessions.get(sessionId)?.resolvePermission(requestId, decision);
+  }
+
+  /** 正在起名的会话 id 集合（`list_sessions` 用它把这几条从列表里滤掉几秒——那会儿它们的
+   *  标题还只是「首条用户消息」那档兜底，见 ChatSession.titlePending）。空集表示没有。 */
+  titlePendingIds(): Set<string> {
+    const out = new Set<string>();
+    for (const s of this.sessions.values()) {
+      const id = s.pendingTitleSessionId();
+      if (id) out.add(id);
+    }
+    return out;
   }
 
   async rename(sessionId: string, title: string): Promise<void> {
