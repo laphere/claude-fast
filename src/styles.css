@@ -2758,6 +2758,23 @@ mark {
   user-select: text;
 }
 
+/* 「回到底部」浮钮（脱开跟随时才渲染，见 ChatView 的 atBottom）：压在消息区下沿、
+   水平对齐消息列中线。⚠️ 中线要补进度轨的半个宽度——轨道是 .chat-main 里的 flex 实体、
+   占了左边一整条，消息列的真中线在 .chat-main 的 50% + rail/2 处（与上面 --read-width
+   那组补正同一口径）；没有轨道时不能补，否则反向偏出去 */
+.chat-jump-bottom {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  transform: translateX(-50%);
+  z-index: 5; /* 压过消息文本；悬停气泡在轨道那一侧，与它不重叠 */
+  box-shadow: var(--shadow);
+}
+
+.chat-main:has(> .msg-rail) .chat-jump-bottom {
+  transform: translateX(calc(-50% + var(--rail-w) / 2));
+}
+
 .chat-msg {
   max-width: 86%;
 }

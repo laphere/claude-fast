@@ -147,6 +147,11 @@ function isBusy(status: ChatStatus): boolean {
   return status.phase === "starting" || status.phase === "thinking";
 }
 
+/** 「还贴着底」的容差（px）：滚动位置离内容末尾不超过它就算跟在底部，跟随开关据此翻转。
+ *  ⚠️ 只在**用户滚动**时量（见 onChatScroll），不要在每次内容更新后量一次距离 ——
+ *  流式输出两次更新之间就长高一截，量出来必然超容差，跟随会自己断掉 */
+const FOLLOW_GAP_PX = 64;
+
 /** 出现这些事件即表示模型本轮已经开口（「按停止把消息退回输入框」这个窗口的判据，
  *  见 ChatView 的 sentRef / recallSent）。⚠️ 别把 status / context_usage 算进来——
  *  那两类在模型一个 token 都还没出时也会到（status:thinking 是 message_start 发的，
@@ -286,6 +291,9 @@ export default function ChatView({
    *  没有 jsonl 快照，头部统计行用实时累计兜底（见 statLine） */
   const [liveMsgs, setLiveMsgs] = useState(0);
   const [permissions, setPermissions] = useState<ChatPermissionRequest[]>([]);
+  /** 「回到底部」浮钮的显示条件（= followBottomRef 的渲染镜像：ref 管滚动、state 管渲染）。
+   *  贴在底部时不渲染——那一刻按钮没有任何用处，白占一条消息 */
+  const [atBottom, setAtBottom] = useState(true);
   const [usage, setUsage] = useState<ChatUsage | null>(null);
   /** 卡片中部那三样：模型名（init 上报）、思考强度（init.effort，可能拿不到）、
    *  已用上下文（turn_end 的 per-turn usage ÷ 该轮的 contextWindow） */
@@ -399,6 +407,16 @@ export default function ChatView({
   const bodyRef = useRef<HTMLDivElement>(null);
   /** 初始加载完成后滚动到底部 */
   const scrollToBottomRef = useRef(true);
+  /** 是否跟随底部（sticky-bottom）：内容更新后要不要把视图拽到末尾。
+   *  ⚠️ 由**用户滚动**驱动（滚到接近底部即跟随、往上翻即脱开），不许写成
+   *  「忙碌时无条件拽回底部」—— 那正是用户报的「模型一输出就往上翻不动、翻上去自己闪回来」：
+   *  流式期间每个 delta 都会重跑跟随 effect，无条件拽底就等于把阅读位置钉死在末尾 */
+  const followBottomRef = useRef(true);
+  /** 上一次**程序化**滚动的落点，用来在 onScroll 里认领自己的事件（±1px：小数像素比下
+   *  scrollTop 是小数）。流式输出时内容会在滚动事件派发之前又长高一截，光量 gap 会把
+   *  我们自己滚下来的那一次误判成「用户往上翻了」。初值 -∞ = 还没滚过一次，
+   *  不会与任何真实 scrollTop（含 0）撞上 */
+  const autoScrollTopRef = useRef(Number.NEGATIVE_INFINITY);
   /** AI 标题回传（后端推来）。与 onSessionReady 同一套路走 ref：App 传的是内联箭头，
    *  进 handleEvent 依赖会让事件订阅反复重挂 */
   const onTitleRef = useRef(onTitle);
@@ -714,6 +732,7 @@ export default function ChatView({
       setActivePromptKey(null);
       setRailTip(null);
       winRef.current = { start: 0, end: 0 };
+      setAtBottom(true); // 空会话没什么可翻的，别把上一段的「回到底部」留下来
       return;
     }
     setSearchOpen(false);
@@ -723,6 +742,9 @@ export default function ChatView({
     setExportMenuOpen(false);
     let cancelled = false;
     scrollToBottomRef.current = true;
+    // 新会话一进来就贴着底，浮钮的显示态跟着归位：内容比视口短时不会产生滚动事件，
+    // 光靠 onChatScroll 复位不了，上一段的「回到底部」会赖在空会话上
+    setAtBottom(true);
     setHistoryLoading(true);
     const seq = ++winSeqRef.current; // 递增世代，使在途分页/旧跳转回包作废
     api
@@ -1017,6 +1039,11 @@ export default function ChatView({
       ...prev,
       { id: itemId, kind: "user", text, images: images.length > 0 ? images : undefined },
     ]);
+    // 发消息 = 用户明确要看这一轮的回复：把跟随开关打开（此前若在往上翻历史，
+    // 视图停在原地的话，自己刚发的那条连回复都在屏幕外）。浮钮的显示态一起收掉，
+    // 否则跟随 effect 把视图拽到底了，那颗「回到底部」还挂在下面
+    followBottomRef.current = true;
+    setAtBottom(true);
     setLiveMsgs((n) => n + 1);
     // 两种来源都一样：发出新消息即表示本轮方案卡不再适用
     setPlan(null);
@@ -1444,14 +1471,34 @@ export default function ChatView({
   const onChatScroll = useCallback(() => {
     const body = bodyRef.current;
     if (body) {
+      // 跟随开关只在这里翻转：用户往上一翻，下次内容更新就不再拽回底部；翻回底部即
+      // 自动恢复跟随。落点与我们自己那次程序化滚动重合的事件（内容长了也照旧认领）
+      // 不算「用户往上翻」——否则流式输出自己就把跟随断掉了
+      const gap = body.scrollHeight - body.scrollTop - body.clientHeight;
+      const follow =
+        Math.abs(body.scrollTop - autoScrollTopRef.current) <= 1 || gap <= FOLLOW_GAP_PX;
+      followBottomRef.current = follow;
+      setAtBottom(follow); // 脱开即浮出「回到底部」（同值时 React 自己跳过重渲染）
       if (body.scrollTop <= 40) void loadMore();
-      else if (body.scrollHeight - body.scrollTop - body.clientHeight <= 40)
-        void loadLater();
+      else if (gap <= 40) void loadLater();
     }
     // 高亮用 rAF 节流，一帧最多算一次
     cancelAnimationFrame(scrollRafRef.current);
     scrollRafRef.current = requestAnimationFrame(updateActivePrompt);
   }, [loadMore, loadLater, updateActivePrompt]);
+
+  /** 「回到底部」：跳到末尾**并重新贴上**（跟随开关一并打开）。落点照旧记账，
+   *  免得这一次跳转产生的滚动事件被 onChatScroll 当成「用户往上翻」（它不往上翻，
+   *  只是内容在事件派发前又长了一截）。跳跃用瞬时定位不用 smooth：长会话动辄几千像素，
+   *  动画期间一路都是「没到底」的中间态，浮钮会跟着闪 */
+  const jumpToBottom = useCallback(() => {
+    const body = bodyRef.current;
+    if (!body) return;
+    body.scrollTop = body.scrollHeight;
+    autoScrollTopRef.current = body.scrollTop;
+    followBottomRef.current = true;
+    setAtBottom(true);
+  }, []);
 
   /** 定位到实时区的用户气泡（本次 sitting 的消息不在历史分页，走 DOM 锚点） */
   const jumpToLive = useCallback((liveId: number) => {
@@ -1557,7 +1604,7 @@ export default function ChatView({
     [session, onToast],
   );
 
-  // ---------- 自动滚动（贴近底部时跟随） ----------
+  // ---------- 自动滚动（贴着底部时才跟随） ----------
 
   useEffect(() => {
     const body = bodyRef.current;
@@ -1567,12 +1614,17 @@ export default function ChatView({
     if (scrollToBottomRef.current) {
       if (historyLoading || (history.length === 0 && items.length === 0)) return;
       body.scrollTop = body.scrollHeight;
+      autoScrollTopRef.current = body.scrollTop;
       scrollToBottomRef.current = false;
+      followBottomRef.current = true; // 打开/刷新/切会话后从「跟随底部」这个状态出发
+      setAtBottom(true);
       return;
     }
-    const nearBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 120;
-    if (nearBottom || isBusy(status)) {
+    // 判据只有跟随开关（用户滚动的结果）：正在流式输出**不算**理由去拽底部，
+    // 否则用户往上翻看历史会被每个 delta 弹回末尾
+    if (followBottomRef.current) {
       body.scrollTop = body.scrollHeight;
+      autoScrollTopRef.current = body.scrollTop;
     }
   }, [items, status, permissions, history, historyLoading]);
 
@@ -2144,6 +2196,18 @@ export default function ChatView({
             renderStream()
           )}
         </div>
+
+        {/* 回到底部：脱开跟随后浮出（贴着底时不渲染）。压在消息区下沿、对齐消息列中线 */}
+        {!atBottom && !historyLoading && (
+          <button
+            className="icon-btn chat-jump-bottom"
+            onClick={jumpToBottom}
+            title="回到底部"
+            aria-label="回到底部"
+          >
+            <ArrowDownIcon size={15} />
+          </button>
+        )}
 
         {railTip && (
           <div className="msg-rail-tip" style={{ top: railTip.top }}>
