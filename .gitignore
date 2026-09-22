@@ -7,9 +7,14 @@ src-tauri/target/
 claude-fast.exe
 claude-fast.exe.WebView2/
 
-# 运行时用户数据（收藏/主题，本地保留，不入库）
+# 运行时用户数据（清单/主题/用量台账/回收站，本地保留，不入库）
+# 三者同层、同属数据根：仓库目录本身可能被认成便携根，产物落进来后 git add -A 会一并提交
+# （trash/ 里是删过的会话原文）
 config.json
 config.json.bak
+stats-ledger.json
+stats-ledger.json.bak
+trash/
 
 # 启动脚本（含本机项目绝对路径，属用户数据，不入库）
 scripts/
