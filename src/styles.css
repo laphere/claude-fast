@@ -2382,6 +2382,15 @@ mark {
   gap: 8px;
 }
 
+/* 字段补充说明（不是字段名）：挂在输入框**下面**，label 只留短名。
+   比 .form-label 再暗一档，读的时候不会和字段名抢注意力 */
+.form-hint {
+  margin-top: 6px;
+  font-size: 11.5px;
+  color: var(--dim);
+  line-height: 1.6;
+}
+
 .input {
   padding: 7px 10px;
   border: 1px solid var(--border);
