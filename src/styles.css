@@ -2961,14 +2961,55 @@ mark {
   gap: 8px;
 }
 
-/* 方案审批卡（计划模式：本轮产出结束，等待批准执行/继续修改） */
-.plan-approve {
-  border-top: 1px solid var(--border);
-  background: var(--panel-2);
-  padding: 10px 16px;
+/* 交互卡槽（提问卡 / 方案审批卡）：与 .chat-composer 同款——通栏、但自身不画底色，
+   只负责左右留白，卡体在里面对齐消息列。
+   ⚠️ 两侧必须始终是空白（2026-09-22 用户定稿）：早先是通栏色带（border-top +
+   panel-2 底色铺满整行），两侧会留两道底色。对齐基准与 .chat-composer 齐
+   （左右各 22px；有进度轨时左侧再让 --rail-w），否则同一个 88% 会算出另一个绝对值。 */
+.card-slot {
+  flex: none;
   display: flex;
   flex-direction: column;
   gap: 8px;
+  padding: 10px 22px;
+  /* 护栏：卡槽不许吃光消息区（原来是 .ask-card 上的 max-height:60%）。
+     卡体是槽内的 flex 项且 min-height:0，超出时收缩，由卡内的滚动区收尾 */
+  max-height: 70%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.chat:has(.msg-rail) .card-slot {
+  padding-left: calc(22px + var(--rail-w));
+}
+
+/* 卡体与 .composer-card 同宽同位（列向 flex 的交叉轴 auto 外边距负责居中；
+   此时 align-items: stretch 不再生效，宽度由 width+max-width 定） */
+.card-slot > * {
+  width: 100%;
+  max-width: var(--read-width);
+  margin-left: auto;
+  margin-right: auto;
+  min-height: 0;
+}
+
+.chat:has(.msg-rail) .card-slot > * {
+  margin-left: calc((100% - var(--read-width)) / 2 - var(--rail-w) / 2);
+  margin-right: calc((100% - var(--read-width)) / 2 + var(--rail-w) / 2);
+}
+
+/* 卡体外观（提问卡与方案审批卡共用）：与输入框同款圆角卡片。
+   底色取 --panel-2 而输入框取 --panel：卡内的选项行 / 方案正文框是 --panel，
+   卡体若也用 --panel 就与它们糊成一片了 */
+.plan-approve {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow: hidden;
 }
 
 .plan-approve-title {
@@ -2977,17 +3018,46 @@ mark {
   color: var(--accent);
 }
 
+/* 方案卡头部一行：标题在左，展开/收起按钮在右 */
+.plan-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+/* 方案卡「展开」= 阅读模式：消息区与输入区一起让位，卡槽独占整个 .chat（标题栏留着），
+   长方案一次读完（TUI 是把方案直接铺开，而这里不给到这么大就只能一行行抠）。
+   ⚠️ 别改回「只压消息区、输入框不动」：70% 的上限本来就已经把消息区压扁了，
+   展开只回收那条缝，实测只多 20~30px —— 用户当场反馈「展开几乎没有增加高度」。
+   ⚠️ 卡槽这时必须从 flex:none 换成可伸缩项（flex:1 + 它自己的 min-height:0），
+   否则按内容撑高会把东西顶出窗口 —— 那正是这条护栏要防的失稳 */
+.chat.plan-expanded .chat-main,
+.chat.plan-expanded .chat-composer {
+  display: none;
+}
+
+.chat.plan-expanded .card-slot {
+  flex: 1;
+  max-height: none;
+}
+
+/* 方案正文：markdown 渲染（字号/表格样式来自 .md-body）。
+   高度策略与提问卡的 .ask-body 同款——填满卡体可用高度、超出才内部滚。
+   ⚠️ 别改回固定 240px 小窗：长方案在里面只能一行行抠（2026-09-22 用户反馈
+   「查看区域很小且没有渲染格式」，TUI 是把方案直接铺开）。留着的 font-size
+   只服务那一句「未捕获到方案正文」的兜底文案，.md-body 会用自己的字号盖掉。 */
 .plan-approve-preview {
-  font-size: 12.5px;
-  line-height: 1.65;
-  color: var(--muted);
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  font-size: 13.5px;
+  line-height: 1.7;
+  color: var(--text);
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 8px 10px;
-  max-height: 240px;
-  overflow: auto;
-  white-space: pre-wrap;
   word-break: break-word;
 }
 
@@ -3137,6 +3207,10 @@ mark {
 .ctx-bar {
   flex-shrink: 0;
   width: 72px;
+  /* ⚠️ 高度就保持 1em（= 12.5px，字号那么大）：试过压到 0.72em 去"和数字一样高"，
+     用户明确否掉——「哪怕用量百分比不调，也不要压进度条高度」（2026-09-22）。
+     旁边那枚「3%」的字面确实比实心块矮一截，要拉平只能把那行字号往上抬，
+     别反过来压条 */
   height: 1em;
   border-radius: 3px;
   background: var(--panel-2);
@@ -4325,14 +4399,13 @@ mark {
 
 /* ---------- 提问卡（AskUserQuestion：模型有分歧时问用户选哪个） ----------
    复刻 claude CLI TUI：一次一题 + 顶部 tab 条（每题一格 + 「✔ 提交」格）+
-   复核页。卡片高度是硬约束——它是 .chat 这个列 flex 里的自动高度项，
-   不给上限时会先吃光消息区（.chat-main 压到 0），再把 composer 顶出窗口。 */
+   复核页。卡片高度是硬约束——不给上限时会先吃光消息区（.chat-main 压到 0），
+   再把 composer 顶出窗口；上限现在挂在 .card-slot 上（见上）。 */
 
+/* 高度护栏已上移到 .card-slot（卡槽才是 .chat 的固定高度项，卡片在槽内收缩）；
+   超出部分只有中间的 .ask-body 滚，composer 位置不动 */
 .ask-card {
-  /* 护栏：卡片自身封顶，超出部分只有中间的 .ask-body 滚，composer 位置不动 */
-  max-height: 60%;
   min-height: 0;
-  overflow: hidden;
 }
 
 /* 卡片整体可聚焦（键盘 ↑↓/Enter 走这里的事件），但焦点环只画在行上——
@@ -4356,10 +4429,12 @@ mark {
   align-items: center;
   gap: 4px;
   font-family: inherit;
-  font-size: 11.5px;
+  /* 决策点名（技术选型 / 内容范围 …）：2026-09-22 用户反馈 11.5px 偏小，抬到与
+     题目行同档的 13px —— tab 是这一屏的主导航，不该比正文小 */
+  font-size: 13px;
   font-weight: 500;
   line-height: 1;
-  padding: 5px 9px;
+  padding: 5px 10px;
   border: 1px solid var(--border);
   border-radius: 999px;
   background: var(--panel);
@@ -4384,9 +4459,30 @@ mark {
   font-weight: 600;
 }
 
+/* tab 前的状态标记（勾 / 空心圈，见 AskQuestionCard）：未答 = 灰圈、已答 = 强调色勾。
+   ⚠️ 别退回 Unicode 的 ☐/☒/☑ —— 方框套勾的笔画与相邻文字不是一套，用户直接反馈过
+   「决策点选中状态不好看」（2026-09-22）；仓库另有「按钮图标只用 Icons.tsx 线性图标」的约定 */
 .ask-tab-mark {
-  font-size: 11px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  height: 13px;
+  color: var(--muted);
+  opacity: 0.55;
+}
+
+/* 当前格 / 提交格：标记提亮，免得在强调态里还是灰的 */
+.ask-tab-on .ask-tab-mark,
+.ask-tab-submit .ask-tab-mark {
   opacity: 0.85;
+}
+
+/* 已答：勾换成强调色（与上一条同特异性，靠顺序覆盖，别往上挪） */
+.ask-tab-done .ask-tab-mark {
+  color: var(--accent);
+  opacity: 1;
 }
 
 /* 「提交」格推到最右，与 TUI 的 tab 条末格一致 */
@@ -4415,7 +4511,7 @@ mark {
 
 .ask-question-tag {
   flex: none;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 500;
   opacity: 0.75;
   border: 1px solid var(--border);

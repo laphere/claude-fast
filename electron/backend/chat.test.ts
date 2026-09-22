@@ -237,6 +237,39 @@ describe("system init", () => {
   });
 });
 
+describe("权限模式变化（system/status）", () => {
+  // 实测（2026-09-22 探针）：进计划模式 / 批准 ExitPlanMode 时，CLI 在**同一刻**发一帧
+  // status，permissionMode 就是新档位。底部模式选择器靠它跟手，别再退回「只看 init」。
+  it("status 带 permissionMode → permission_mode 事件", () => {
+    const t = new SdkMessageTranslator();
+    const out = t.translate(msg({ type: "system", subtype: "status", status: null, permissionMode: "plan" }));
+    expect(out).toEqual([{ type: "permission_mode", mode: "plan" }]);
+  });
+
+  it("不带 permissionMode 的 status（requesting 那类）→ 不产出", () => {
+    const t = new SdkMessageTranslator();
+    expect(t.translate(msg({ type: "system", subtype: "status", status: "requesting" }))).toEqual([]);
+    expect(t.translate(msg({ type: "system", subtype: "status", status: "compacting" }))).toEqual([]);
+  });
+
+  it("同一模式只下发一次（init 记基线，重复的 status 不重复推）", () => {
+    const t = new SdkMessageTranslator();
+    // init 报 plan：走 session_ready，同时把基线记成 plan
+    t.translate(msg({ type: "system", subtype: "init", session_id: "s1", model: "m", permissionMode: "plan" }));
+    expect(t.translate(msg({ type: "system", subtype: "status", status: null, permissionMode: "plan" }))).toEqual([]);
+    // 真变了才发
+    expect(t.translate(msg({ type: "system", subtype: "status", status: null, permissionMode: "bypassPermissions" }))).toEqual([
+      { type: "permission_mode", mode: "bypassPermissions" },
+    ]);
+    expect(t.translate(msg({ type: "system", subtype: "status", status: null, permissionMode: "bypassPermissions" }))).toEqual([]);
+  });
+
+  it("其它 system 子类型（如 compact_boundary）不产出", () => {
+    const t = new SdkMessageTranslator();
+    expect(t.translate(msg({ type: "system", subtype: "compact_boundary" }))).toEqual([]);
+  });
+});
+
 describe("完整流去重（streamed_msg_ids）", () => {
   it("流式渲染过的内容，完整 assistant 消息到达时只补 usage", () => {
     const t = new SdkMessageTranslator();

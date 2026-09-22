@@ -223,6 +223,12 @@ export type ChatEvent =
     }
   | { type: "status"; state: "thinking" | "idle" }
   | {
+      /** CLI 实际生效的权限模式变了（进/出计划模式靠它同步底部选择器；
+       *  后端已按变化去重，收到即真变了） */
+      type: "permission_mode";
+      mode: string;
+    }
+  | {
       /** 上下文占用（`Query.getContextUsage()` 的读数），init 一到与每轮结束各推一次。
        *  用户要求「像终端状态行那样一启动就有」，所以不能等第一轮跑完。
        *  ⚠️ 这里送的是**原始数字**而不是 API 的 `percentage` —— 那个字段是 0-100 还是

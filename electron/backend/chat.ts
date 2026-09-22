@@ -67,6 +67,11 @@ export type ChatEvent =
       effort?: string | null;
     }
   | { type: "status"; state: "thinking" | "idle" }
+  /** CLI 实际生效的权限模式变了（system/status 帧带 permissionMode 时下发）。
+   *  进/出计划模式就靠它同步底部那个模式选择器：CLI 在 EnterPlanMode / ExitPlanMode
+   *  生效的**同一刻**发这帧（2026-09-22 探针实测），只关心 status/init 不带的那部分
+   *  （status:'requesting' 那类帧 permissionMode 为 undefined）。 */
+  | { type: "permission_mode"; mode: string }
   /** 上下文占用（getContextUsage 的读数）；init 一到与每轮结束各推一次。
    *  送**原始数字**而不是 API 的 percentage —— 那个字段的单位（0-100 / 0-1）没验过 */
   | { type: "context_usage"; usedTokens: number; windowTokens: number; model?: string | null }
@@ -293,6 +298,9 @@ export class SdkMessageTranslator {
   private streamedMsgIds = new Set<string>();
   /** 当前消息流式中的内容块（key = content block index） */
   private blocks = new Map<number, PendingBlock>();
+  /** 最近一次下发给前端的权限模式（去重用）：CLI 每轮开头都会发 init、每次状态翻转
+   *  都可能发 status，只有真变了才值得推一条事件给前端 setState */
+  private lastMode: string | null = null;
 
   translate(msg: SDKMessage): ChatEvent[] {
     const m = msg as unknown as Rec;
@@ -333,14 +341,28 @@ export class SdkMessageTranslator {
   }
 
   private translateSystem(m: Rec): ChatEvent[] {
+    // status 帧：CLI 把「模式变了」压在它上面（permissionMode 字段）。进计划模式、
+    // 批准 ExitPlanMode 退出计划模式时，这帧与工具结果同刻到达——底部模式选择器
+    // 就靠它跟手。status:'requesting' 那类帧不带该字段，故有才认。
+    // 去重放这里而不是前端：init 每轮开头都发、status 每次状态翻转都发，多数是重复值。
+    if (m.subtype === "status") {
+      const mode = m.permissionMode != null ? String(m.permissionMode) : null;
+      if (mode && mode !== this.lastMode) {
+        this.lastMode = mode;
+        return [{ type: "permission_mode", mode }];
+      }
+      return [];
+    }
     if (m.subtype !== "init") return [];
+    const mode = m.permissionMode != null ? String(m.permissionMode) : null;
+    this.lastMode = mode; // 记下基线：与 init 同值的 status 帧不再重复下发
     return [
       {
         type: "session_ready",
         sessionId: String(m.session_id ?? ""),
         model: m.model != null ? String(m.model) : null,
         // 实际生效的权限模式（跟随 settings.json 时的回显依据；CLI 报 'default' 即我们的 manual）
-        permissionMode: m.permissionMode != null ? String(m.permissionMode) : null,
+        permissionMode: mode,
         // 思考强度。SDK 文档说这个字段只在 Remote Control 类宿主的 init 帧上出现，
         // SDK 宿主可能拿不到 —— 拿不到就是 null，前端据此不显示，别编默认值
         effort: m.effort != null ? String(m.effort) : null,

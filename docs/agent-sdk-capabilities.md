@@ -156,6 +156,8 @@ queue.push({ type: "user", message: { role: "user", content: "…" }, parent_too
 几个容易被忽略但很有用的：
 
 - **`system` / `subtype: 'init'`**：`session_id`、`model`、`permissionMode`、`tools`、`capabilities` 都在这。本项目从它读 `session_id` 做落盘收编，`capabilities` 里还有 `interrupt_receipt_v1` 这类能力位。
+  - 该帧**每轮开头都会发**（d.ts 原话：normally ahead of every other message of that turn），所以 `permissionMode` 隔一轮就有一条新鲜的——但**不跟手**。
+- **`system` / `subtype: 'status'` 带 `permissionMode`**（2026-09-22 实测，本项目已用）：CLI 把「模式变了」压在这帧上，**与工具结果同刻到达**——`EnterPlanMode` 生效时报 `plan`、批准 `ExitPlanMode` 时报回 prePlanMode。底部模式选择器要跟手就得吃这帧（本项目走 `permission_mode` 事件，见 `chat.ts` 的 `translateSystem`）。注意 `status: 'requesting'` 那类帧 `permissionMode` 为 `undefined`，有才认。
 - **`prompt_suggestion`**：每轮**最多一条、且在 `result` 之后到达**——所以消费端必须在拿到 `result` 之后**继续迭代流**，否则永远收不到（想要「下一句猜你想问什么」的 UI 才需要）。
 - **`rate_limit_event` + §1 的 `USAGE_*_PREFIXES`**：配额类 UI 的两块料。
 

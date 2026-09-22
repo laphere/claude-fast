@@ -40,7 +40,9 @@ import ModePicker from "./ModePicker";
 import {
   ArrowDownIcon,
   ArrowUpIcon,
+  CollapseIcon,
   DownloadIcon,
+  ExpandIcon,
   FileIcon,
   MessageCircleIcon,
   PlayIcon,
@@ -288,6 +290,13 @@ export default function ChatView({
   >(null);
   /** 方案审批动作进行中（按钮禁用/文案切换） */
   const [planBusy, setPlanBusy] = useState(false);
+  /** 方案卡「展开」态：卡槽抢成整窗（消息区压到 .plan-expanded 里那个高度），
+   *  好把长方案一次读完。卡没了就自动复位（见下面那个 effect） */
+  const [planExpanded, setPlanExpanded] = useState(false);
+  // 卡收掉（批准/拒绝/换了一轮）即复位展开态：否则下次弹卡时消息区会莫名其妙是压扁的
+  useEffect(() => {
+    if (!plan) setPlanExpanded(false);
+  }, [plan]);
   /** 待作答的提问（AskUserQuestion）：模型有分歧时问用户选哪个。卡内状态（当前第几题、
    *  逐题选择与「其他」文本）由 AskQuestionCard 自己持有，卡片按 requestId 重挂载。
    *  ⚠️ 答案必须经 `updatedInput.answers` 回传，只 allow 不带 answers 等于「用户没选」——
@@ -347,6 +356,15 @@ export default function ChatView({
   const realSessionIdRef = useRef<string | null>(null);
   /** 当前权限模式镜像（handleEvent 等无依赖回调里读最新值） */
   const modeRef = useRef<string | null>(null);
+  /** **进计划模式之前**那个档位——方案审批卡第一颗「批准」的落点。
+   *  TUI 里这一项就是 setMode(prePlanMode)：CLI 自己按 prePlanMode 取标签与动作
+   *  （claude.exe 的 `Bre()`：acceptEdits→"Yes, auto-accept edits"、default→
+   *  "Yes, manually approve edits"、其余→"Yes, and switch to <档位名> for this session"）。
+   *  所以会话是 bypassPermissions 进来的，批准后应当**回到 bypassPermissions**，
+   *  而不是一律压成 acceptEdits（2026-09-22 用户实测报的错位）。
+   *  记法：凡上报/选中的档位不是 plan 就更新它（进 plan 时不动），于是 resume 进来
+   *  就已经在计划模式的会话留 null —— 那种情况回退 acceptEdits（TUI 的默认提议）。 */
+  const prePlanModeRef = useRef<string | null>(null);
   /** 当前阶段镜像（区分「确曾进入思考态后结束」的那次 idle） */
   const statusRef = useRef<"starting" | "thinking" | "idle" | "exited">("idle");
   /** 上一轮是否出错（出错收尾不弹方案审批卡） */
@@ -385,6 +403,21 @@ export default function ChatView({
         {
           const reported = normalizeMode(ev.permissionMode);
           if (reported) {
+            if (reported !== "plan") prePlanModeRef.current = reported;
+            setMode(reported);
+            modeTouchedRef.current = false;
+          }
+        }
+        break;
+      case "permission_mode":
+        // CLI 自己切的模式（进/出计划模式是主要场景）：与 session_ready 同口径——
+        // 以 CLI 上报为准、复位改选标记，此后的偏差归配置/CLI，用户再改选才显式传 flag。
+        // ⚠️ 这条也顺带修了「进了计划模式，底部还挂着进来之前那个档位」的错位
+        {
+          const reported = normalizeMode(ev.mode);
+          if (reported) {
+            // 非 plan 的档位顺手记成「进计划模式前的档位」（见 prePlanModeRef）
+            if (reported !== "plan") prePlanModeRef.current = reported;
             setMode(reported);
             modeTouchedRef.current = false;
           }
@@ -1134,6 +1167,8 @@ export default function ChatView({
         }
         setPlan(null);
       }
+      // 用户手选的档位同样是「非 plan 的那一档」：进计划模式后批准，就该回到它
+      if (m !== "plan") prePlanModeRef.current = m;
       setMode(m);
       modeTouchedRef.current = true;
       const key = sessionKeyRef.current;
@@ -1702,6 +1737,14 @@ export default function ChatView({
     return Math.min(100, Math.round((ctx.used / ctx.window) * 100));
   }, [ctx]);
 
+  /** 方案审批卡那两颗「批准」的落点与文案（对齐 CLI 的 TUI）：
+   *  第一颗 = 恢复进计划模式前那个档位（prePlanMode）；第二颗 = 手动档，
+   *  但当 prePlanMode 本身就是手动档时第二颗换成 acceptEdits —— 免得两颗按钮同义
+   *  （CLI 的 `Bre()` 同样是按 prePlanMode 取标签，见 prePlanModeRef 的注释）。 */
+  const planResumeMode = prePlanModeRef.current ?? "acceptEdits";
+  const planAltMode = planResumeMode === "manual" ? "acceptEdits" : "manual";
+  const modeLabel = (m: string) => MODE_OPTIONS.find((o) => o.value === m)?.label ?? m;
+
   const statusLabel = useMemo(() => {
     switch (status.phase) {
       case "starting":
@@ -1880,7 +1923,7 @@ export default function ChatView({
   };
 
   return (
-    <div className="chat">
+    <div className={`chat${plan && planExpanded ? " plan-expanded" : ""}`}>
       <div className="chat-head">
         <div className="chat-head-body">
           <div className="viewer-title">{title}</div>
@@ -2148,53 +2191,85 @@ export default function ChatView({
         </div>
       )}
 
-      {question && (
-        // key 用 requestId：换一次提问就重挂载，卡内「当前第几题 / 逐题选择」自动归零
-        <AskQuestionCard
-          key={question.requestId}
-          items={question.items}
-          busy={questionBusy}
-          onSubmit={(answers) => void respondQuestion(answers)}
-          onCancel={() => void respondQuestion(null)}
-          onDiscuss={discussQuestion}
-        />
-      )}
+      {(question || plan) && (
+        // 卡槽：与 .chat-composer 同款——通栏但自身不画底色，只负责左右留白，
+        // 卡体在里面对齐消息列（两侧始终空白，2026-09-22 用户定稿）
+        <div className="card-slot">
+          {question && (
+            // key 用 requestId：换一次提问就重挂载，卡内「当前第几题 / 逐题选择」自动归零
+            <AskQuestionCard
+              key={question.requestId}
+              items={question.items}
+              busy={questionBusy}
+              onSubmit={(answers) => void respondQuestion(answers)}
+              onCancel={() => void respondQuestion(null)}
+              onDiscuss={discussQuestion}
+            />
+          )}
 
-      {plan && (
-        <div className="plan-approve">
-          <div className="plan-approve-title">方案已就绪 · 计划模式</div>
-          <div className="plan-approve-preview">
-            {plan.text.trim() || "（本轮未捕获到方案正文，可直接在输入框提修改意见）"}
-          </div>
-          <div className="plan-approve-actions">
-            <button
-              className="btn btn-primary"
-              disabled={planBusy}
-              onClick={() => void respondPlan(true, "acceptEdits")}
-              title="批准方案并退出计划模式；后续文件编辑自动放行"
-            >
-              批准并自动接受编辑
-            </button>
-            <button
-              className="btn"
-              disabled={planBusy}
-              onClick={() => void respondPlan(true, "manual")}
-              title="批准方案并退出计划模式；每个工具仍需手动确认"
-            >
-              批准，逐个确认
-            </button>
-            <button
-              className="btn"
-              disabled={planBusy}
-              onClick={() => void respondPlan(false)}
-              title="留在计划模式，在输入框提出修改意见"
-            >
-              继续修改
-            </button>
-          </div>
-          <div className="plan-approve-hint">
-            批准后退出计划模式并在本轮继续执行；点「继续修改」留在计划模式
-          </div>
+          {plan && (
+            <div className="plan-approve plan-card">
+              <div className="plan-card-head">
+                <div className="plan-approve-title">方案已就绪 · 计划模式</div>
+                {/* 展开/收起：长方案在固定高度的预览区里只能一行行抠（TUI 是直接铺开）。
+                    展开时由 .chat.plan-expanded 把消息区压扁、卡槽撑满整窗 */}
+                <button
+                  type="button"
+                  className="icon-btn icon-btn-sm"
+                  onClick={() => setPlanExpanded((v) => !v)}
+                  aria-label={planExpanded ? "收起方案" : "展开方案"}
+                  title={
+                    planExpanded
+                      ? "收起方案，回到对话与输入框"
+                      : "展开方案，整窗阅读全文（阅读期间临时收起对话与输入框）"
+                  }
+                >
+                  {planExpanded ? <CollapseIcon size={13} /> : <ExpandIcon size={13} />}
+                </button>
+              </div>
+              <div className="plan-approve-preview">
+                {/* 按 markdown 渲染：TUI 里方案就是铺开的正文，原样吐 `#` / `**` 读不了 */}
+                {plan.text.trim() ? (
+                  <MarkdownText text={plan.text} />
+                ) : (
+                  "（本轮未捕获到方案正文，可直接在输入框提修改意见）"
+                )}
+              </div>
+              <div className="plan-approve-actions">
+                <button
+                  className="btn btn-primary"
+                  disabled={planBusy}
+                  onClick={() => void respondPlan(true, planResumeMode)}
+                  title={`批准方案并退出计划模式；本轮之后的权限档位恢复到「${modeLabel(planResumeMode)}」`}
+                >
+                  批准，恢复{modeLabel(planResumeMode)}
+                </button>
+                <button
+                  className="btn"
+                  disabled={planBusy}
+                  onClick={() => void respondPlan(true, planAltMode)}
+                  title={
+                    planAltMode === "manual"
+                      ? "批准方案并退出计划模式；每个工具仍需手动确认"
+                      : "批准方案并退出计划模式；后续文件编辑自动放行"
+                  }
+                >
+                  {planAltMode === "manual" ? "批准，逐个确认" : "批准并自动接受编辑"}
+                </button>
+                <button
+                  className="btn"
+                  disabled={planBusy}
+                  onClick={() => void respondPlan(false)}
+                  title="留在计划模式，在输入框提出修改意见"
+                >
+                  继续修改
+                </button>
+              </div>
+              <div className="plan-approve-hint">
+                批准后退出计划模式并在本轮继续执行；点「继续修改」留在计划模式
+              </div>
+            </div>
+          )}
         </div>
       )}
 

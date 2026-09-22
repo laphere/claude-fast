@@ -3,7 +3,8 @@
  * （二进制里 `ui.render (AskUserQuestion)` 的那套状态机与文案）。
  *
  * 复刻到的行为：
- * - **一次只显示一题**，顶部 tab 条每题一格（`☐/☒` 标已答）+ 末格 `✔ 提交`；
+ * - **一次只显示一题**，顶部 tab 条每题一格（未答 = 空心圈、已答 = 勾，都是 `Icons.tsx`
+ *   的线性图标）+ 末格「勾 + 提交」；
  *   Tab/Shift+Tab 或 ←/→ 切题，当前格高亮（TUI 的 currentQuestionIndex）
  * - **单选选中即记答案并跳到下一题，多选只勾选不跳**（TUI 的 shouldAdvance 不对称：
  *   单选默认真、多选传假）
@@ -24,6 +25,7 @@
  * 确实有答案时给对应 key（不补空串），与 CLI 侧「未答的题不进 answers」一致。
  */
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { CheckIcon, CircleIcon } from "./Icons";
 
 /** AskUserQuestion 的一道题（字段来自 sdk-tools.d.ts 的 AskUserQuestionInput） */
 export interface AskQuestionItem {
@@ -286,22 +288,30 @@ export default function AskQuestionCard({ items, busy, onSubmit, onCancel, onDis
       <div className="plan-approve-title">模型想先确认几件事</div>
 
       <div className="ask-tabs">
-        {items.map((it, i) => (
-          <button
-            key={it.question}
-            type="button"
-            className={`ask-tab ${i === idx ? "ask-tab-on" : ""}`}
-            disabled={busy}
-            title={it.question}
-            onClick={() => {
-              goTab(i);
-              keepCardFocus();
-            }}
-          >
-            <span className="ask-tab-mark">{answerOf(it) !== "" ? "☒" : "☐"}</span>
-            {it.header ?? `第 ${i + 1} 题`}
-          </button>
-        ))}
+        {items.map((it, i) => {
+          const answered = answerOf(it) !== "";
+          return (
+            <button
+              key={it.question}
+              type="button"
+              className={`ask-tab ${i === idx ? "ask-tab-on" : ""} ${answered ? "ask-tab-done" : ""}`}
+              disabled={busy}
+              title={it.question}
+              onClick={() => {
+                goTab(i);
+                keepCardFocus();
+              }}
+            >
+              {/* 已答 = 勾、未答 = 空心圈（都是 Icons.tsx 的线性图标）。
+                  ⚠️ 别退回 Unicode 的 ☐/☒/☑：方框套勾的笔画与相邻文字不是一套，
+                  用户直接反馈过「决策点选中状态不好看」（2026-09-22） */}
+              <span className="ask-tab-mark">
+                {answered ? <CheckIcon size={13} /> : <CircleIcon size={11} />}
+              </span>
+              {it.header ?? `第 ${i + 1} 题`}
+            </button>
+          );
+        })}
         {!shortCircuit && (
           <button
             type="button"
@@ -312,7 +322,10 @@ export default function AskQuestionCard({ items, busy, onSubmit, onCancel, onDis
               keepCardFocus();
             }}
           >
-            <span className="ask-tab-mark">✔</span>提交
+            <span className="ask-tab-mark">
+              <CheckIcon size={13} />
+            </span>
+            提交
           </button>
         )}
       </div>
