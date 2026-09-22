@@ -138,6 +138,22 @@ function isBusy(status: ChatStatus): boolean {
   return status.phase === "starting" || status.phase === "thinking";
 }
 
+/** 出现这些事件即表示模型本轮已经开口（「按停止把消息退回输入框」这个窗口的判据，
+ *  见 ChatView 的 sentRef / recallSent）。⚠️ 别把 status / context_usage 算进来——
+ *  那两类在模型一个 token 都还没出时也会到（status:thinking 是 message_start 发的，
+ *  而前端本地也会先把本轮标成 thinking） */
+const REPLY_EVENTS = new Set<ChatEvent["type"]>([
+  "content_start",
+  "delta",
+  "tool_use_start",
+  "tool_use_complete",
+  "permission_request",
+  "plan_approval",
+  // 兜底：模型只回了 usage、内容块全空时也只剩这一条（message_complete 只由
+  // assistant 消息产出，不会把用户自己那条算成「已回复」）
+  "message_complete",
+]);
+
 type ChatStatus =
   | { phase: "idle" }
   | { phase: "starting" }
@@ -339,6 +355,13 @@ export default function ChatView({
    *  会把 turn_end.isError 置真 —— 那不是故障，据此抑制「本轮执行出错」提示。
    *  在 send 里清、在 turn_end 里用完即清，使它只覆盖「被中断的那一轮」。 */
   const interruptedRef = useRef(false);
+  /** 刚发出、模型还没回话的那条消息。用户此刻按停止多半是打错字要改，把它搬回输入框
+   *  （见 recallSent）；模型一有产出即由 replyStartedRef 关掉这个窗口。
+   *  清成 null 还兼作「这条已经撤回过」的标记——启动窗口那条后端撤回路径要用（见 send）。 */
+  const sentRef = useRef<{ text: string; images: ChatImage[]; itemId: number } | null>(null);
+  /** 本轮模型是否已经开口（出现 REPLY_EVENTS 里任一事件）。为真就只中断、不撤回：
+   *  已经聊起来的那轮把消息搬回输入框，只会和 jsonl 里那条重复 */
+  const replyStartedRef = useRef(false);
   /** 首次发送前的启动 promise（懒启动：第一条消息才 spawn 进程） */
   const startPromiseRef = useRef<Promise<string> | null>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -348,6 +371,8 @@ export default function ChatView({
   // ---------- 事件处理 ----------
 
   const handleEvent = useCallback((ev: ChatEvent) => {
+    // 模型一开口，「按停止把刚发的消息退回输入框」的窗口就关了（见 recallSent）
+    if (REPLY_EVENTS.has(ev.type)) replyStartedRef.current = true;
     switch (ev.type) {
       case "session_ready":
         setRealSessionId(ev.sessionId);
@@ -929,6 +954,9 @@ export default function ChatView({
     setInput("");
     setPendingImages([]);
     const itemId = nextItemId++; // 记住它：本条若在启动期间被撤回，要按 id 把气泡收掉
+    // 记下原话（连图），供「模型还没回话就按停止」时原样退回输入框；本轮一开口即作废
+    sentRef.current = { text, images, itemId };
+    replyStartedRef.current = false;
     setItems((prev) => [
       ...prev,
       { id: itemId, kind: "user", text, images: images.length > 0 ? images : undefined },
@@ -952,8 +980,14 @@ export default function ChatView({
         // 启动期间（首条消息 / resume 加载历史）用户按了停止，后端把这条撤回了：
         // 本地也把乐观气泡收掉，否则界面上会留一条既没发出去、也不会出现在 jsonl
         // 里的幽灵消息。状态交回 idle（后端也会发一条 status:idle，两条幂等）
-        setItems((prev) => prev.filter((it) => it.id !== itemId));
-        setLiveMsgs((n) => Math.max(0, n - 1));
+        //
+        // ⚠️ 走这条路径时 interrupt 一定已经先跑过 recallSent（能记上 interruptRequested
+        // 就说明是带 key 的停止调用，而模型没开口才会撤回）——那它已经把气泡收掉、把实时
+        // 计数扣过了，这里再收一次会把这轮计数扣成负数。sentRef 被清空就是「已撤回」的标记
+        if (sentRef.current !== null) {
+          setItems((prev) => prev.filter((it) => it.id !== itemId));
+          setLiveMsgs((n) => Math.max(0, n - 1));
+        }
         setStatus({ phase: "idle" });
         markedBusy = false;
       }
@@ -1007,20 +1041,50 @@ export default function ChatView({
     [addImages],
   );
 
+  /** 把「刚发出、模型还没回话」的那条消息搬回输入框：气泡收掉，正文与图片原样还原，
+   *  光标落到末尾——用户改完直接回车重发（`send` 里记的 sentRef 提供原话）。
+   *  ⚠️ 这是**本地**撤回，只收拾界面：CLI 很可能已经把那条消息写进 jsonl 了
+   *  （那时点「刷新」它会作为一条历史消息回来）。真源在 jsonl，不在这里动它。 */
+  const recallSent = useCallback(() => {
+    const sent = sentRef.current;
+    if (!sent) return;
+    sentRef.current = null; // 同一条只退一次（连按两下 Esc 不该退成两份）
+    // 停止之前又打了字的情况：撤回的内容排在前面，两边都留着，不静默丢一半。
+    // （纯图消息没有正文，输入框里那点内容原样不动）
+    setInput((prev) => (sent.text ? (prev ? `${sent.text}\n\n${prev}` : sent.text) : prev));
+    if (sent.images.length > 0) setPendingImages((prev) => [...sent.images, ...prev]);
+    setItems((prev) => prev.filter((it) => it.id !== sent.itemId));
+    setLiveMsgs((n) => Math.max(0, n - 1)); // 气泡收回，实时计数跟着退（与发送时 +1 对称）
+    onToast("已撤回刚发出的消息（模型还没回复），修改后可直接重发");
+    // 光标落到末尾：输入框的新值是这轮 setState 之后才有的，等它提交完再定位
+    requestAnimationFrame(() => {
+      const el = inputRef.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(el.value.length, el.value.length);
+    });
+  }, [onToast]);
+
   const interrupt = useCallback(async () => {
     const key = sessionKeyRef.current;
     if (!key) return;
     interruptedRef.current = true; // 本次轮次结束时的 isError 不算故障
+    // 模型还没开口 → 这条消息按「没发出去」处理：连图一起退回输入框。打错字要改是
+    // 主要场景，此刻撤回比「中断了但话没了」有用得多（已开口的那轮只中断，判据见 replyStartedRef）。
+    // 排在发 IPC 之前：手感要即时；万一中断本身失败，toast 会说明，多出来的文字清除即可
+    if (!replyStartedRef.current) recallSent();
     try {
       await api.chatInterrupt(key);
     } catch (e) {
       onToast("中断失败：" + String(e));
     }
-  }, [onToast]);
+  }, [onToast, recallSent]);
 
   /** Esc = 停止本轮（与卡片上那颗停止钮同语义，触发条件逐字对齐）。
    *  为什么要有键盘路径：模型跑起来之后再去够鼠标往往来不及；停止钮的 title 本来就写着
    *  「等价 Esc」。它是全局键（焦点在哪都该生效），所以挂 window。
+   *  停止的动作里带着「撤回」：模型还没开口时，刚发的那条消息连图一起退回输入框
+   *  （interrupt → recallSent），打错字按 Esc 改完直接重发。
    *  ⚠️ 四道让路别删：
    *  ① 有弹层 —— Modal 的 Esc 是关弹层，两者同在 window 上，不让路会一次 Esc 既关弹层
    *     又把本轮打断；
@@ -2229,7 +2293,7 @@ export default function ChatView({
               <button
                 className="btn composer-action composer-stop"
                 onClick={() => void interrupt()}
-                title="中断当前轮（等价 Esc）"
+                title="中断当前轮（等价 Esc）；模型还没回话时消息退回输入框"
                 aria-label="中断当前轮"
               >
                 <StopIcon size={14} />

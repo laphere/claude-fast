@@ -67,7 +67,7 @@
   - **懒启动**：首条消息才 spawn；失败可重试（以 `query` 为成功标志，`starting` 兼作并发去重）。多会话 tab 并行，切 tab 只切 `display`、**不中断流**（非激活页继续后台流式）；同一会话不允许开两个进程（只激活已有 tab）。
   - **权限 6 档**：`manual`（= CLI 的 `default`，每工具都问）/ `auto` / `acceptEdits` / `plan` / `bypassPermissions` / `dontAsk`（不进下拉，配置里配了才以原始名动态加入）。初始档位跟随 settings（项目 `settings.local.json` > 项目 `settings.json` > 用户级，`CLAUDE_CONFIG_DIR` 优先）；未改选时必须用内部选项 `resolvePermissionModeInCli: true`，否则会被 SDK 的 `--permission-mode default` 压过（见下面「Agent SDK 验证结论」第 3 条）。
   - **三类卡片**：权限确认（`canUseTool` → `permission_request` → 允许/拒绝）、提问 `AskUserQuestion`（⚠️ 应答必须带 `updatedInput.answers`，key 用题目**完整文本**；只回 `allow` 会**静默失效**）、方案审批 `ExitPlanMode`（原生 `plan_approval` 事件 + 计划模式下本轮结束的兜底触发，三选一：批准并自动接受编辑 / 批准逐个确认 / 继续修改）。切走计划模式时必须补一次 deny——CLI 阻塞在 `control_request` 上且**不会超时**。
-  - **中断**：`chat_interrupt` → `query.interrupt()`（UI 的「停止」按钮在忙碌且无原生方案卡时替换发送键）。
+  - **中断 / 撤回**：`chat_interrupt` → `query.interrupt()`（UI 的「停止」按钮在忙碌且无原生方案卡时替换发送键）。**⚠️ 模型本轮还没开口时，「停止」= 撤回**：刚发的那条（连图片）退回输入框、乐观气泡收掉、光标落到末尾，改完直接重发——Esc 是主入口，打错字马上按 Esc 是设计场景。判据是「本轮有没有出现过 content / tool / permission / plan_approval / message_complete 事件」（`ChatView` 的 `REPLY_EVENTS` → `replyStartedRef`），一开口就只中断、不撤回：已经聊起来的那条搬回输入框只会与 jsonl 里那条重复。⚠️ 这是**本地**撤回、只收拾界面：CLI 多半已经把那条写进 jsonl 了（点「刷新」它会作为一条历史消息回来），真源仍是 jsonl，不在前端动它。
   - **图片**：PNG/JPEG/GIF/WebP、单图 ≤4.5MB（前后端各拦一次），粘贴与拖入共用同一路，支持纯图无文本发送。
   - **进度轨**：会话页左侧 58px 用户发言导航（悬停波浪 + 气泡预览、点击跳转、高亮跟随滚动）。
   - **落盘**：与终端**同一份** `~/.claude/projects/<mangled>/<sessionId>.jsonl`（新对话自生成 uuid，续聊走 `--resume`），对话完自动进会话列表、终端可 resume；重命名用 `sdk.renameSession`。
