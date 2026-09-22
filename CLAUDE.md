@@ -114,6 +114,7 @@ app 内对话层改用官方 `@anthropic-ai/claude-agent-sdk` 前必须先确认
 - **SDK 只要传了 `canUseTool` 就自动补这个 flag**（`sdk.mjs` 的 transport `initialize()`：`if(canUseTool) q.push("--permission-prompt-tool","stdio")`）。实测 SDK 真实 spawn 参数：`--output-format stream-json --verbose --input-format stream-json --permission-prompt-tool stdio --permission-mode plan --include-partial-messages`。
 - 端到端确认：plan 模式下模型调 `ExitPlanMode`，`canUseTool("ExitPlanMode", { plan: "<markdown 方案正文>" })` 确实到达宿主机；`AskUserQuestion` 同样经 `canUseTool` 下发（input 为问题列表）。
 - **交互工具的完整契约（通道 / payload / 回传格式 / bypass 档行为）见 `docs/agent-sdk-interactive-tools.md`（2026-09-21 实测，权威）**，实现对话层前必读。其中两条改口径的要点：① 工具总数实测在 **24–31** 之间抖动，只能按**具体工具名**判；② **`bypassPermissions` 不会吞掉提问类工具**——`can_use_tool:AskUserQuestion` 照常到达宿主，所以「默认 bypass、有分歧仍要问用户」这条路是通的。
+- **SDK 的整个能力面（`Options` 68 个开关 / `Query` 28 个运行时方法 / `SDKMessage` 39 种事件 / 五个入口 / 会话文件 API）见 `docs/agent-sdk-capabilities.md`（2026-09-22 整理）**，改对话层或想加能力前先翻它——它同时标了「本项目用没用」与「采用前要跑什么探针」，避免重读 9451 行 d.ts。
 - ⚠️ **`AskUserQuestion` 的应答必须带 `updatedInput.answers`**（`{behavior:"allow", updatedInput:{...原input, answers:{"<question 完整文本>":"<选项文字>"}}}`，key 用 `question` 而非 `header`，多选逗号分隔）：只回 `{behavior:"allow"}` **不报错但等于「用户没选」——静默失效，没有任何错误码**，是本层最容易踩的坑，必须有单测覆盖。
 - **结论：方案审批做原生三选一，不再需要 Tauri 那套兜底触发。** 三档均已验证可实现：
   - 「批准并自动接受编辑」= 在 `canUseTool` 里 `await q.setPermissionMode("acceptEdits")` 再返回 `{behavior:"allow"}`——实测热切成功、同一轮继续执行（19 轮），之后的 `Edit`/`Write` 不再进 `canUseTool`（已被 acceptEdits 自动批准）。⚠️ `PowerShell` 仍会进 `canUseTool`（acceptEdits 只自动批准文件编辑），UI 别承诺「批准后不再打扰」。

@@ -12,6 +12,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -34,6 +35,8 @@ import {
   fmtTokens,
   formatTime,
 } from "./MessageParts";
+import { isModalOpen } from "./Modal";
+import ModePicker from "./ModePicker";
 import {
   ArrowDownIcon,
   ArrowUpIcon,
@@ -78,7 +81,8 @@ interface Props {
    *  历史会话要不要继续得先看一眼，误触 resume 会写 jsonl、把旧会话顶到列表最前 */
   readOnly?: boolean;
   /** 只读页上点「继续对话」→ 交给宿主按「默认交互方式」继续（页面对话就地变可发言 /
-   *  内嵌终端开终端 tab），两条都不会立刻起进程 */
+   *  内嵌终端开终端 tab）。页面对话那条会**立刻预热进程**（本组件在 readOnly 翻
+   *  false 时调 chat_prewarm），终端那条由终端自己 resume */
   onContinue?: () => void;
   /** 「继续对话」按钮的 title（按设置的默认方式措辞，让用户知道会落到哪）；禁用时被
    *  continueBlocked 覆盖 */
@@ -186,6 +190,13 @@ const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp
 /** 单图大小上限：API 限 5MB，预留 base64 编码余量取 4.5MB */
 const IMAGE_MAX_BYTES = 4.5 * 1024 * 1024;
 
+/** 输入框高度（px）：空态约 2 行（58px，2026-09-22 从 78px 降 25%——空着时不需要那么高，
+ *  一旦开始输入会立刻长上去），约 10 行封顶，再高就转内部滚动。
+ *  数值按 .chat-input 的 14px / line-height 1.65（≈23px 一行）+ 上下内边距折算，
+ *  **改那边的字号或行高就要回来改这里**。CSS 里刻意不写任何高度（原因见下）。 */
+const COMPOSER_MIN_H = 58;
+const COMPOSER_MAX_H = 260;
+
 /** File → ChatImage（读为 base64 裸数据）；类型/大小不符时 toast 并返回 null */
 function fileToChatImage(file: File, onToast: (msg: string) => void): Promise<ChatImage | null> {
   return new Promise((resolve) => {
@@ -244,6 +255,11 @@ export default function ChatView({
   const [liveMsgs, setLiveMsgs] = useState(0);
   const [permissions, setPermissions] = useState<ChatPermissionRequest[]>([]);
   const [usage, setUsage] = useState<ChatUsage | null>(null);
+  /** 卡片中部那三样：模型名（init 上报）、思考强度（init.effort，可能拿不到）、
+   *  已用上下文（turn_end 的 per-turn usage ÷ 该轮的 contextWindow） */
+  const [modelName, setModelName] = useState<string | null>(null);
+  const [effort, setEffort] = useState<string | null>(null);
+  const [ctx, setCtx] = useState<{ used: number; window: number } | null>(null);
   const [realSessionId, setRealSessionId] = useState<string | null>(null);
   /** 待审批的方案，两种来源：
    *  - native：CLI 经 ExitPlanMode 下发（requestId 非空，应答走 control_response）
@@ -319,6 +335,10 @@ export default function ChatView({
   const statusRef = useRef<"starting" | "thinking" | "idle" | "exited">("idle");
   /** 上一轮是否出错（出错收尾不弹方案审批卡） */
   const lastTurnErrorRef = useRef(false);
+  /** 本轮是用户主动中断的（停止钮 / Esc）。CLI 对中断回的 result 是 error_during_execution，
+   *  会把 turn_end.isError 置真 —— 那不是故障，据此抑制「本轮执行出错」提示。
+   *  在 send 里清、在 turn_end 里用完即清，使它只覆盖「被中断的那一轮」。 */
+  const interruptedRef = useRef(false);
   /** 首次发送前的启动 promise（懒启动：第一条消息才 spawn 进程） */
   const startPromiseRef = useRef<Promise<string> | null>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -332,6 +352,9 @@ export default function ChatView({
       case "session_ready":
         setRealSessionId(ev.sessionId);
         realSessionIdRef.current = ev.sessionId;
+        if (ev.model) setModelName(ev.model);
+        // 取不到就当没有（CLI 只在 Remote Control 类宿主上发这个字段）
+        setEffort(ev.effort ?? null);
         // 以 CLI init 上报的实际生效模式为准（校正显示；并复位改选标记，
         // 此后的偏差归配置/CLI，用户再次改选才会显式传 flag）
         {
@@ -499,9 +522,31 @@ export default function ChatView({
         setPlan({ source: "native", requestId: ev.requestId, text: ev.plan });
         setPlanBusy(false);
         break;
+      case "context_usage":
+        // 后端在 init 一到和每轮结束各推一次：**进程一起来就有数**，不必等跑完一轮
+        // （用户要求「像终端状态行那样一启动就显示」）。顺带捎回模型名。
+        if (ev.windowTokens > 0) {
+          setCtx({ used: ev.usedTokens, window: ev.windowTokens });
+        }
+        if (ev.model) setModelName(ev.model);
+        break;
+
       case "turn_end":
         lastTurnErrorRef.current = !!ev.isError;
-        if (ev.isError) onToast("本轮执行出错");
+        // 已用上下文：turn_end 的 usage 是**本轮**的（result.usage 在流式会话里 per-turn），
+        // 把它三项 input 之和当成「当前上下文里有多少」；分母是该轮的 contextWindow。
+        // ⚠️ 别改用 message_complete 那条 —— 前端那份是累加的，越用越大
+        if (ev.usage && ev.contextWindow) {
+          const u = ev.usage;
+          setCtx({
+            used: u.inputTokens + u.cacheReadInputTokens + u.cacheCreationInputTokens,
+            window: ev.contextWindow,
+          });
+        }
+        // 用户主动中断（停止钮 / Esc）时，CLI 回的 result 是 error_during_execution，
+        // 于是 isError 为真 —— 那不是故障，别报成「本轮执行出错」
+        if (ev.isError && !interruptedRef.current) onToast("本轮执行出错");
+        interruptedRef.current = false; // 用完即清（send 里也会清，防止它跨轮残留）
         break;
       case "exited": {
         setStatus({ phase: "exited", code: ev.code, stderrTail: ev.stderrTail });
@@ -883,20 +928,54 @@ export default function ChatView({
     }
     setInput("");
     setPendingImages([]);
+    const itemId = nextItemId++; // 记住它：本条若在启动期间被撤回，要按 id 把气泡收掉
     setItems((prev) => [
       ...prev,
-      { id: nextItemId++, kind: "user", text, images: images.length > 0 ? images : undefined },
+      { id: itemId, kind: "user", text, images: images.length > 0 ? images : undefined },
     ]);
     setLiveMsgs((n) => n + 1);
     // 两种来源都一样：发出新消息即表示本轮方案卡不再适用
     setPlan(null);
+    let markedBusy = false;
+    interruptedRef.current = false; // 新一轮开始，旧的「因中断而报错」记账不跨轮
     try {
       const key = await ensureStarted();
-      await api.chatSend(key, text, images);
+      // 消息入队前就把本轮标成进行中（必须排在 ensureStarted 之后 —— 它收尾时会
+      // setStatus(idle)，排在前面会被冲掉）。
+      // 后端的 thinking 只在 message_start（模型出第一个 token）时才发，而
+      // 「CLI 读入 + 等模型首包」这段状态还是 idle，于是停止按钮不出现 ——
+      // 用户报的「消息发出去不能立刻打断」就是这段窗口。
+      setStatus({ phase: "thinking" });
+      markedBusy = true;
+      const delivered = await api.chatSend(key, text, images);
+      if (!delivered) {
+        // 启动期间（首条消息 / resume 加载历史）用户按了停止，后端把这条撤回了：
+        // 本地也把乐观气泡收掉，否则界面上会留一条既没发出去、也不会出现在 jsonl
+        // 里的幽灵消息。状态交回 idle（后端也会发一条 status:idle，两条幂等）
+        setItems((prev) => prev.filter((it) => it.id !== itemId));
+        setLiveMsgs((n) => Math.max(0, n - 1));
+        setStatus({ phase: "idle" });
+        markedBusy = false;
+      }
     } catch (e) {
+      // 没送出去就别把界面按在忙碌里（ensureStarted 自己抛的错不走这里 —— 那时
+      // markedBusy 还是 false，状态归它自己那份 catch 管）
+      if (markedBusy) setStatus({ phase: "idle" });
       onToast("发送失败：" + String(e));
     }
   }, [input, pendingImages, status, plan, ensureStarted, denyPlan, onToast, readOnly]);
+
+  /** 输入框随内容长高（到 COMPOSER_MAX_H 后由 .chat-input 的 overflow-y 接管滚动）。
+   *  高度在这里算、不交给 CSS：元素上一旦有 min-height，被撑到 min 之后 scrollHeight
+   *  至少等于 clientHeight，量出来的值恒 ≥ min，于是每敲一个字就多出边框那 2px。
+   *  useLayoutEffect 而非 useEffect —— 要在首次绘制前就把 1 行高撑到 3 行，否则会闪一下。 */
+  useLayoutEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "auto"; // 先释放上一次的内联高度，scrollHeight 才是真实内容高
+    const want = el.scrollHeight + 2; // 上下各 1px 边框（box-sizing: border-box，scrollHeight 不含边框）
+    el.style.height = `${Math.min(Math.max(want, COMPOSER_MIN_H), COMPOSER_MAX_H)}px`;
+  }, [input, readOnly]);
 
   /** 追加图片附件（粘贴/拖拽共用；非图片文件静默忽略） */
   const addImages = useCallback(
@@ -931,12 +1010,48 @@ export default function ChatView({
   const interrupt = useCallback(async () => {
     const key = sessionKeyRef.current;
     if (!key) return;
+    interruptedRef.current = true; // 本次轮次结束时的 isError 不算故障
     try {
       await api.chatInterrupt(key);
     } catch (e) {
       onToast("中断失败：" + String(e));
     }
   }, [onToast]);
+
+  /** Esc = 停止本轮（与卡片上那颗停止钮同语义，触发条件逐字对齐）。
+   *  为什么要有键盘路径：模型跑起来之后再去够鼠标往往来不及；停止钮的 title 本来就写着
+   *  「等价 Esc」。它是全局键（焦点在哪都该生效），所以挂 window。
+   *  ⚠️ 四道让路别删：
+   *  ① 有弹层 —— Modal 的 Esc 是关弹层，两者同在 window 上，不让路会一次 Esc 既关弹层
+   *     又把本轮打断；
+   *  ② 有交互卡（权限 / 提问 / 原生方案）—— 那几张卡的 Esc 语义是「处理这张卡」，不是
+   *     「中断本轮」，叠加执行会把用户想保留的那轮直接掐掉；
+   *  ③ 有右键菜单 —— 同上；
+   *  ④ 焦点在表单控件里（会话搜索框 / 项目搜索框 / 下拉 / 输入法候选都吃 Esc）。
+   *     **聊天输入框要放行**：一边打字一边按 Esc 停是主要用法。 */
+  useEffect(() => {
+    if (readOnly) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.isComposing) return;
+      if (!isBusy(status) || plan?.source === "native") return;
+      if (isModalOpen()) return;
+      if (permissions.length > 0 || question) return;
+      // 右键菜单（三个组件各自管）、权限档位下拉（ModePicker）都没有共享状态可查，只能问 DOM
+      if (document.querySelector(".context-menu, .mode-panel")) return;
+      const t = e.target as HTMLElement | null;
+      const tag = t?.tagName;
+      if (
+        t &&
+        !t.classList.contains("chat-input") &&
+        (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT")
+      ) {
+        return;
+      }
+      void interrupt();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [readOnly, status, plan, permissions, question, interrupt]);
 
   /** 改选权限模式：立即热切换（进程已启动）；进程未启动时记住选择，
    *  spawn 时显式传 flag（覆盖配置默认） */
@@ -1484,13 +1599,27 @@ export default function ChatView({
     [toolNames, items],
   );
 
-  // 只读页点「继续对话」→ 输入框一出来就把光标送进去：刚点完按钮还要再点一次
-  // 输入框才打得出字，是那种「明明点了却没反应」的手感
+  // 只读页点「继续对话」→ 两件事：
+  // ① 输入框一出来就把光标送进去：刚点完按钮还要再点一次输入框才打得出字，
+  //    是那种「明明点了却没反应」的手感；
+  // ② **立刻 resume 进程**，不等第一条消息。点这个按钮就是在说「接着聊」，
+  //    resume 本来就是这一刻该发生的事；顺带让模型信息马上有值（它来自进程 init），
+  //    并把「spawn 期间按停止没反应」那段窗口从发送路径挪到这里。
+  //    注意预热走的是专门的 `chat_prewarm`：前端这个 ensureStarted 只到 `chat_start`，
+  //    而后端 start() 仅注册不 spawn（多开 tab 不该各起一个 CLI），
+  //    真正的 spawn 在 ChatSession.ensureStarted()，由 prewarm 显式触发。
+  // ⚠️ 只认「从只读切过来」这一刻，别写成 readOnly 的普通 effect（本来就非只读的
+  //    页不该因此白起进程）；失败静默——预热不是用户操作，报错留给发送路径。
   const wasReadOnlyRef = useRef(readOnly);
   useEffect(() => {
-    if (wasReadOnlyRef.current && !readOnly) inputRef.current?.focus();
+    if (wasReadOnlyRef.current && !readOnly) {
+      inputRef.current?.focus();
+      void ensureStarted()
+        .then((key) => api.chatPrewarm(key))
+        .catch(() => {}); // 预热不是用户操作，失败不该弹错（真正的报错留给发送路径）
+    }
     wasReadOnlyRef.current = readOnly;
-  }, [readOnly]);
+  }, [readOnly, ensureStarted]);
 
   // 状态变化上报给 tab 栏（多会话并行的进行中标记）。
   // ⚠️ 回调走 ref：宿主传的是内联箭头（每次渲染都是新函数），放进依赖会让本 effect
@@ -1501,6 +1630,13 @@ export default function ChatView({
   useEffect(() => {
     onStatusChangeRef.current?.(status.phase);
   }, [status.phase]);
+
+  /** 已用上下文百分比。分母拿不到（或为 0）就算不出来，整项不显示。
+   *  钳到 100：压缩前的最后一轮可能略超窗口，别把条撑破 */
+  const ctxPct = useMemo(() => {
+    if (!ctx || ctx.window <= 0) return null;
+    return Math.min(100, Math.round((ctx.used / ctx.window) * 100));
+  }, [ctx]);
 
   const statusLabel = useMemo(() => {
     switch (status.phase) {
@@ -2030,64 +2166,89 @@ export default function ChatView({
           void addImages(Array.from(e.dataTransfer.files));
         }}
       >
-        <select
-          className="chat-mode"
-          value={mode ?? ""}
-          onChange={(e) => void changeMode(e.target.value)}
-          title="权限模式（等价终端里的 Shift+Tab 切换）"
-        >
-          {mode === null && (
-            <option value="" disabled hidden>
-              读取配置…
-            </option>
-          )}
-          {/* 配置了下拉之外的值（如 dontAsk）→ 以原始名动态加入显示 */}
-          {mode !== null && !MODE_OPTIONS.some((o) => o.value === mode) && (
-            <option value={mode} title="当前生效模式（来自 settings.json 配置）">
-              {mode}
-            </option>
-          )}
-          {MODE_OPTIONS.map((o) => (
-            <option key={o.value} value={o.value} title={o.title}>
-              {o.label}
-            </option>
-          ))}
-        </select>
-        <textarea
-          ref={inputRef}
-          className="chat-input"
-          placeholder={
-            status.phase === "exited"
-              ? "进程已退出，返回后重新打开对话"
-              : "输入消息，可粘贴/拖入图片；Enter 发送，Shift+Enter 换行"
-          }
-          value={input}
-          rows={1}
-          disabled={status.phase === "exited"}
-          onChange={(e) => setInput(e.target.value)}
-          onPaste={onPasteImages}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-              e.preventDefault();
-              void send();
+        {/* 卡片：输入框在上、控件在下（高度与宽度由 .composer-card / .chat-input 给） */}
+        <div className="composer-card">
+          <textarea
+            ref={inputRef}
+            className="chat-input"
+            placeholder={
+              status.phase === "exited"
+                ? "进程已退出，返回后重新打开对话"
+                : "输入消息，可粘贴/拖入图片；Enter 发送，Shift+Enter 换行"
             }
-          }}
-        />
-        {isBusy(status) && plan?.source !== "native" ? (
-          <button className="btn" onClick={() => void interrupt()} title="中断当前轮（等价 Esc）">
-            <StopIcon />
-            停止
-          </button>
-        ) : (
-          <button
-            className="btn btn-primary"
-            disabled={(!input.trim() && pendingImages.length === 0) || status.phase === "exited"}
-            onClick={() => void send()}
-            title="发送消息"
-          >
-            发送
-          </button>
-        )}
+            value={input}
+            rows={1}
+            disabled={status.phase === "exited"}
+            onChange={(e) => setInput(e.target.value)}
+            onPaste={onPasteImages}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                e.preventDefault();
+                void send();
+              }
+            }}
+          />
+          <div className="composer-bar">
+            {/* 自绘下拉替掉原生 <select>：它的展开列表是系统绘制的，圆角改不到。
+                ⚠️ 顺序要紧：模式选择器必须在 .composer-meta **前面** ——
+                后者挂着 margin-left:auto，放它前面会把后面所有东西一起推到右边 */}
+            <ModePicker
+              value={mode}
+              options={MODE_OPTIONS}
+              extra={mode !== null && !MODE_OPTIONS.some((o) => o.value === mode) ? mode : null}
+              onChange={(m) => void changeMode(m)}
+            />
+            {/* 卡片中部靠右：模型 / 思考强度 / 已用上下文。三项都是「拿得到才显示」——
+                effort 尤其可能一直拿不到（CLI 只在 Remote Control 类宿主上发）。
+                这一块**恒渲染**（哪怕三项全空）：它挂着 margin-left:auto，
+                空白由它吸走，发送钮才停在最右 */}
+            <div className="composer-meta">
+              {modelName && (
+                <span className="meta-item meta-model" title={modelName}>
+                  {modelName}
+                </span>
+              )}
+              {effort && (
+                <span className="meta-item" title={`思考强度 ${effort}`}>
+                  {effort}
+                </span>
+              )}
+              {ctx && ctxPct !== null && (
+                <span
+                  className="meta-item"
+                  title={`已用上下文 ${fmtTokens(ctx.used)} / ${fmtTokens(ctx.window)}`}
+                >
+                  <span className="ctx-bar">
+                    <span className="ctx-fill" style={{ width: `${ctxPct}%` }} />
+                  </span>
+                  {ctxPct}%
+                </span>
+              )}
+            </div>
+            {isBusy(status) && plan?.source !== "native" ? (
+              <button
+                className="btn composer-action composer-stop"
+                onClick={() => void interrupt()}
+                title="中断当前轮（等价 Esc）"
+                aria-label="中断当前轮"
+              >
+                <StopIcon size={14} />
+              </button>
+            ) : (
+              /* 纯图标钮（参考图形态）：没有文字，所以不用 .btn 那套不对称墨迹补偿，
+                 靠它自带的 flex 居中即可（.composer-action 里 padding 归零） */
+              <button
+                className="btn btn-primary composer-action composer-send"
+                disabled={(!input.trim() && pendingImages.length === 0) || status.phase === "exited"}
+                onClick={() => void send()}
+                title="发送消息"
+                aria-label="发送消息"
+              >
+                <ArrowUpIcon size={16} />
+              </button>
+            )}
+          </div>
+        </div>
       </div>
       )}
     </div>

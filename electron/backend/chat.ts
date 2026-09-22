@@ -54,10 +54,22 @@ export interface ChatUsage {
   cacheCreationInputTokens: number;
 }
 
-/** 后端经 IPC 推送给前端的流式事件（tag = type） */
+/** 后端经 IPC 推送给前端的流式事件（tag = type）
+ *  ⚠️ 这份声明与 `src/types.ts` 的 ChatEvent 是**两份**（主进程不引渲染层的类型），
+ *  加字段时两边都要改，否则这边编译过、那边类型对不上。 */
 export type ChatEvent =
-  | { type: "session_ready"; sessionId: string; model?: string | null; permissionMode?: string | null }
+  | {
+      type: "session_ready";
+      sessionId: string;
+      model?: string | null;
+      permissionMode?: string | null;
+      /** init.effort（低/中/高/极高/最高）。CLI 只在 Remote Control 类宿主上发，取不到为 null */
+      effort?: string | null;
+    }
   | { type: "status"; state: "thinking" | "idle" }
+  /** 上下文占用（getContextUsage 的读数）；init 一到与每轮结束各推一次。
+   *  送**原始数字**而不是 API 的 percentage —— 那个字段的单位（0-100 / 0-1）没验过 */
+  | { type: "context_usage"; usedTokens: number; windowTokens: number; model?: string | null }
   | { type: "content_start"; kind: "text" | "thinking" }
   | { type: "delta"; kind: "text" | "thinking" | "tool_input"; text: string }
   | { type: "tool_use_start"; toolUseId: string; name: string }
@@ -68,7 +80,15 @@ export type ChatEvent =
   | { type: "permission_cancelled"; requestId: string }
   /** ExitPlanMode 方案审批：plan 为方案正文；应答 = allow（退出计划模式继续执行）/ deny（留在计划模式） */
   | { type: "plan_approval"; requestId: string; plan: string }
-  | { type: "turn_end"; isError: boolean; resultText?: string | null; usage?: ChatUsage | null }
+  | {
+      type: "turn_end";
+      isError: boolean;
+      resultText?: string | null;
+      /** 本轮（非累计）用量 */
+      usage?: ChatUsage | null;
+      /** 主模型的上下文窗口，做「已用上下文 %」的分母；取不到为 null */
+      contextWindow?: number | null;
+    }
   | { type: "exited"; code: number | null; stderrTail?: string | null }
   | { type: "error"; message: string };
 
@@ -321,6 +341,9 @@ export class SdkMessageTranslator {
         model: m.model != null ? String(m.model) : null,
         // 实际生效的权限模式（跟随 settings.json 时的回显依据；CLI 报 'default' 即我们的 manual）
         permissionMode: m.permissionMode != null ? String(m.permissionMode) : null,
+        // 思考强度。SDK 文档说这个字段只在 Remote Control 类宿主的 init 帧上出现，
+        // SDK 宿主可能拿不到 —— 拿不到就是 null，前端据此不显示，别编默认值
+        effort: m.effort != null ? String(m.effort) : null,
       },
     ];
   }
@@ -475,9 +498,25 @@ function translateResult(m: Rec): ChatEvent[] {
       isError,
       resultText: m.result != null ? String(m.result) : null,
       usage: parseUsage(m.usage),
+      contextWindow: contextWindowOf(m),
     },
     { type: "status", state: "idle" },
   ];
+}
+
+/** 主模型的上下文窗口（给「已用上下文 %」做分母）。
+ *  modelUsage 是按模型字符串分组的：子代理/内部调用（如压缩、权限分类器）可能各占一条，
+ *  所以取 input 用量最大的那条 —— 主循环的输入量必然压过它们；都没有就返回 null。 */
+function contextWindowOf(m: Rec): number | null {
+  const raw = m.modelUsage;
+  if (!raw || typeof raw !== "object") return null;
+  let best: Rec | null = null;
+  for (const u of Object.values(raw as Record<string, Rec>)) {
+    if (!u || typeof u !== "object") continue;
+    if (best === null || Number(u.inputTokens ?? 0) > Number(best.inputTokens ?? 0)) best = u;
+  }
+  const n = Number(best?.contextWindow ?? 0);
+  return Number.isFinite(n) && n > 0 ? n : null;
 }
 
 // ---------------- settings 默认权限档解析 ----------------
@@ -648,6 +687,15 @@ class MessageQueue implements AsyncIterable<SDKUserMessage> {
     }
   }
 
+  /** 撤掉尚未被 SDK 当 prompt 取走的消息，返回撤掉的条数。
+   *  用途：用户刚发出就按停止 —— 那条消息还压在队列里，撤回它才算真的「没发出去」；
+   *  对已经被取走、正在跑的那一轮，只能靠 query.interrupt() 中断。 */
+  withdraw(): number {
+    const n = this.queue.length;
+    this.queue.length = 0;
+    return n;
+  }
+
   end(): void {
     this.done = true;
     if (this.resolveNext) {
@@ -692,6 +740,11 @@ class ChatSession {
   private translator = new SdkMessageTranslator();
   private abort = new AbortController();
   private query: Query | undefined;
+  /** 用户已要求中断、但进程还没起来时先记下（见 interrupt / deliver） */
+  private interruptRequested = false;
+  /** 正卡在 ensureStarted 上的 deliver 条数：只有 >0 时 interrupt 才记账，
+   *  否则空闲时按停止会把 flag 留在那儿、把下一次发送误吞 */
+  private delivering = 0;
   private child: SpawnedProcess | undefined;
   /** 启动中的 promise（并发 send 共用同一次启动；失败时清空以便重试） */
   private starting: Promise<void> | null = null;
@@ -776,6 +829,9 @@ class ChatSession {
     const q = sdk.query({ prompt: this.queue, options });
     this.query = q;
     void this.iterate(q);
+    // 进程一起来就问一次上下文占用：init 要等第一条消息才到，而「一启动就有模型
+    // 和占用率」不能等（对齐终端状态行的观感）——见 pullContextUsageSoon 的注释
+    void this.pullContextUsageSoon();
   }
 
   /** 用 SDK 算好的 command/args 自己 spawn，以便拿到子进程句柄监听退出（emit exited） */
@@ -809,6 +865,10 @@ class ChatSession {
       for await (const msg of q) {
         const events = this.translator.translate(msg);
         for (const e of events) this.emit(e);
+        // 每轮结束刷一次上下文占用（起进程那次由 start() 里的 pullContextUsageSoon 负责，
+        // 因为 init 要等第一条消息才到 —— 光靠这里会漏掉"一启动就显示"）。
+        // 放在这里而不是 translator 里：那层是纯翻译，而 getContextUsage 要 this.query。
+        if (events.some((e) => e.type === "turn_end")) void this.emitContextUsage();
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -819,8 +879,78 @@ class ChatSession {
     }
   }
 
+  /** 拉一次上下文占用并推给前端。
+   *  · `detail: 'summary'` 走「上一轮 usage + 本地估算」的廉价路径；默认的 `'full'`
+   *    会逐类调 token-count API（有成本，没必要）。
+   *  · 已用量取 `categories` 里 `kind === 'used'` 之和 —— d.ts 明确要求按 `kind` 分类、
+   *    **别按英文名判**（`/context` 那套分类：used/free/buffer/deferred，
+   *    其中 buffer 是压缩预留，不该算进「已用」）。
+   *  · 整个函数静默：这是锦上添花的读数，拿不到就算了（前端还有 turn_end 那条兜底）。
+   *  ⚠️ 该 API 在 docs/agent-sdk-capabilities.md 里标「型」（只看了类型、没跑过），
+   *  所以前端保留了从 turn_end 推导的旧路径作兜底，两条写同一个状态。 */
+  private async emitContextUsage(): Promise<boolean> {
+    const q = this.query;
+    if (!q || this.exited) return false;
+    try {
+      const u = await q.getContextUsage({ detail: "summary" });
+      const used = (u.categories ?? [])
+        .filter((c) => c.kind === "used")
+        .reduce((n, c) => n + Number(c.tokens ?? 0), 0);
+      const window = Number(u.maxTokens ?? 0);
+      if (window <= 0) return false;
+      this.emit({
+        type: "context_usage",
+        usedTokens: used,
+        windowTokens: window,
+        model: u.model ? String(u.model) : null,
+      });
+      return true;
+    } catch (e) {
+      // 不致命、也不弹给用户（前端还有 turn_end 那条兜底），但**留一行 warn**：
+      // 这是个标「型」的 API（见 docs/agent-sdk-capabilities.md §9.5），
+      // 哪天 CLI 不再提供、口径变了，就只有这里看得出来。与本文件里
+      // 「未找到本机 claude 可执行文件」那条同一口径（降级但可见）。ASCII 输出：
+      // 中文在这台机器的控制台里会被按 GBK 解成乱码。
+      console.warn("[chat] getContextUsage failed:", e);
+      return false;
+    }
+  }
+
+  /** 进程刚起就把上下文占用拉一次（顺带把模型名带回来）。
+   *  ⚠️ 为什么必须主动问、不能等事件：`system/init` 要等**第一条用户消息**才到 ——
+   *  实测（2026-09-22）预热完成后进程已起，但一条 init/result 都没有，所以挂在
+   *  `session_ready` 上的那次刷新永远不触发，「一启动就显示」也就无从谈起。
+   *  首次可能撞上 SDK 传输层的 initialize 握手（控制请求还发不出去），
+   *  故失败后退一步重试一次；仍失败就放弃，交给 turn_end 那条兜底。 */
+  private async pullContextUsageSoon(): Promise<void> {
+    for (let i = 0; i < 2; i++) {
+      if (this.exited) return;
+      if (await this.emitContextUsage()) return;
+      await new Promise((r) => setTimeout(r, 800));
+    }
+  }
+
   enqueue(msg: SDKUserMessage): void {
     this.queue.push(msg);
+  }
+
+  /** 把一条用户消息交给本轮（内部先等进程起来）。
+   *  返回 false = 启动期间用户按了停止、这条消息已撤回**没有入队** —— 前端必须据此
+   *  把那条乐观气泡收掉，否则界面上会留一条既没发出去、也不会出现在 jsonl 里的幽灵消息。 */
+  async deliver(msg: SDKUserMessage): Promise<boolean> {
+    this.delivering++;
+    try {
+      this.interruptRequested = false; // 清掉上一轮可能残留的记账
+      await this.ensureStarted();
+      if (this.interruptRequested) {
+        this.interruptRequested = false;
+        return false;
+      }
+      this.enqueue(msg);
+      return true;
+    } finally {
+      this.delivering--;
+    }
   }
 
   /** 权限确认回调：推事件给前端卡片 → 等前端应答 → 返回 {behavior:"allow"} / {behavior:"deny"} */
@@ -852,8 +982,15 @@ class ChatSession {
     if (r) r(decision);
   }
 
+  /** 中断本轮。⚠️ 三个时刻都得管，少一个就会出现「按了没反应、要连按几次」：
+   *  ① 本轮正在跑（query 已就绪）→ 交给 SDK 中断；
+   *  ② 消息刚入队、SDK 还没当 prompt 取走 → 直接撤回，这才算真的「没发出去」；
+   *  ③ 进程都还没起来（deliver 卡在 ensureStarted 上；首条消息和 resume 加载历史时
+   *     这段最久，实测 resume 的会话要按三次才停）→ 记账，deliver 拿到进程后兑现。 */
   async interrupt(): Promise<void> {
-    await this.query?.interrupt();
+    if (this.query) await this.query.interrupt();
+    this.queue.withdraw();
+    if (this.delivering > 0) this.interruptRequested = true;
   }
 
   async setPermissionMode(mode: ChatPermissionMode): Promise<void> {
@@ -905,12 +1042,13 @@ export class ChatManager {
   }
 
   /** 发送一条消息（文本 + 可选图片；text 为 "" 即纯图消息）。懒启动进程；图片超限转 error 事件报前端。
-   *  启动失败会**抛出**（IPC 层转成 reject 让前端提示），不会静默丢掉这条消息。 */
-  async send(sessionId: string, text: string, images?: ChatImage[]): Promise<void> {
+   *  启动失败会**抛出**（IPC 层转成 reject 让前端提示），不会静默丢掉这条消息。
+   *  返回 false = 启动期间用户按了停止，这条消息被撤回（前端据此撤掉乐观气泡）。 */
+  async send(sessionId: string, text: string, images?: ChatImage[]): Promise<boolean> {
     const session = this.sessions.get(sessionId);
     if (!session) {
       this.emit(sessionId, { type: "error", message: "会话不存在" });
-      return;
+      return false;
     }
     // 进程已退出：再发就是往一条没人消费的队列里塞（chat_send 还会照常返回成功）。
     // 前端在 exited 态本来就不让发，这里是兜住竞态：报错比静默丢消息好。
@@ -922,10 +1060,27 @@ export class ChatManager {
       userMsg = buildUserMessage(text, images ?? []);
     } catch (e) {
       this.emit(sessionId, { type: "error", message: (e as Error).message });
-      return;
+      return false;
     }
-    await session.ensureStarted();
-    session.enqueue(userMsg);
+    const delivered = await session.deliver(userMsg);
+    if (!delivered) {
+      // 启动期间用户就按了停止：消息撤回、没有入队。状态得交回 idle，
+      // 否则前端会一直停在「思考中…」（它在 send 返回前就把状态置成 thinking 了）
+      this.emit(sessionId, { type: "status", state: "idle" });
+    }
+    return delivered;
+  }
+
+  /** 预热：把该会话的 CLI 进程先起好（`--resume` 也在这一刻发生）。
+   *  用途：用户点「继续对话」——那一声点击就是在说「接着聊」，此刻 resume 天经地义，
+   *  不该等第一条消息。顺带让 init 里的模型信息立刻可用，并把「spawn 期间按停止没反应」
+   *  那段窗口从发送路径上挪走（详见 ChatSession.interrupt 的注释）。
+   *  ⚠️ 与 start() 分开是**有意的**：start() 只注册不 spawn，若它顺手 spawn，
+   *  多开几个对话 tab 就会各起一个 CLI。预热必须是显式动作，不能被 chat_start 兜进来。
+   *  ⚠️ 失败照原样抛给调用方：调用方（渲染层）该静默——预热不是用户操作，不该弹错，
+   *  真正的报错留给发送路径（那边有 toast 且可重试）。 */
+  async prewarm(sessionId: string): Promise<void> {
+    await this.sessions.get(sessionId)?.ensureStarted();
   }
 
   async interrupt(sessionId: string): Promise<void> {

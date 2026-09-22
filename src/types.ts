@@ -216,8 +216,24 @@ export type ChatEvent =
       model?: string | null;
       /** init 事件上报的实际生效权限模式（跟随 settings.json 时的回显依据） */
       permissionMode?: string | null;
+      /** init.effort：本轮会发给模型的思考强度。CLI 文档说只有 Remote Control 类宿主
+       * （终端 / Desktop / VS Code）会上报，SDK 宿主可能拿不到 → 取不到就是 null，
+       * 界面据此不显示这一项，别给它编默认值 */
+      effort?: string | null;
     }
   | { type: "status"; state: "thinking" | "idle" }
+  | {
+      /** 上下文占用（`Query.getContextUsage()` 的读数），init 一到与每轮结束各推一次。
+       *  用户要求「像终端状态行那样一启动就有」，所以不能等第一轮跑完。
+       *  ⚠️ 这里送的是**原始数字**而不是 API 的 `percentage` —— 那个字段是 0-100 还是
+       *  0-1 没验过（该 API 在 docs/agent-sdk-capabilities.md 里标「型」），
+       *  前端自己算比值，单位问题就不存在了 */
+      type: "context_usage";
+      usedTokens: number;
+      windowTokens: number;
+      /** 主模型名（顺带捎回来，省得依赖 session_ready 那条路径） */
+      model?: string | null;
+    }
   | { type: "content_start"; kind: "text" | "thinking" }
   | { type: "delta"; kind: "text" | "thinking" | "tool_input"; text: string }
   | { type: "tool_use_start"; toolUseId: string; name: string }
@@ -233,7 +249,12 @@ export type ChatEvent =
       type: "turn_end";
       isError: boolean;
       resultText?: string | null;
+      /** ⚠️ 本轮（不是累计）的用量：result.usage 在流式会话里就是 per-turn 的，
+       *  所以 input+cache 三项之和 ≈ 当前上下文已占用的量，做百分比要用它。
+       *  别拿 message_complete 那条（前端是累加的，越用越大） */
       usage?: ChatUsage | null;
+      /** 主模型的上下文窗口（result.modelUsage 里那条的 contextWindow）；取不到为 null */
+      contextWindow?: number | null;
     }
   | { type: "exited"; code: number | null; stderrTail?: string | null }
   | { type: "error"; message: string };

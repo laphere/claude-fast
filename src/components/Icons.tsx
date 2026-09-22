@@ -200,7 +200,10 @@ export function ChatIcon({ size = 13, className }: IconProps) {
   );
 }
 
-/** 停止（interrupt） */
+/** 停止（interrupt）：**实心**方块。
+ *  2026-09-22 由描边改成实心：它现在只用在输入卡片的纯图标按钮里，没有文字衬托，
+ *  描边方框在那个尺寸下太轻；实心方块也是「停止」的通行画法（对照用户给的参考实现）。
+ *  ⚠️ 这是本文件里唯一的实心图标，别据此把其他图标也改实心。 */
 export function StopIcon({ size = 13, className }: IconProps) {
   return (
     <svg
@@ -208,14 +211,11 @@ export function StopIcon({ size = 13, className }: IconProps) {
       width={size}
       height={size}
       viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
+      fill="currentColor"
+      stroke="none"
       aria-hidden="true"
     >
-      <rect x="6" y="6" width="12" height="12" rx="1" />
+      <rect x="3" y="3" width="18" height="18" rx="4" />
     </svg>
   );
 }

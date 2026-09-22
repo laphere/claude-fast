@@ -165,8 +165,12 @@ export const api = {
     }
   },
   /** 发一条消息：text 为 "" 且带图片 = 纯图消息 */
+  /** 返回 false = 启动期间用户已按停止，这条消息被后端撤回（调用方要撤掉乐观气泡） */
   chatSend: (sessionId: string, text: string, images: ChatImage[] = []) =>
-    invoke("chat_send", { sessionId, text, images }),
+    invoke<boolean>("chat_send", { sessionId, text, images }),
+  /** 预热会话进程（点「继续对话」时调）：把 CLI 先起好，resume 也在这一刻发生。
+   *  失败不用处理——预热不是用户操作，报错留给发送路径 */
+  chatPrewarm: (sessionId: string) => invoke<void>("chat_prewarm", { sessionId }),
   /** 中断当前轮（等价终端里的 Esc） */
   chatInterrupt: (sessionId: string) => invoke("chat_interrupt", { sessionId }),
   /** 运行中切换权限模式（等价终端 Shift+Tab；CLI 回执失败会以 error 事件浮出） */

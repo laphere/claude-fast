@@ -15,6 +15,13 @@ interface Props {
  *  随之丢失）。Esc 只派发给栈顶（最后挂载）的那一层。 */
 const modalStack: (() => void)[] = [];
 
+/** 当前是否有弹层正开着。
+ *  Esc 的**全局**快捷键（目前是会话页的「打断本轮」）必须据此让路：Modal 的 Esc 语义是
+ *  关弹层，两者都挂在 window 上，不让路就会一次 Esc 既关弹层又把本轮打断。 */
+export function isModalOpen(): boolean {
+  return modalStack.length > 0;
+}
+
 /** 通用模态框外壳：遮罩 + 居中面板 + Esc 关闭 */
 export default function Modal({ title, width = 520, onClose, children, footer }: Props) {
   const onCloseRef = useRef(onClose);

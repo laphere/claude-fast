@@ -437,6 +437,7 @@ function registerIpc(): void {
   });
   handle("chat_send", (p) =>
     chatManager.send(String(p.sessionId), String(p.text ?? ""), p.images ?? []));
+  handle("chat_prewarm", (p) => chatManager.prewarm(String(p.sessionId)));
   handle("chat_interrupt", (p) => chatManager.interrupt(String(p.sessionId)));
   handle("chat_set_permission_mode", (p) =>
     chatManager.setPermissionMode(String(p.sessionId), p.mode));

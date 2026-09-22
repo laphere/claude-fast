@@ -52,6 +52,10 @@
   /* 左侧进度轨宽度（.msg-rail）+ 内容列的左右补正基准：轨道是 flex 实体，
      占了左边一整条位置，不补正的话「左留白+轨道」会比右留白宽出整整一条轨道 */
   --rail-w: 58px;
+  /* 输入卡片底部那一行**所有**元素的高度：模式选择器 / 信息区（模型·强度·上下文）/
+     上下文进度条 / 发送钮（正方形，宽也用它）。用户 2026-09-22 明确要求
+     「底部所有信息都保持和按钮一样高的高度」，所以就留这一个数，别再各处写 30px */
+  --composer-h: 30px;
   /* 等宽字体栈（不随主题变，故只声明一次）。
      ⚠️ 末尾必须挂中文字体，别写成 `Consolas, monospace`：Consolas / Courier New 都**没有
      汉字字形**，中文会交给 `monospace` 的默认 CJK 回退 —— Windows 上那就是**宋体**。
@@ -2826,19 +2830,22 @@ mark {
   border: 1px solid var(--border);
 }
 
-/* 待发送附件预览条（输入区上方；有附件时把分隔线让给它） */
+/* 待发送附件预览条（输入卡片上方）。
+   上边框随 .chat-composer 一起去掉了（2026-09-22「输入框上面的横线去掉」）—— 留着会变成
+   「只有贴图时才冒出一条通栏横线」，与输入区整体无边线的观感不一致 */
 .chat-attachments {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-end;
   gap: 8px;
-  padding: 8px 16px 0;
-  border-top: 1px solid var(--border);
+  /* 左右与输入卡片对齐（22 + 有轨道时补 58），否则缩略图会比卡片左缘缩进 6px */
+  padding: 8px 22px 0;
 }
 
-.chat-attachments + .chat-composer {
-  border-top: none;
+.chat:has(.msg-rail) .chat-attachments {
+  padding-left: calc(22px + var(--rail-w));
 }
+
 
 .chat-attachment {
   position: relative;
@@ -2996,46 +3003,176 @@ mark {
 }
 
 /* 输入区（模式选择/输入框/按钮统一 34px 高、垂直居中同一水平线） */
+/* ============ 底部输入区（卡片式，2026-09-22 改造） ============ */
+
+/* 通栏容器只管左右留白与底部留白，卡片在里面对齐消息列。
+   ⚠️ 上内边距必须是 0（2026-09-22 用户定稿「严格以对话上边界作为分割线」）：
+   .chat-main 是滚动区，它的下边缘就是消息被裁切的位置；上面留 10px 的话，被裁的那行字
+   和卡片上沿之间会空出一道，分割线就变成「看不见的空气」而不是卡片的上边框了。
+   同时**不画上边框**：卡片自己有边框，再压一条通栏横线是重复的 */
 .chat-composer {
-  border-top: 1px solid var(--border);
-  padding: 10px 16px;
+  padding: 0 22px 10px;
+}
+
+/* 左侧补上进度轨占位，让本容器的内容区与 .chat-body 的内容区同宽同起点
+   （都是「轨道 58 + 左右各 22」）—— 下面那个 --read-width 百分比只有这样
+   才与消息列算出同一个绝对值 */
+.chat:has(.msg-rail) .chat-composer {
+  padding-left: calc(22px + var(--rail-w));
+}
+
+.composer-card {
+  /* 与助手消息列同宽同位：偏移算法与 .chat-main:has(> .msg-rail) .chat-msg-assistant 一致，
+     只是那边挂在 .chat-body 里、这边挂在 .chat-composer 里，靠上面那条 padding 对齐基准宽 */
+  max-width: var(--read-width);
+  margin-left: auto;
+  margin-right: auto;
   display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-/* composer 内按钮固定 34px（inline-flex 内容居中；保留 .btn 墨迹补偿 padding） */
-.chat-composer .btn {
-  height: 34px;
-}
-
-
-.chat-input {
-  flex: 1;
-  height: 34px;
-  min-height: 34px;
-  max-height: 140px;
-  box-sizing: border-box;
-  resize: none;
-  font-size: 13px;
-  /* 34px 高减去上下 padding 与边框后内容区恰 16px，行高超出会顶出滚动条 */
-  line-height: 16px;
-  font-family: inherit;
-  color: var(--text);
+  flex-direction: column;
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 8px;
-  /* 墨迹补偿，勿改对称：上 7 下 9 让首行文字与两侧 34px 控件同水平线 */
-  padding: 7px 12px 9px;
-  outline: none;
+  border-radius: 14px;
+  padding: 10px 12px 8px;
+  transition: border-color 0.12s;
 }
 
-.chat-input:focus {
+.chat:has(.msg-rail) .composer-card {
+  margin-left: calc((100% - var(--read-width)) / 2 - var(--rail-w) / 2);
+  margin-right: calc((100% - var(--read-width)) / 2 + var(--rail-w) / 2);
+}
+
+/* 输入框自己没有边框了，焦点态只能由卡片表达 */
+.composer-card:focus-within {
   border-color: var(--accent);
+}
+
+/* 输入框：无边框无底色（卡片就是它的外观）。
+   ⚠️ 这里**不要**写 height / min-height / max-height：ChatView 用 scrollHeight 量内容高，
+   而元素一旦被 min-height 撑高，scrollHeight 至少等于 clientHeight，量出来必然偏大
+   （表现是每敲一个字多出 2px）。高度由 ChatView 的 COMPOSER_MIN_H / COMPOSER_MAX_H 给，
+   到上限后靠下面的 overflow-y 内部滚动 */
+.chat-input {
+  width: 100%;
+  box-sizing: border-box;
+  resize: none;
+  overflow-y: auto;
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.65;
+  color: var(--text);
+  background: none;
+  border: none;
+  outline: none;
+  /* 上 2 下 4：卡片已有 padding，这里只补首行与卡片上沿之间的一点呼吸 */
+  padding: 2px 4px 4px;
+}
+
+.chat-input::placeholder {
+  color: var(--muted);
 }
 
 .chat-input:disabled {
   opacity: 0.55;
+}
+
+/* 卡片底部一行：左权限选择器，右「模型 · 上下文」+ 发送/停止。
+   gap 调大只影响「信息区 ↔ 按钮」那一道 —— 信息区挂着 margin-left:auto 会吸走
+   多余空白，所以左半边（模式选择器 ↔ 信息区）的间距变化看不出来。
+   2026-09-22 用户反馈用量离发送钮太近，8 → 16 */
+.composer-bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-top: 2px;
+}
+
+.composer-bar .btn,
+.composer-bar .chat-mode {
+  height: var(--composer-h);
+}
+
+/* 卡片右上那颗操作钮（发送 / 停止共用）：定宽定高、贴右、padding 归零。
+   .btn 自带 flex 居中，所以图标不需要墨迹补偿；而它那套不对称 padding（上 10 下 8）
+   是给中文文字补墨迹的，留给图标反而会让图标偏心 */
+/* 卡片中部：模型 / 思考强度 / 已用上下文。
+   空白由它吸走（margin-left: auto），所以它**必须恒渲染** —— 三项全空时它是个零宽
+   空盒子，但仍然把发送钮顶到最右。⚠️ 别给 .composer-action 再加 margin-left: auto：
+   两个 auto 会平分空白，那块信息就被推到中间去了 */
+.composer-meta {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  /* 与按钮、模式选择器同高（--composer-h），字号也提到和它们一样的 12.5px ——
+     原来 11.5px 比按钮里的字还小一圈，整块看着发虚（2026-09-22 用户反馈「太小了」） */
+  height: var(--composer-h);
+  font-size: 12.5px;
+  min-width: 0; /* 窄窗口下允许压缩，别把发送钮挤出卡片 */
+  overflow: hidden;
+  color: var(--muted);
+}
+
+.meta-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* 模型名（通常是英文 + [1m] 后缀）：等宽更好扫，过长省略而不是把别的挤掉 */
+.meta-model {
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--font-mono);
+}
+
+/* 上下文占用条：**和文字一样高**（1em），不是和按钮一样高。
+   2026-09-22 两版来回：先按「底部所有信息都保持和按钮一样高」做成 30px，
+   结果是个又高又空的灰块（用户：「太丑了，不能比使用模型的字高才对」），
+   并对齐 CLI 状态行的样子（那边就是一条与文字齐高的细条）。
+   ⚠️ 别再用 --composer-h —— 那个是**控件**的高度，进度条不是控件 */
+.ctx-bar {
+  flex-shrink: 0;
+  width: 72px;
+  height: 1em;
+  border-radius: 3px;
+  background: var(--panel-2);
+  overflow: hidden;
+}
+
+.ctx-fill {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--accent);
+}
+
+/* 发送 / 停止：正方形，边长就是 --composer-h */
+.composer-action {
+  width: var(--composer-h);
+  min-width: var(--composer-h);
+  padding: 0;
+}
+
+/* 发送：圆形 */
+.composer-send {
+  border-radius: 50%;
+}
+
+/* 停止：圆角方形 + 浅底（参考图形态）。
+   底色不能用 --panel —— 卡片本身就是 --panel，那样按钮只剩一圈边框。
+   也刻意不上 --danger：中断是常规操作，不是危险操作 */
+.composer-stop {
+  border-radius: 9px;
+  background: var(--panel-2);
+  border-color: transparent;
+}
+
+.composer-stop:hover {
+  background: var(--border);
 }
 
 /* 工具行内合并显示的执行结果（折叠展开后可见） */
@@ -3117,6 +3254,104 @@ mark {
   padding: 0 8px;
   cursor: pointer;
   outline: none;
+}
+
+/* ---- 权限档位下拉（ModePicker，自绘列表）-------------------------------------
+   为什么不用原生 <select>：它展开后的列表由**系统绘制**（方角 + 系统高亮蓝），
+   border-radius 只作用于收起时的那个控件，碰不到列表 —— 全 app 都是圆角，
+   唯独这里突兀（2026-09-22 用户指出）。 */
+.mode-picker {
+  position: relative;
+  flex-shrink: 0;
+}
+
+/* 触发器直接复用 .chat-mode（尺寸由 .composer-bar .chat-mode 给），
+   只把 <select> 时代的文字排版换成「文字 + 箭头」的 flex */
+.mode-picker .chat-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  /* 不画外框（2026-09-22 用户要求）：卡片本身就是一层边框，控件再套一圈显得碎。
+     用「透明边框」而不是 border: none —— 保住那 2px，否则整行文字会位移。
+     横向内边距 8 → 4：无边框后 8px 会把文字推得离卡片左缘太远，
+     4px 正好和上面 textarea 的 padding-left 对齐（都落在 16px 上） */
+  border-color: transparent;
+  background: none;
+  padding: 0 4px;
+}
+
+/* 悬停不再冒边框（原来 .chat-mode:hover 是 border-color: --dim），换成淡底提示可点 */
+.mode-picker .chat-mode:hover {
+  border-color: transparent;
+  background: var(--panel-2);
+}
+
+/* 完全权限＝一次都不问的危险档：字与箭头都用 app 主橙标出来。
+   箭头原本有 opacity: 0.6，这里必须补回 1，否则橙色会被冲淡 */
+.mode-picker .chat-mode.danger {
+  color: var(--accent);
+}
+
+.mode-picker .chat-mode.danger .mode-arrow {
+  opacity: 1;
+}
+
+.mode-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mode-arrow {
+  flex-shrink: 0;
+  display: flex; /* SVG 图标：flex 居中 */
+  align-items: center;
+  opacity: 0.6;
+}
+
+/* 面板**向上弹**：输入卡片贴着窗口底部，往下弹会出屏。
+   z-index 压过消息区（.chat-body 没有定位，靠 DOM 顺序本来也在上层，这里只是兜底） */
+.mode-panel {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 6px);
+  min-width: 100%;
+  padding: 4px;
+  z-index: 20;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+}
+
+.mode-item {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 7px 12px;
+  border: none;
+  border-radius: 7px;
+  background: none;
+  color: var(--text);
+  font-size: 12.5px;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.mode-item:hover:not(:disabled) {
+  background: var(--accent-soft);
+}
+
+.mode-item.active {
+  color: var(--accent-hover);
+  font-weight: 600;
+}
+
+.mode-item:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
 
 .chat-mode:hover {

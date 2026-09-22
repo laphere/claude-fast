@@ -71,6 +71,10 @@ export interface IpcContract {
   };
   /** text 为 "" + images 非空 = 纯图消息（与 v2.0.0 的 `text: String` 同形） */
   chat_send: { sessionId: string; text: string; images: ChatImage[] };
+  /** 预热：把该会话的 CLI 进程先起好（`--resume` 也在这时发生）。
+   *  与 chat_start 分开是**有意的**：chat_start 只注册不 spawn（多开几个对话 tab
+   *  不该各起一个 CLI），预热必须是「用户点继续对话」这种显式动作触发的 */
+  chat_prewarm: { sessionId: string };
   chat_interrupt: { sessionId: string };
   chat_set_permission_mode: { sessionId: string; mode: ChatPermissionMode };
   /** 权限 / 方案审批 / 提问的应答；denyMessage 仅拒绝时生效。
@@ -182,6 +186,7 @@ export const IPC_CHANNELS = [
   "chat_default_permission_mode",
   "chat_start",
   "chat_send",
+  "chat_prewarm",
   "chat_interrupt",
   "chat_set_permission_mode",
   "chat_permission_response",
