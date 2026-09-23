@@ -93,7 +93,7 @@
 - 本分支：`electron/backend/chat.ts:533-561` 只猜 `<cwd>/node_modules` 与 `<npm root -g>` 两处，**没有 `where` / `command -v` 探测** → 官方原生安装（如 `%USERPROFILE%\.local\bin\claude.exe`）一律找不到，**静默回退 SDK 自带 CLI**（版本与配置可能与终端不同，无任何提示）；且无缓存，每次会话启动都同步 `execFileSync("npm", …, { timeout: 5000, shell })`，最坏阻塞主进程 5 秒。
 - v2 参照：`where claude` / `command -v claude` 取 PATH 全路径，Windows 按 `.exe > .cmd/.bat` 择优并排除 npm 垫片（`chat.rs:854-870`），结果缓存在 `OnceLock`（`:32`、`:785-790`），找不到**明确报错**。
 - 验收：找得到就用本机那份并给出提示/缓存；找不到时报错或至少显式提示，不静默换实现。
-- **已修**：新增 PATH 探测（Windows `where claude` / POSIX `sh -c "command -v claude"`，超时 3s，`windowsHide`），垫片顺同级 `node_modules` 找真身（`pickClaudeFromPathOutput`，纯函数可测）；结果按进程缓存（`resetClaudeExecutableCache()` 供测试），`npm root -g` 的超时 5s→3s 且整体只跑一次。三条都没命中时留一条主进程 `console.warn` 再回退 SDK 自带——**UI 仍不展示这条回退**（前端要展示得加事件字段与渲染，本次未做，属已知缺口）。验证：真机实测命中 `E:\DevTool\node18-global\node_modules\@anthropic-ai\claude-code\bin\claude.exe`，80ms，二次 0ms；单测覆盖 6 种候选形态。
+- **已修**：新增 PATH 探测（Windows `where claude` / POSIX `sh -c "command -v claude"`，超时 3s，`windowsHide`），垫片顺同级 `node_modules` 找真身（`pickClaudeFromPathOutput`，纯函数可测）；结果按进程缓存（`resetClaudeExecutableCache()` 供测试），`npm root -g` 的超时 5s→3s 且整体只跑一次。三条都没命中时留一条主进程 `console.warn` 再回退 SDK 自带——**UI 仍不展示这条回退**（前端要展示得加事件字段与渲染，本次未做，属已知缺口）。（2026-09-23 更新：回退已整体删除——SDK 平台包不进安装包，三条未命中改为 `requireLocalClaudeExecutable` 抛可读错误、经 chat_send reject 到前端 toast；「UI 不展示回退」这个缺口随之消灭，`console.warn` 一并移除。）验证：真机实测命中 `E:\DevTool\node18-global\node_modules\@anthropic-ai\claude-code\bin\claude.exe`，80ms，二次 0ms；单测覆盖 6 种候选形态。
 
 ### B8–B16【低】纵深防御与边角差异
 

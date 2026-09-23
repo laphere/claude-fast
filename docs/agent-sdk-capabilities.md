@@ -22,7 +22,7 @@
 |---|---|---|
 | SDK 版本 | `0.3.278` | `package.json` 的 `version` |
 | 对应 CLI | `2.1.278` | `package.json` 的 `claudeCodeVersion` + `manifest.json` 的 `version`，两处一致 |
-| 原生二进制 | `optionalDependencies` 列 8 个平台包 | npm 只装匹配本机的那一个（win32-x64 的 `claude.exe` 237MB），这也是安装包变大的原因 |
+| 原生二进制 | `optionalDependencies` 列 8 个平台包 | npm 只装匹配本机的那一个（win32-x64 的 `claude.exe` 237MB）。**2026-09-23 起从 `build.files` 排除、不进安装包**——对话层只认本机 claude（§10 第 5 条），安装包不再因它变大 |
 | peerDependencies | `@anthropic-ai/sdk >=0.93.0`、`@modelcontextprotocol/sdk ^1.29.0`、`zod ^4.0.0` | **都不在本仓 `package.json` 的 dependencies 里**，是 npm 7+ 自动装的 peer。本机 zod 实际是 `4.6.5` |
 
 > ⚠️ **想用 `tool()` / `createSdkMcpServer()`（§6.2）就得显式把 `zod` 与 `@modelcontextprotocol/sdk` 加进 `dependencies`**。现在是传递装进来的，`npm install` 时解析不到就会炸；靠「本机恰好有」不是依赖声明。
@@ -291,11 +291,18 @@ options.sandbox = { enabled: true, network: { allowLocalBinding: true }, filesys
 
 ⚠️ **关键口径**：`sandbox` 只控制沙箱**行为**（开关、auto-allow），**真正的访问限制来自权限规则**——文件系统靠 `Read` / `Edit` 规则、网络靠 `WebFetch` 规则。别以为开了沙箱就等于限住了。另外 `enabled: true` 时 `failIfUnavailable` 默认也是 `true`：沙箱依赖缺失（如 Linux 的 `bubblewrap`）会让 `query()` 直接报错退出，而不是静默降级——想降级要显式 `failIfUnavailable: false`。
 
-### 6.10 文件检查点与回滚（**型**）
+### 6.10 文件检查点与回滚（**实**，2026-09-23 探针；未接进对话层）
 
-`enableFileCheckpointing: true` 之后，`rewindFiles(userMessageId, { dryRun? })` 可以把被跟踪文件回滚到某条用户消息时的状态。返回值里带还原 / 删除 / **因符号链接等原因安全拒绝**的计数。
+`enableFileCheckpointing: true` 之后，`rewindFiles(userMessageId, { dryRun? })` 把被跟踪文件回滚到**某条用户消息发出时刻**的状态。探针（`%TEMP%\rewind-probe\`，本机 CLI 2.1.278 / SDK 0.3.278，场景：Write 改文件 → dryRun + 真回滚 → 禁工具凭记忆答内容 → 真读文件）四条硬结论：
 
-**对本项目的用处**：会话页现在有「变更文件面板」（聚合 `Edit` / `Write` / `MultiEdit`），点一下只能定位、不能回退。有了检查点就能做「撤销这一轮的文件改动」——但要注意它 track 的是 CLI 视角的文件状态，与本项目自己那份面板不是同一份数据。
+- **只回滚文件，不回滚对话**——与 CLI `/rewind`（代码 + 对话一起回）的本质差异。回滚后 jsonl 一行不少：被撤销那轮的 `Edit` / `Write` tool_use 记录仍在链上、session_id 不变、resume 仍见全部历史。对话级「回滚」只有**新开 query** 的 `resumeSessionAt`（从链上某条 UUID fork，配 `resumeDropsTurn` 防误丢校验，**型**）——要完整复刻 CLI `/rewind` 得两者组合。
+- **回滚后模型不会误以为文件仍是改过的状态**（采用前最担心的一点，已排除）：rewind 把文件翻回旧内容，在 CLI 的文件新鲜度跟踪眼里等于「文件被外部修改」，**下一轮用户消息自动附一条 `edited_text_file` attachment 注入当前真实内容**（随消息落盘 jsonl，resume 也不翻案）。探针里禁用工具、要求模型「仅凭对话记忆」回答文件内容，答的是回滚后的真值（不是对话里 Write 过的那个）；真 `Read` 也答对。宿主不需要自己补纠偏。
+- **返回值口径**：`dryRun: true` → `{canRewind, filesChanged, insertions, deletions}`（不动磁盘）；**真回滚只回 `{canRewind, skippedLinks}`**——`filesChanged` 清单只有 dryRun 给，UI 要展示「将回滚哪些文件」必须先跑一次 dryRun。
+- **快照仓就是 `~/.claude/file-history/<sessionId>/<key>@vN`**，与 CLI `/rewind` 的快照同一仓库（memory 里那条手工恢复路就是它）；jsonl 用 `file-history-snapshot`（每条用户消息一份，含 trackedFileBackups）/ `file-history-delta`（改动时记 backupFileName）记账。
+
+`userMessageId` 传**宿主 yield `SDKUserMessage` 时自带的 `uuid`**（客户端 uuid 会落盘进链、`rewindFiles` 直接认它；轮次回显——assistant 首帧 / result 帧上的 `user_message_uuid`——用的也是它）。
+
+**对本项目的用处**：会话页「变更文件面板」（聚合 `Edit` / `Write` / `MultiEdit`，点一下只能定位、不能回退）加「撤销本轮改动」。落地时 UI 要向用户讲清语义：**文件回去了、对话记录还在**（下一轮模型经 `edited_text_file` 附件自己知道文件被还原）。仍待验：跟踪文件集合与自家面板聚合口径的重合度——探针只跑了 Write 单文件场景，哪些改动能撤、哪些不在跟踪内没铺开测。
 
 ### 6.11 上下文占用（**实**，2026-09-22 复验）
 
@@ -356,7 +363,7 @@ generateSessionTitle(description: string, opts?: { persist?: boolean }) → Prom
 | `startup()` | 消掉首条消息的冷启等待 | 需先定预热时机 + warm 池失效策略，见 §6.8 |
 | `agents` | app 内置子代理，跨项目可用 | 与「项目 `.claude/agents/`」互补 |
 | `outputFormat` | 会话导出 / 批量分析的结构化输出 | 只在特定功能里用 |
-| `enableFileCheckpointing` + `rewindFiles()` | 变更文件面板加「撤销本轮改动」 | 需先验证与自家面板的数据口径 |
+| `enableFileCheckpointing` + `rewindFiles()` | 变更文件面板加「撤销本轮改动」 | 机制已实测（§6.10，2026-09-23）：只回滚文件、模型经 `edited_text_file` 附件自动纠偏；剩「跟踪范围 vs 面板聚合口径」待验 |
 | `maxTurns` / `maxBudgetUsd` | 成本护栏（设置项） | 客户端侧，不依赖账单 |
 | `options.title` | 新会话标题**开进程时直接给** | 注意与 §6.12 分工：那个是**宿主自己定**一个写死的标题（且给了就不再自动起名）；要让 CLI 起名走 `generateSessionTitle()`。头部统计 / 四按钮现在仍靠轮询 `chat_session_meta` 等 jsonl 里出现标题 |
 | `tool()` + `createSdkMcpServer()` | 把会话搜索 / 用量查询 / 回收站做成工具 | 需先显式加 `zod` 依赖 |
@@ -368,8 +375,8 @@ generateSessionTitle(description: string, opts?: { persist?: boolean }) → Prom
 1. **`settingSources` 不能传 `[]`**（**实**）：那是 SDK isolation 模式，**连认证一起丢**（实测报 `Not logged in`）。本项目刻意不传任何值 = CLI 用自身默认（user + project + local）。
 2. **不传 `settingSources` 也还不够**（**实**）：SDK 默认会显式传 `--permission-mode default`，**CLI flag 压过 settings 里的 `permissions.defaultMode`**。要继承得用内部选项 `resolvePermissionModeInCli: true`（`sdk.d.ts` 里没有、`sdk.mjs` 里实现了），或自己 `resolveSettings()` + `filterEscalatingDefaultMode()` 算好再显式传。
 3. **esbuild 必须 `external`**（**实**）：SDK 是 ESM-first，打进 CJS bundle 会让 esbuild 把 `import.meta.url` 降级成占位对象，而 SDK 靠它定位平台原生二进制——产物一载入就抛 `ERR_INVALID_ARG_VALUE`。所以对话层用运行时动态 `await import()`。
-4. **asarUnpack 必须解包 SDK 平台包**（**实**）：`**/node_modules/@anthropic-ai/claude-agent-sdk*/**`。asar 内可执行文件没法 spawn，且它带着 237MB 的 `claude.exe`。
-5. **`pathToClaudeCodeExecutable` 只能指真实可执行文件**（**实**）：npm 无扩展名 shim → `failed to launch`；`claude.cmd` → `spawn EINVAL`（SDK 不启 shell）；`bin\claude.exe` → 成功。找不到就不传，SDK 回退自带那份。
+4. **asarUnpack 只解 SDK 主包、平台包整体排除**（**实**，2026-09-23 起）：主包 `**/node_modules/@anthropic-ai/claude-agent-sdk/**`（`sdk.mjs` 是动态 `import()` 的 ESM，要按真实文件路径加载）；平台包 `!**/node_modules/@anthropic-ai/claude-agent-sdk-*/**` 从 `build.files` 排除、不进安装包——对话层只认本机 claude（见下一条），自带 CLI 是 237MB 死重。
+5. **`pathToClaudeCodeExecutable` 只能指真实可执行文件**（**实**）：npm 无扩展名 shim → `failed to launch`；`claude.cmd` → `spawn EINVAL`（SDK 不启 shell）；`bin\claude.exe` → 成功。找不到就抛可读错误（`chat.ts` 的 `requireLocalClaudeExecutable`，chat_send reject → 前端 toast）——**不再回退 SDK 自带**（2026-09-23 起安装包里没有那份）。
 6. **`AbortController` 与 `SpawnOptions.signal` 语义不同**（**型**，d.ts 明确解释）：SDK 故意**不**把调用方的裸 signal 交给 Node `spawn()`——Windows 上那会走 `TerminateProcess`（立即、不可捕获），抢在 SDK 的 stdin-EOF 优雅收尾之前把 CLI 打死。要**立即**信号请捕获自己传给 `abortController` 的那个 controller。本项目的优雅关闭（关 stdin 等 3s 再强杀）正是踩在这条上。
 7. **`bun build --compile` 另有坑**：编译成单文件后 `require.resolve` 在虚拟 FS 里失效，得用 `./extract` 的 `extractFromBunfs()` 把二进制解到真实路径再传进去。本项目不用 bun，忽略即可。
 8. **alpha / 内部面要当心**：`sessionStore` / `taskBudget` / `importSessionToStore` 标了 `@alpha`；`resolvePermissionModeInCli`、`--permission-prompt-tool` 是**未在 d.ts / `--help` 里正式列出**的面。升级 SDK 或 CLI 时这些是第一批要回归的。
@@ -388,6 +395,6 @@ generateSessionTitle(description: string, opts?: { persist?: boolean }) → Prom
 1. `getSessionMessages()` 的合并 / usage 口径是否与本项目 `sessions.ts` 一致（§6.6）——**不同就用自家的，别混用**。
 2. `startup()` 预热后 `query()` 的 `Options` 是否仍可部分覆盖（cwd / resume 是否被 warm 时定死）。
 3. `setModel()` / `setPermissionMode()` 热切的**生效边界**——是下一轮生效还是当轮？会不会导致 jsonl 里出现不一致的 `permissionMode`（本项目 `listSessions` 会读这个字段）。
-4. `rewindFiles()` 的跟踪范围与自家「变更文件面板」的重合度。
+4. ~~`rewindFiles()` 的跟踪范围与自家「变更文件面板」的重合度~~ → **2026-09-23 探针已验大半**（`%TEMP%\rewind-probe\`，§6.10）：只回滚文件不回滚对话、dryRun / 真回滚、回滚后模型自动纠偏全过；**仍待验**「跟踪文件集合 vs 自家面板聚合」的重合度（探针只跑了 Write 单文件场景）。
 5. ~~`getContextUsage()` 的数值口径~~ → **2026-09-22 已接进对话层并复验**：可用，`kind==='used'` 求和 + `maxTokens` 作分母即得占用率；**只有 `percentage` 的单位没验**（所以对话层不转发它，见 §6.11）。
 6. `tool()` + `createSdkMcpServer()` 在**打包后**（asar / unpack）能否正常调用。

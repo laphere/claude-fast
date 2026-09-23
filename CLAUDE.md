@@ -16,7 +16,7 @@
 | `electron/main.ts` | Electron 主进程：窗口 / 托盘 / 单实例 / 关闭拦截 / 全部 IPC 命令注册 |
 | `electron/preload.ts` | `contextBridge` 白名单 API（渲染进程无 Node 权限，全部经 `ipcRenderer.invoke`） |
 | `electron/backend/` | 后端业务模块：`paths.ts`（数据根定位/内容校验/进程内缓存 + 项目目录）、`config.ts`（配置模型 + 三步保护 + 读改写 + 写串行化）、`chat.ts`（**app 内对话层**：官方 Agent SDK 托管 + 流式事件翻译 + 多会话/权限/方案/提问/图片）、`provider.ts`（供应商切换，含 CC Switch SQL 导入）、`model-fetch.ts`（供应商模型列表拉取）、`usage-query.ts`（Coding Plan 用量）、`claude-update.ts`（本机 claude 版本检查与升级）、`usage-stats.ts`（全局用量台账）、`session-extra.ts`（会话搜索/进度轨/导出/失效项目数据清除/置顶清单）、`mangle.ts`（目录名正反解析）、`sessions.ts`（会话列表/元数据/内容解析/重命名）、`trash.ts`（回收站）、`platform.ts`（启动/健康检查/resume/批量扫描/旧脚本迁移）、`scriptnames.ts`（脚本时代的转义工具，生产代码只剩 `shQuote` 在用，`parseCdPath` 只服务旧脚本迁移）、`text.ts`（标题清洗） |
-| `electron/backend/chat.ts` | **对话层不用移植 `v2.0.0` 的 `chat.rs`**，改用官方 `@anthropic-ai/claude-agent-sdk`（0.3.278，与 CLI 2.1.278 同版）。运行时**动态 `import()`**（ESM-first，见下方「打包」），`import type` 拿类型（编译期擦除）。要点：懒启动、多会话并行、6 档权限（`manual`→CLI 的 `default`）、`canUseTool` 权限/方案/提问、`interrupt()` 中断、图片 base64（≤4.5MB）、**会话标题**（`generateSessionTitle`）、`pathToClaudeCodeExecutable` 跟随本机 `bin\claude.exe` |
+| `electron/backend/chat.ts` | **对话层不用移植 `v2.0.0` 的 `chat.rs`**，改用官方 `@anthropic-ai/claude-agent-sdk`（0.3.278，与 CLI 2.1.278 同版）。运行时**动态 `import()`**（ESM-first，见下方「打包」），`import type` 拿类型（编译期擦除）。要点：懒启动、多会话并行、6 档权限（`manual`→CLI 的 `default`）、`canUseTool` 权限/方案/提问、`interrupt()` 中断、图片 base64（≤4.5MB）、**会话标题**（`generateSessionTitle`）、`pathToClaudeCodeExecutable` 跟随本机 `bin\claude.exe`（探测不到直接报错、不回退 SDK 自带——平台包已不进安装包，见铁律 2） |
 | `tools/` | 构建脚本：`dev.mjs`（并行 vite + electron）、`build-electron.mjs`（esbuild 编译主进程） |
 | `build/` | 打包图标（icon.ico / icon.png / icon.icns） |
 | `README.md` | 使用说明、构建方法 |
@@ -151,8 +151,8 @@ app 内对话层改用官方 `@anthropic-ai/claude-agent-sdk` 前必须先确认
 - SDK 自带 CLI：`node_modules/@anthropic-ai/claude-agent-sdk-win32-x64/claude.exe`（237MB，与全局那份同版本）。`pathToClaudeCodeExecutable` 的指向实测：
   - npm shim `E:\DevTool\node18-global\claude`（无扩展名 bash 脚本）→ 失败（`exists but failed to launch`）
   - `…\claude.cmd` → 失败（`spawn EINVAL`，SDK 不启 shell）
-  - **`…\node_modules\@anthropic-ai\claude-code\bin\claude.exe` → 成功**，且模型/配置与终端一致（`model = deepseek-v4.1-flash[1m]`，即用户 settings 里的值）。→ 「跟随本机 Claude Code」要指到 `bin\claude.exe`，并保留「找不到就回退 SDK 自带」的分支。
-- asar：现有 electron-builder 配置（`files: ["dist/**","dist-electron/**"]`）会把生产依赖的 `node_modules` **打进** `app.asar`（实测解析 `release/win-unpacked/resources/app.asar` 头部，含 `node_modules/`），且未配 `asarUnpack`，`resources/` 下没有 `app.asar.unpacked`。SDK 的平台包（含 237MB `claude.exe`）必须 `asarUnpack`，或用上面的 `pathToClaudeCodeExecutable` 指到 app 包外。
+  - **`…\node_modules\@anthropic-ai\claude-code\bin\claude.exe` → 成功**，且模型/配置与终端一致（`model = deepseek-v4.1-flash[1m]`，即用户 settings 里的值）。→ 「跟随本机 Claude Code」要指到 `bin\claude.exe`。（2026-09-23 更新：**「找不到就回退 SDK 自带」的分支已删除**，探测不到改为抛可读错误，见下条与铁律 2。）
+- asar：现有 electron-builder 配置（`files: ["dist/**","dist-electron/**"]`）会把生产依赖的 `node_modules` **打进** `app.asar`（实测解析 `release/win-unpacked/resources/app.asar` 头部，含 `node_modules/`），且未配 `asarUnpack`，`resources/` 下没有 `app.asar.unpacked`。SDK 的平台包（含 237MB `claude.exe`）必须 `asarUnpack`，或用上面的 `pathToClaudeCodeExecutable` 指到 app 包外。**2026-09-23 起取后者并更进一步：平台包直接从 `build.files` 排除（`!**/node_modules/@anthropic-ai/claude-agent-sdk-*/**`），根本不进安装包**——对话层只认本机 claude，SDK 自带那份是死重；`asarUnpack` 同步收窄为只解 SDK 主包（`sdk.mjs` 经动态 import 按真实路径加载）。
 - **那两条「未验」的现状（2026-09-21 更新）**：① 「electron-builder 产物里真跑通 SDK」——**已真机打包实测通过**（当时本机 `node_modules` 未装 `electron`，只能做静态机制确认，故留到打包阶段）；② 「asar 内可执行文件没法 spawn」是 Electron 已知限制、不是本项目缺陷，对策就是上面的 `asarUnpack`，不必再在真机复现。
 
 ## 铁律
@@ -166,14 +166,14 @@ app 内对话层改用官方 `@anthropic-ai/claude-agent-sdk` 前必须先确认
 - ⚠️ **打包必须走 `npm run dist:*`**（= `npm run build` + electron-builder）：主进程由 esbuild 编译为 `dist-electron/*.cjs`，未构建直接 `electron .` 会找不到模块。
 - ⚠️ **Agent SDK 的两条打包约束**（都是实测踩出来的，改打包配置时别看漏）：
   1. **`tools/build-electron.mjs` 必须把 `@anthropic-ai/claude-agent-sdk` 放在 `external`**：SDK 是 ESM-first，打进 CJS bundle 会让 esbuild 把 `import.meta.url` 降级成占位对象，而 SDK 靠它定位平台原生二进制——产物一载入就抛 `ERR_INVALID_ARG_VALUE`。对话层因此用运行时动态 `await import()`。
-  2. **`package.json` 的 `build.asarUnpack` 必须解包 SDK 的平台包**（`**/node_modules/@anthropic-ai/claude-agent-sdk*/**`）：它带着 237MB 的 `claude.exe`，而 asar 内的可执行文件**没法 spawn**（Electron 的 fs 能读 asar，`child_process` 要真实路径）。安装包因此会比以前大约 250MB。
+  2. **SDK 主包必须 `asarUnpack`（`**/node_modules/@anthropic-ai/claude-agent-sdk/**`），SDK 平台包（`claude-agent-sdk-*`，各带一份 237MB `claude.exe`）必须从 `build.files` 排除（`!**/node_modules/@anthropic-ai/claude-agent-sdk-*/**`）**——2026-09-23 起：app 内对话只认本机 claude（`pathToClaudeCodeExecutable`），SDK 自带那份 CLI 是死重、版本还冻结在打包时刻；探测不到本机 claude 时 `chat.ts` 抛可读错误（`requireLocalClaudeExecutable` / `NO_LOCAL_CLAUDE_MESSAGE`，chat_send reject → 前端 toast），**不静默回退**。主包解包仍必需：sdk.mjs 是动态 `import()` 的 ESM，要能按真实文件路径加载。
 
 ## 开发命令
 
 ```bash
 npm install                  # 依赖（国内可设 ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ 加速）
 npm run dev                  # 开发模式（vite 热更新 + electron，主进程改动自动重启）
-npm test                     # 后端单元测试（381 个：路径解析/配置/扫描/根目录定位/会话管理/mangle/回收站/终端 PTY/剪贴板图片/对话层（含会话标题）/用量台账）
+npm test                     # 后端单元测试（383 个：路径解析/配置/扫描/根目录定位/会话管理/mangle/回收站/终端 PTY/剪贴板图片/对话层（含会话标题/本机 claude 探测）/用量台账）
 npm run typecheck            # 类型检查（前端 tsc + electron tsc）
 npm run build                # 生产构建（typecheck + vite build + esbuild 编译主进程）
 npm run dist:win             # Windows NSIS 安装包（别名：npm run electron:build）

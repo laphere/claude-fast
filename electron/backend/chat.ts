@@ -653,7 +653,8 @@ export function pickClaudeFromPathOutput(
 
 /**
  * 跟随本机 Claude Code：实测只有真实可执行文件能跑（见 pickClaudeFromPathOutput 的注释）。
- * 找不到就返回 undefined —— 上层不传 pathToClaudeCodeExecutable，SDK 用自带的 claude.exe。
+ * 找不到就返回 undefined —— 上层 start() 据此抛可读错误（requireLocalClaudeExecutable），
+ * 不再有「回退 SDK 自带 claude.exe」这条路（安装包已不带它，见 NO_LOCAL_CLAUDE_MESSAGE）。
  */
 export function findClaudeExecutable(
   platform: NodeJS.Platform = process.platform,
@@ -661,6 +662,20 @@ export function findClaudeExecutable(
   if (claudeExeCache) return claudeExeCache.path;
   claudeExeCache = { path: resolveClaudeExecutable(platform) };
   return claudeExeCache.path;
+}
+
+/** 本机探测不到 claude 时 start() 抛出的报错文案（导出供单测断言）。
+ *  2026-09-23 起安装包不再携带 SDK 平台包自带的 claude.exe（237MB 死重、版本冻结在
+ *  打包时刻越来越旧），「找不到就静默回退旧引擎」不复存在——必须明确失败。与内嵌
+ *  终端 tab、健康检查同一口径：全 app 只认本机这一份引擎。 */
+export const NO_LOCAL_CLAUDE_MESSAGE =
+  "未找到本机 Claude Code，无法开始对话。请先安装 Claude Code（顶栏健康检查可查看状态），然后重试发送。";
+
+/** start() 专用：本机 claude 探测结果为空即抛可读错误（chat_send reject → 前端 toast，
+ *  可重试）。入参是探测结果而非函数，纯函数可直接单测。 */
+export function requireLocalClaudeExecutable(found: string | undefined): string {
+  if (!found) throw new Error(NO_LOCAL_CLAUDE_MESSAGE);
+  return found;
 }
 
 /** 真正的探测（结果由 findClaudeExecutable 缓存）。顺序按「跟随本机」的权威性排：
@@ -675,7 +690,8 @@ function resolveClaudeExecutable(platform: NodeJS.Platform): string | undefined 
     return fs.existsSync(p) ? p : undefined;
   };
   // ① PATH 探测。此前没有这一步，只猜下面两处目录——官方原生安装（如
-  // %USERPROFILE%\.local\bin\claude.exe）一律找不到，且**静默**退化成 SDK 自带那份。
+  // %USERPROFILE%\.local\bin\claude.exe）一律找不到，当时只能**静默**退化成 SDK 自带
+  // 那份（该回退已于 2026-09-23 移除，见 requireLocalClaudeExecutable）。
   try {
     const out =
       platform === "win32"
@@ -706,11 +722,11 @@ function resolveClaudeExecutable(platform: NodeJS.Platform): string | undefined 
     const global = probe(prefix);
     if (global) return global;
   } catch {
-    // 忽略：回退到 SDK 自带可执行文件
+    // 忽略：三条都没命中由末尾统一返回 undefined（上层 start() 报可读错误）
   }
-  // 三条都没命中：显式留一条日志再回退。静默回退正是这条被审计点名的地方
-  // （app 内对话与终端跑的可能不是同一个 CLI）。前端暂不展示，排查时看主进程输出。
-  console.warn("[chat] 未找到本机 claude 可执行文件，本次对话改用 SDK 自带的那份");
+  // 三条都没命中 → undefined，调用方（start() → requireLocalClaudeExecutable）抛可读错误。
+  // 旧版在这里「留一行日志然后静默回退 SDK 自带那份」——2026-09-23 起安装包不携带
+  // SDK 平台包，回退的路不存在了，报错移到真正失败的发送路径上（前端有 toast）。
   return undefined;
 }
 
@@ -876,9 +892,9 @@ class ChatSession {
     // 「跟随本机 Claude Code」：指向用户自己那个 claude 可执行文件，这样 app 内对话
     // 与终端跑的是同一个 CLI、同一份配置。⚠️ 只能指真实可执行文件——实测 npm 的无扩展名
     // shim 会 `failed to launch`、`claude.cmd` 会 `spawn EINVAL`（SDK 不启 shell）。
-    // 找不到就**不传**，SDK 回退它自带的 claude-agent-sdk-win32-x64/claude.exe。
-    const userClaude = findClaudeExecutable();
-    if (userClaude) options.pathToClaudeCodeExecutable = userClaude;
+    // 找不到就抛可读错误（requireLocalClaudeExecutable）——安装包不携带 SDK 自带的
+    // claude.exe，没有可回退的引擎，报错让用户去装（健康检查可看状态）。
+    options.pathToClaudeCodeExecutable = requireLocalClaudeExecutable(findClaudeExecutable());
 
     const q = sdk.query({ prompt: this.queue, options });
     this.query = q;
@@ -970,7 +986,7 @@ class ChatSession {
       // 不致命、也不弹给用户（前端还有 turn_end 那条兜底），但**留一行 warn**：
       // 这是个标「型」的 API（见 docs/agent-sdk-capabilities.md §9.5），
       // 哪天 CLI 不再提供、口径变了，就只有这里看得出来。与本文件里
-      // 「未找到本机 claude 可执行文件」那条同一口径（降级但可见）。ASCII 输出：
+      // generateTitle 的失败处理同一口径（降级但可见）。ASCII 输出：
       // 中文在这台机器的控制台里会被按 GBK 解成乱码。
       console.warn("[chat] getContextUsage failed:", e);
       return false;

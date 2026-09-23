@@ -22,7 +22,7 @@
 3. `supportedCommands()` / `supportedModels()` + `setModel()` → `/` 补全 + 模型热切（`ModePicker.tsx` 已有权限档位下拉的先例）
 4. `startup()` 预热 → 消掉首条消息的冷启（**要先定预热时机与 warm 池失效策略**，`WarmQuery` 只能 query 一次、`Options` 起进程时定死）
 5. `agents` / `tool()` + `createSdkMcpServer()` → app 内置子代理、把会话搜索/用量查询做成工具（**要先把 `zod`、`@modelcontextprotocol/sdk` 显式加进 `dependencies`**，现在只是传递装进来的）
-6. `enableFileCheckpointing` + `rewindFiles()` → 变更文件面板加「撤销本轮改动」（⚠️ 与 `~/.claude/file-history/` 那条手工恢复路的关系要先理清）
+6. `enableFileCheckpointing` + `rewindFiles()` → 变更文件面板加「撤销本轮改动」（机制已实测 2026-09-23，`docs/agent-sdk-capabilities.md` §6.10：与 `~/.claude/file-history/` 手工恢复路**同一仓库**；只回滚文件、回滚后模型经 `edited_text_file` 附件自动纠偏；剩「跟踪范围 vs 面板聚合口径」重合度待验）
 7. `USAGE_*_PREFIXES` + `rate_limit_event` → 配额类错误的差异化 UI（常量现成，直接可用）
 8. `PreToolUse` hook → 逐工具审计（`canUseTool` 覆盖不到被自动批准的调用）
 9. `maxTurns` / `maxBudgetUsd` → 成本护栏（设置项）
@@ -45,7 +45,7 @@
 
 ### 2.2 macOS：未在真机验证过的部分（不是已知 bug，是验证覆盖的空洞）
 
-- **打包**：`dist:mac`（双架构 dmg）从未真机跑过；`CLAUDE.md` 记的真机验证只有 win-unpacked 与 NSIS。要验的是 **SDK 的 darwin 平台包 + node-pty 的 darwin prebuilds 在 asarUnpack 后能否 spawn**（这两条是 Windows 上踩出来的同类问题）。
+- **打包**：`dist:mac`（双架构 dmg）从未真机跑过；`CLAUDE.md` 记的真机验证只有 win-unpacked 与 NSIS。要验的是 **node-pty 的 darwin prebuilds 在 asarUnpack 后能否 spawn**（Windows 上踩出来的同类问题；SDK 的 darwin 平台包已不进安装包——2026-09-23 起整体剔除，对话层只认本机 claude）。
 - **终端字体/行高**：`integralAdvanceFontSize` + `alignRowHeight` 的取值只在 **dpr 1.5（Windows）** 逐值验过。**Retina 是 dpr 2**——「步进×dpr 为整数」这条判据要重算，`CLAUDE.md` 说的「取值零重标定」**不覆盖 dpr 2**。
 - **IME 锚点**：`ime-anchor.ts` 的六步探针在 Electron 全过，但「真输入法待用户实测」——实测环境是 Windows。macOS 输入法（含候选窗、组合键）是另一套。
 - **终端渲染**：WebGL 渲染器 / 块字符暗缝的结论来自 Electron(Chromium 146) 与 WebView2(153)——两个都是 Windows 侧（macOS 没有 WebView2，Chromium 版本也不同）。
@@ -76,6 +76,24 @@
 ### 2.5 交付形态
 
 审查结果写进 `docs/`（新建 `code-review-2026-09.md` 之类），按 **P0 会出错 / P1 该修 / P2 可注意** 分级，每条给 `file:line` 与失败场景；**能顺手修的当场修并分开提交**，别把一次审查堆成一个巨大 commit。
+
+## T3 — 健康检查支持一键安装 Claude Code（未安装场景）
+
+**目标**：用户没装 Claude Code 时，健康检查弹窗现在只给一个红叉「未找到」（`HealthDialog.tsx:137` 的「claude 命令：未找到」+ `currentError`「未找到 claude 命令」），没有后续——补一颗「安装」按钮，一键 `npm i -g @anthropic-ai/claude-code@latest`，成功后重查刷新状态。已有升级（`claude-update.ts`），这是同一弹窗里对称的另一半。
+
+**为什么改动小**：升级链已有 npm 兜底腿——`buildUpgradeBat` / `buildUpgradeSh`（`claude-update.ts:412-423`）本就是「`claude update` 失败则 `npm i -g @anthropic-ai/claude-code@latest`」。安装 = 砍掉第一腿、只跑第二腿；脚本生成、执行方式（输出重定向到文件防管道死锁、10 分钟超时、`windowsHide`）、结果展示（`upgradeTip`）全部**复用**，不另写一套。
+
+**与升级的差异，开工要处理的**：
+
+1. **npm 定位**：`siblingOrPathNpm`（`claude-update.ts:431`）靠 claude 所在目录找同级 npm——没装 claude 就没有锚点，得自己探测（`where npm` / `command -v npm`）。注意现有注释的警告：**GUI 启动的进程 PATH 可能不全**。npm 也没有时给明确指引（先装 Node），不是笼统报错。
+2. **按钮挂载条件**：升级按钮挂 `verStatus?.updateAvailable`（`HealthDialog.tsx:197`），claude 缺失时恒不出现。安装按钮挂**确属「未安装」**——判据用 `currentError === "未找到 claude 命令"`；「装了但 `--version` 执行超时 / 解析失败」是另一类问题，照旧展示错误、不给安装按钮。
+3. **成功后刷新两处**：弹窗内重查（复用升级完成后的逻辑），顶栏健康检查胶囊也从「claude 未找到」翻成可用——两处数据源都要接。
+4. **Windows 铁律照搬**：npm.cmd 必须经 `cmd /D /S /C call`（与 `claude --version` / `claude update` 同款）；全新安装与升级同样给足超时（沿用 npm 全局安装 10 分钟的先例）。
+5. **macOS**：`npm i -g` 要写 npm 全局目录，系统 node 可能 EACCES——失败把错误原样回显（`env-error` 块已有），不静默吞。
+
+**不做（第一版）**：官方原生安装脚本（`claude.ai/install.ps1` / curl 那条路）。app 现在的重心全在 npm（升级、版本查都对 npm registry），原生安装落在 `~/.local/bin` 等路径、`locateClaude` 候选表也得跟着扩——留作后续；若做，`locateClaude` 的候选路径同步补。
+
+**顺带价值**：新装 app 的用户第一次打开就能闭环「发现没装 → 弹窗里装好」，不用自己去查 npm 命令。
 
 ---
 

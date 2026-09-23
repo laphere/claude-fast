@@ -19,6 +19,8 @@ import {
   normalizeDefaultMode,
   defaultPermissionMode,
   pickClaudeFromPathOutput,
+  requireLocalClaudeExecutable,
+  NO_LOCAL_CLAUDE_MESSAGE,
   titleDescriptionFor,
   TITLE_DESCRIPTION_MAX,
   ChatManager,
@@ -554,5 +556,18 @@ describe("pickClaudeFromPathOutput（本机 claude 定位，B7）", () => {
 
   it("空输出 / 只有空行 → undefined", () => {
     expect(pickClaudeFromPathOutput("\n\n", win, () => true)).toBeUndefined();
+  });
+});
+
+describe("requireLocalClaudeExecutable（无本机 claude → 明确报错，不回退 SDK 自带）", () => {
+  it("探测不到 → 抛可读错误（含安装指引），而非静默回退", () => {
+    // 2026-09-23 起安装包不携带 SDK 平台包的 claude.exe：探测失败必须明确报错，
+    // 否则渲染成「发消息毫无反应」或跑到一份不存在的引擎上
+    expect(() => requireLocalClaudeExecutable(undefined)).toThrowError(NO_LOCAL_CLAUDE_MESSAGE);
+  });
+
+  it("探测得到 → 原样返回路径", () => {
+    const exe = "C:\\Users\\me\\.local\\bin\\claude.exe";
+    expect(requireLocalClaudeExecutable(exe)).toBe(exe);
   });
 });
