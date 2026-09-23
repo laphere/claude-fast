@@ -27,6 +27,7 @@ import AskQuestionCard, {
 } from "./AskQuestionCard";
 import {
   ActivityGroup,
+  FindingsCard,
   MarkdownText,
   ThinkingBlock,
   ToolResultCard,
@@ -34,6 +35,7 @@ import {
   activitySummary,
   fmtTokens,
   formatTime,
+  parseFindings,
 } from "./MessageParts";
 import { isModalOpen } from "./Modal";
 import ImageLightbox from "./ImageLightbox";
@@ -214,6 +216,12 @@ type StreamEntry =
       resultBlock: ContentBlock | null;
     }
   | { t: "orphanResult"; key: string; block: ContentBlock };
+
+/** 「关键结果」工具：产出不折进活动组，直接在会话流里展开成卡片。
+ *  这类工具的交付物在 tool_use 的 input 里（tool_result 只是回执），折进两层
+ *  折叠就等于「看不见」——code-review 的 ReportFindings 即如此（发现全在
+ *  input.findings，2026-09-23 用户实测反馈页面对话看不到审查发现）。 */
+const KEY_RESULT_TOOLS = new Set(["ReportFindings"]);
 
 /** 支持粘贴/拖拽的图片类型（与后端 chat.rs 白名单一致） */
 const IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
@@ -1982,6 +1990,29 @@ export default function ChatView({
           <div key={e.key} className="chat-msg chat-msg-assistant" data-msg-index={e.msgIndex}>
             <MarkdownText text={e.text} />
             {e.streaming && <span className="chat-cursor" />}
+          </div>,
+        );
+      } else if (
+        e.t === "tool" &&
+        e.block.name != null &&
+        KEY_RESULT_TOOLS.has(e.block.name) &&
+        parseFindings(e.block.input).length > 0
+      ) {
+        // 关键结果工具（如 ReportFindings）：收口当前活动组，发现卡像助手正文一样
+        // 立在流里。折进组里就回到「点两次才看得见」，与加这张卡的初衷相悖
+        flush();
+        nodes.push(
+          <div
+            key={e.key}
+            className="chat-msg chat-msg-assistant"
+            data-block-idx={e.wrap ? `${e.wrap.msgIndex}-${e.wrap.blockIdx}` : undefined}
+          >
+            <FindingsCard
+              block={e.block}
+              hasResult={e.hasResult}
+              isError={e.isError}
+              resultBlock={e.resultBlock}
+            />
           </div>,
         );
       } else {

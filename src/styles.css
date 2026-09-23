@@ -1989,6 +1989,71 @@ mark {
   background: transparent;
 }
 
+/* ---- code-review 发现卡（关键结果：立在会话流里、默认展开） ---- */
+.findings-card {
+  font-size: 13.5px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  margin: 4px 0;
+}
+
+.findings-summary {
+  cursor: pointer;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+}
+
+.findings-title {
+  font-weight: 600;
+}
+
+.findings-counts {
+  margin-left: auto;
+  display: flex;
+  gap: 8px;
+  font-size: 11.5px;
+}
+
+.verdict-confirmed {
+  color: var(--danger);
+}
+
+.verdict-plausible {
+  color: var(--accent);
+}
+
+.findings-body .finding {
+  padding: 8px 10px;
+  border-top: 1px solid var(--border);
+}
+
+.finding-title {
+  font-weight: 600;
+}
+
+.finding-meta {
+  margin-top: 2px;
+  font-size: 11.5px;
+  color: var(--muted);
+  word-break: break-all;
+}
+
+.finding-summary {
+  margin-top: 4px;
+  white-space: pre-wrap;
+}
+
+.finding-scenario {
+  margin-top: 4px;
+  font-size: 12.5px;
+  color: var(--muted);
+  white-space: pre-wrap;
+}
+
 /* ============ 代码变更卡片（Claude Code 风格 diff） ============ */
 .diff-card {
   font-size: 12.5px;

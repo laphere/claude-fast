@@ -356,6 +356,103 @@ export function ToolResultCard({
   );
 }
 
+// ---- code-review 发现卡（关键结果的特化渲染） ----
+
+/** ReportFindings 上报的一条审查发现（字段按 code-review 技能的约定，宽松解析） */
+export interface ReviewFinding {
+  short_summary?: string;
+  summary?: string;
+  failure_scenario?: string;
+  category?: string;
+  file?: string;
+  line?: number | string | null;
+  verdict?: string;
+}
+
+/** 从 ReportFindings 的 tool_use input 解析发现列表；形状不符返回空数组。
+ *  发现内容在 input.findings 里——tool_result 只是一句「N findings reported.」回执，
+ *  普通工具行的「输入 JSON + 执行结果」呈现不了它，终端 TUI 也是为此做了特化渲染。 */
+export function parseFindings(input: unknown): ReviewFinding[] {
+  const arr = (input as { findings?: unknown } | null | undefined)?.findings;
+  if (!Array.isArray(arr)) return [];
+  return arr.filter((f): f is ReviewFinding => !!f && typeof f === "object");
+}
+
+/** verdict → 展示文案与配色类（CONFIRMED 红 / PLAUSIBLE 橙，其余原样灰色）。
+ *  分级描述的是发现的**确实程度**，两档文案**字数相同**（并列对齐，2026-09-23
+ *  用户要求）：CONFIRMED = 确认成立（已对照代码核实）；PLAUSIBLE = 基本成立
+ *  （大概率成立、只是未实际核实）。别用「待确认」——那会让人以为需要用户再去
+ *  确认一遍；也别用「疑似」——过度贬低了可信度（同日用户两轮反馈）。 */
+function verdictOf(v: string | undefined): { label: string; cls: string } {
+  const u = (v ?? "").toUpperCase();
+  if (u === "CONFIRMED") return { label: "确认成立", cls: "verdict-confirmed" };
+  if (u === "PLAUSIBLE") return { label: "基本成立", cls: "verdict-plausible" };
+  return { label: v || "发现", cls: "" };
+}
+
+/** code-review 发现卡：默认展开、可整体收起；立在会话流里、不折进活动组。
+ *  input 解析不出发现时（形状漂移 / 实时区 input 尚未组装完）退回普通工具行，不丢信息。 */
+export function FindingsCard({
+  block,
+  hasResult,
+  isError,
+  resultBlock,
+}: {
+  block: ContentBlock;
+  hasResult: boolean;
+  isError: boolean;
+  resultBlock?: ContentBlock | null;
+}) {
+  const findings = parseFindings(block.input);
+  if (findings.length === 0) {
+    return (
+      <ToolUseRow block={block} hasResult={hasResult} isError={isError} resultBlock={resultBlock} />
+    );
+  }
+  const confirmed = findings.filter((f) => (f.verdict ?? "").toUpperCase() === "CONFIRMED").length;
+  const plausible = findings.filter((f) => (f.verdict ?? "").toUpperCase() === "PLAUSIBLE").length;
+  return (
+    <details className="findings-card" open>
+      <summary className="findings-summary">
+        <span className="tool-icon">
+          <FileDiffIcon size={13} />
+        </span>
+        <span className="findings-title">代码审查发现 · {findings.length} 条</span>
+        <span className="findings-counts">
+          {confirmed > 0 && <span className="verdict-confirmed">确认成立 {confirmed}</span>}
+          {plausible > 0 && <span className="verdict-plausible">基本成立 {plausible}</span>}
+        </span>
+      </summary>
+      <div className="findings-body">
+        {findings.map((f, i) => {
+          const v = verdictOf(f.verdict);
+          return (
+            <div className="finding" key={i}>
+              <div className="finding-title">
+                {i + 1}. {f.short_summary || f.summary || "发现"}
+              </div>
+              <div className="finding-meta">
+                <span className={v.cls}>{v.label}</span>
+                {f.category ? ` · ${f.category}` : ""}
+                {f.file ? ` · ${f.file}${f.line != null ? `:${f.line}` : ""}` : ""}
+              </div>
+              {f.summary && f.summary !== f.short_summary && (
+                <div className="finding-summary">{f.summary}</div>
+              )}
+              {f.failure_scenario && (
+                <div className="finding-scenario">触发场景：{f.failure_scenario}</div>
+              )}
+            </div>
+          );
+        })}
+        {isError && resultBlock?.text && (
+          <pre className="tool-body tool-result-error">{resultBlock.text.slice(0, 4000)}</pre>
+        )}
+      </div>
+    </details>
+  );
+}
+
 /** thinking 块：折叠展示 */
 export function ThinkingBlock({ text }: { text: string }) {
   return (
