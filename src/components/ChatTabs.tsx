@@ -4,7 +4,8 @@
  * （对话优雅关闭进程；终端由 App 弹确认后 kill 进程树）。
  * 右键菜单（关闭其他/所有会话，在跑的跳过）由 App 渲染——忙/闲快照要在打开菜单的
  * 那一刻现算（终端探针），组件里算会拿到陈旧状态。
- * 思考中/启动中的对话 tab 显示状态点；已退出的终端 tab 整体弱化（缓冲仍可回看）；
+ * 可发言的对话 tab 常驻状态点（空闲淡而静、思考中/启动中点亮并闪烁；只读会话页
+ * 无点，两类 chat tab 靠它区分）；已退出的终端 tab 整体弱化（缓冲仍可回看）；
  * tab 放不下时滚轮横向滚动（VS Code 式）。
  */
 import { useRef } from "react";
@@ -54,7 +55,9 @@ export default function ChatTabs({ tabs, activeId, onSelect, onClose, onTabConte
             onContextMenu={(e) => onTabContextMenu(e, t.id)}
             title={t.title}
           >
-            {busy && <span className="chat-tab-dot" />}
+            {t.kind === "chat" && !t.readOnly && (
+              <span className={`chat-tab-dot${busy ? " busy" : ""}`} />
+            )}
             {t.kind === "term" && <TerminalIcon size={11} className="chat-tab-term-icon" />}
             <span className="chat-tab-title">{t.title}</span>
             <button

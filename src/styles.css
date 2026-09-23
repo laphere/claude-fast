@@ -3627,13 +3627,20 @@ mark {
   white-space: nowrap;
 }
 
-/* 进行中标记（思考中/启动中） */
+/* 对话 tab 标识点：可发言的对话 tab 常驻（只读会话页无点，两类 chat tab 靠它区分）。
+   空闲 = 淡灰、不闪；思考中/启动中（.busy）= 点亮主题色并闪烁 */
 .chat-tab-dot {
   flex-shrink: 0;
   width: 7px;
   height: 7px;
   border-radius: 50%;
+  background: var(--muted);
+  opacity: 0.5;
+}
+
+.chat-tab-dot.busy {
   background: var(--accent);
+  opacity: 1;
   animation: chat-tab-pulse 1.2s ease-in-out infinite;
 }
 
