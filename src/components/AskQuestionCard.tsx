@@ -508,10 +508,15 @@ export default function AskQuestionCard({ items, busy, onSubmit, onCancel, onDis
                 </button>
               )}
 
+              {/* 末题是「提交」= 主操作（.ask-option-submit 填强调色），其余是「下一题」，
+                  两者都是内容宽胶囊、不是通栏选项行（见 styles.css .ask-option-next） */}
               {!shortCircuit && (
                 <button
                   type="button"
-                  className={rowClass(rows.length - 1, "ask-option-next")}
+                  className={rowClass(
+                    rows.length - 1,
+                    isLastQ ? "ask-option-next ask-option-submit" : "ask-option-next",
+                  )}
                   disabled={busy}
                   onClick={() => {
                     setFocus(rows.length - 1);
@@ -536,12 +541,24 @@ export default function AskQuestionCard({ items, busy, onSubmit, onCancel, onDis
             >
               提交回答
             </button>
-            <button className="btn" disabled={busy} onClick={() => goTab(0)}>
+            {/* title 里的那句区分是必须的：复核页的 Esc 走 onCancel（整次拒掉），
+                与这颗「回上一题改答案」不是一回事，按错就直接把提问丢了 */}
+            <button
+              className="btn"
+              disabled={busy}
+              title="回第 1 题修改答案——不拒绝提问（注意 Esc 是整次拒掉）"
+              onClick={() => goTab(0)}
+            >
               返回修改
             </button>
           </>
         ) : (
-          <button className="btn" disabled={busy} onClick={onCancel}>
+          <button
+            className="btn"
+            disabled={busy}
+            title="拒绝这次提问：不发送任何答案，模型会收到「用户取消了这次提问」"
+            onClick={onCancel}
+          >
             取消
           </button>
         )}
