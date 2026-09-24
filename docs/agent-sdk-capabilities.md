@@ -401,6 +401,12 @@ generateSessionTitle(description: string, opts?: { persist?: boolean }) → Prom
 
 下面这些是本文里**只看了类型、没跑过**，但一旦采用就需要先验的点（照 `docs/agent-sdk-interactive-tools.md` 的做法：写 `%TEMP%\` 下的独立脚本，不提交）：
 
+> ⚠️ **想造「改模型相关 env」的对照，注入层要选对**（2026-09-25 实测）：
+> - ❌ **不管用**：`Options.env` 改/删模型变量、把 `CLAUDE_CONFIG_DIR` 指向改过的 settings.json 副本、`settingSources: []`——四组本该互不相同的对照输出**逐字相同**，说明 CLI 用的仍是真实 `~/.claude/settings.json` 里那份 env。
+> - ✅ **管用**：`Options.settings = { env: {...} }`（flag 设置层，优先于 user settings）。用它做**加法**实验即可定位某个变量的作用：塞唯一值 → 看模型表/解析值哪一处跟着变。
+> - 判据：**几组对照输出完全一致就先怀疑注入没生效**（我在这个坑里连废了 4 轮对照才反应过来）。
+> - 已用该法测出的结论：模型表里那条「自定义模型」= **`ANTHROPIC_MODEL` 的值**（塞 `probe-AAA` 它就逐字变成 `probe-AAA`）；`CLAUDE_CODE_SUBAGENT_MODEL` 不影响模型表；而**表里 `default` 那一行跟的是 opus 槽**（改 `ANTHROPIC_DEFAULT_OPUS_MODEL` 会连带改掉 `default` 的解析值，改 `ANTHROPIC_MODEL` 则不动它）。
+
 1. `getSessionMessages()` 的合并 / usage 口径是否与本项目 `sessions.ts` 一致（§6.6）——**不同就用自家的，别混用**。
 2. `startup()` 预热后 `query()` 的 `Options` 是否仍可部分覆盖（cwd / resume 是否被 warm 时定死）。
 3. ~~`setModel()` / `setPermissionMode()` 热切的**生效边界**~~ → **2026-09-24 探针已验**（§6.13）：`setModel()` 后 CLI **立即**补发 init（不等下一轮）、`setModel(undefined)` 复位、非法名 reject（供应商 400）。jsonl 的 `permissionMode` 字段一致性仍未单独核对（低风险，`listSessions` 只读它做展示）。

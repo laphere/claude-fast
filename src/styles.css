@@ -3394,7 +3394,12 @@ mark {
   height: var(--composer-h);
   font-size: 12.5px;
   min-width: 0; /* 窄窗口下允许压缩，别把发送钮挤出卡片 */
-  overflow: hidden;
+  /* ⚠️ 这里**不能**加 overflow: hidden：模型选择器（.model-picker）在它里面，而
+     .mode-panel 是向上弹的绝对定位元素、整个落在本盒之外 —— 裁掉就等于「点模型名
+     弹不出面板」（2026-09-24 用户实测：点下去只有悬停底色变了，没有任何选项弹出）。
+     权限档位选择器不受影响是因为它在 .composer-bar 下、不在本盒里。
+     防溢出由 .model-picker 的 flex-shrink + min-width: 0 + 名称省略号承担
+     （与被它替掉的那个 .meta-model 同一套机制，见下方 .model-picker 注释） */
   color: var(--muted);
 }
 
@@ -3664,16 +3669,67 @@ mark {
 
 /* ⚠️ 必须覆盖 .mode-picker 的 flex-shrink: 0 —— 模型名长度不可控
    （`deepseek-v4.1-flash[1m]` 这种），不缩就会把同一行的上下文占用挤出容器被裁掉。
-   对齐被它替掉的那个 .meta-model（flex-shrink:1 + min-width:0 + 省略号）*/
+   对齐被它替掉的那个 .meta-model（flex-shrink:1 + min-width:0 + 省略号）。
+   ⚠️ 这套（本块 + .mode-label 的省略号）现在是**唯一**的防溢出机制 ——
+   .composer-meta 的 overflow:hidden 已因面板被裁剪而撤掉，见彼处注释，别删 */
 .model-picker {
   flex-shrink: 1;
   min-width: 0;
 }
 
+/* 触发器也要能缩：它是本盒里唯一的行内层级盒，不给它 min-width:0，
+   受限宽度就传不到 .mode-label 上、省略号永不触发 */
+.model-picker .chat-mode {
+  min-width: 0;
+  max-width: 100%;
+}
+
 .model-picker .mode-label {
+  min-width: 0; /* flex 里省略号的前提 */
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* ⚠️ 覆盖 `.mode-picker .chat-mode:hover` 的淡底（--panel-2）。
+   权限档位那边是**按钮式**控件，悬停铺底是对的；模型名在 .composer-meta 里是**行内
+   文字**，右边紧挨着同样是纯文字的上下文占用，铺一块比文字还宽的灰底（含 gap + 箭头
+   + padding）看着就像凭空多出一道半透明条（2026-09-24 用户实测反馈）。
+   改成「箭头点亮」提示可点——够用，且不破坏这一行的文字观感 */
+.model-picker .chat-mode:hover {
+  background: none;
+}
+
+.model-picker .chat-mode:hover .mode-arrow {
+  opacity: 1;
+}
+
+/* 按钮上的槽位名：多个槽位映射到同一模型时，模型名点谁都不变，靠它给反馈 */
+.model-picked {
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--dim);
+}
+
+/* 面板行改成「槽位 | 名字 | 解析值」的横向排版（.mode-item 本身是 display:block） */
+.model-picker .mode-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.model-slot {
+  flex-shrink: 0;
+  /* 槽位名最长 7 字符（default/opus/fable/sonnet/haiku），定宽让各行对齐 */
+  min-width: 52px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--dim);
+}
+
+.model-picker .mode-item.active .model-slot {
+  color: var(--accent-hover);
 }
 
 .mode-hint {
@@ -3697,7 +3753,21 @@ mark {
   min-width: 0;
 }
 
+/* 模型名可能很长（`deepseek-v4.1-flash[1M]` 这类），面板宽度由内容撑——给它封个顶，
+   过长走省略号（.mode-item 自带 nowrap，不收就会把面板撑到很宽） */
+.model-picker .mode-panel {
+  max-width: 340px;
+}
+
+.model-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .model-resolved {
+  flex-shrink: 0;
   font-size: 10.5px;
   font-weight: 400;
   color: var(--dim);

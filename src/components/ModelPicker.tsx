@@ -3,6 +3,36 @@ import { ChevronDownIcon } from "./Icons";
 import { api } from "../lib/api";
 import type { ChatModelInfo } from "../types";
 
+/** CLI 的内置别名槽位（`supportedModels()` 里除 `default` 外就这 4 个别名。
+ *  ⚠️ CLI 加了新别名时这里会把它误判成「自定义」——只影响标签、不影响功能，
+ *  但要跟着 SDK/CLI 升级扫一眼 */
+const ALIAS_SLOTS = new Set(["opus", "sonnet", "haiku", "fable"]);
+
+/** 槽位的显示名。非别名的条目 = 供应商配置里那个**原始模型 id 被单列出来的**一条
+ *  （CLI 给它标的 description 是英文 `Custom model`，直接显示会像 bug）。
+ *  它是「钉住这个 id、不经别名解析」的入口，所以**保留**、只把标签改成人话。 */
+function slotLabel(value: string): string {
+  if (value === "default") return "默认";
+  return ALIAS_SLOTS.has(value) ? value : "自定义";
+}
+
+/** 猜「当前是哪个槽位」——**没有权威字段可查**（2026-09-25 查过：`supportedModels()` 与
+ *  `initializationResult().models` 的原始条目字段完全一致，都没有 selected/current 标记），
+ *  后端只回模型名，所以 resume 进来的会话只能这样推。
+ *
+ *  规则：先按解析值筛出候选，**同值时优先「自定义」行**，否则取第一个。
+ *  为什么优先自定义：它的存在 ⟺ `ANTHROPIC_MODEL` 已设，而那是显式指定、优先于内部默认
+ *  （`Options.settings.env` 加法实验 + 用户 /model 截图双重实测）；而「默认」行的解析值
+ *  在多数第三方配置下与它**逐字相同**，只取第一个就会猜成「默认」——CLI 自己的 ✓ 却在
+ *  「自定义」上，两边对不上（2026-09-25 用户实测发现）。 */
+function guessActive(models: ChatModelInfo[] | null, modelName: string | null): string | null {
+  if (!models || !modelName) return null;
+  const cands = models.filter((m) => m.resolvedModel != null && m.resolvedModel === modelName);
+  if (cands.length === 0) return null; // 认不出来就不高亮（比高亮错行好）
+  const custom = cands.find((m) => !ALIAS_SLOTS.has(m.value) && m.value !== "default");
+  return (custom ?? cands[0]).value;
+}
+
 interface Props {
   /** 后端会话 id（进程没起时后端返回 null，面板里给提示） */
   sessionId: string;
@@ -69,21 +99,26 @@ export default function ModelPicker({ sessionId, modelName }: Props) {
   const pick = (m: ChatModelInfo) => {
     setOpen(false);
     setError(null);
-    setPicked(m.value); // 记住槽位身份（同解析值的兄弟槽位因此不再互相冒充）
     // 不做「同一个 resolvedModel 就不发」的早退：不同槽位可能解析到同一个模型，
     // 用户就是要把 default 换成显式槽位，那种早退会变成静默无操作
-    api.chatSetModel(sessionId, m.value).catch((e) => setError(String(e)));
+    api
+      .chatSetModel(sessionId, m.value)
+      // 成功才记槽位：失败还改按钮标签就等于谎报切换成功
+      .then(() => setPicked(m.value))
+      .catch((e) => setError(String(e)));
     // 失败只能在下一次打开面板时看到（错误收在面板里）；成功则 modelName 几乎立即更新
   };
 
-  /** 当前选中的槽位：优先用「用户点过的」，否则退回**第一个**解析值匹配的行。
-   *  （后端只回模型名、不回槽位，所以 resume 进来的会话只能这样猜；取第一个是为了
-   *  避免多行同时高亮——别名槽的顺序里 default 在最前，猜它最合理） */
-  const activeValue =
-    picked ??
-    models?.find((m) => m.resolvedModel != null && m.resolvedModel === modelName)?.value ??
-    null;
+  /** 当前选中的槽位：优先用「用户点过的」，否则猜（见 guessActive 的注释）。 */
+  const activeValue = picked ?? guessActive(models, modelName);
   const active = (m: ChatModelInfo) => m.value === activeValue;
+  /** 触发按钮上要不要补一个槽位名。
+   *  ⚠️ 必须有它：供应商把多个槽位映射到同一个模型时（本机实测 opus/fable/sonnet
+   *  全指向 `deepseek-v4.1-flash[1M]`、`*_MODEL_NAME` 还都写成同一个名字），按钮上的
+   *  模型名**点谁都不变**，用户完全看不到反馈（2026-09-24 用户实测反馈）。
+   *  只在「用户真的点过、且不是 default 槽」时显示——没点过时不去猜（后端不回槽位，
+   *  resume 进来的会话无从得知当前是哪个槽，猜一个写上去比不写更误导）。 */
+  const pickedSlot = picked !== null && picked !== "default" ? slotLabel(picked) : null;
 
   return (
     <div className="mode-picker model-picker" ref={wrapRef}>
@@ -96,6 +131,7 @@ export default function ModelPicker({ sessionId, modelName }: Props) {
         aria-expanded={open}
       >
         <span className="mode-label">{modelName ?? "模型"}</span>
+        {pickedSlot && <span className="model-picked">{pickedSlot}</span>}
         <span className="mode-arrow">
           <ChevronDownIcon size={12} />
         </span>
@@ -111,24 +147,35 @@ export default function ModelPicker({ sessionId, modelName }: Props) {
           {!loading && models !== null && models.length === 0 && (
             <div className="mode-hint">CLI 未返回可选模型</div>
           )}
-          {models?.map((m) => (
-            <button
-              key={m.value}
-              type="button"
-              role="option"
-              aria-selected={active(m)}
-              className={`mode-item${active(m) ? " active" : ""}`}
-              title={m.description || m.value}
-              onClick={() => pick(m)}
-            >
-              <span className="mode-item-main">
-                {m.displayName}
-                {m.resolvedModel != null && m.resolvedModel !== m.displayName && (
-                  <span className="model-resolved">{m.resolvedModel}</span>
-                )}
-              </span>
-            </button>
-          ))}
+          {models?.map((m) => {
+            const isCustom = !ALIAS_SLOTS.has(m.value) && m.value !== "default";
+            return (
+              <button
+                key={m.value}
+                type="button"
+                role="option"
+                aria-selected={active(m)}
+                className={`mode-item${active(m) ? " active" : ""}`}
+                title={isCustom ? `自定义模型：${m.value}` : m.description || m.value}
+                onClick={() => pick(m)}
+              >
+                {/* 槽位名打头：供应商把多个槽位映射到同一模型时（本机 opus/fable/sonnet
+                    都是 deepseek-v4.1-flash[1M]，`*_MODEL_NAME` 又写成同一个名字），
+                    只按 displayName + resolvedModel 渲染会出现三行**逐字相同**、
+                    根本分不清点的是哪个（2026-09-24 用户实测反馈） */}
+                <span className="model-slot">{slotLabel(m.value)}</span>
+                <span className="mode-item-main">
+                  {/* 自定义行：value 就是模型 id，拿它当主标签（CLI 给的 displayName 是
+                      `deepseek-v4.1-flash`、description 是英文 Custom model，照原样显示
+                      既有英文又和解析值重复 → 一行里三个近似串） */}
+                  <span className="model-name">{isCustom ? m.value : m.displayName}</span>
+                  {!isCustom && m.resolvedModel != null && m.resolvedModel !== m.displayName && (
+                    <span className="model-resolved">{m.resolvedModel}</span>
+                  )}
+                </span>
+              </button>
+            );
+          })}
         </div>
       )}
     </div>
