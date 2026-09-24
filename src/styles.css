@@ -4257,6 +4257,71 @@ mark {
   border-color: var(--accent);
 }
 
+/* 配置 JSON 标题行右侧的两个链接（label 是 space-between，整块靠右对齐） */
+.provider-json-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* ---- 配置 JSON 放大编辑（整窗覆盖层） ----
+   行内的 .provider-json 受模态框高度与「body 整体滚动」限制，深嵌套的 JSON 只能
+   看到几行、且滚动条一动整张表单都跟着跑。放大编辑器把输入区撑满整窗：面板固定
+   尺寸、textarea 占满剩余高度并自行滚动，表单本体不动。 */
+.json-editor-overlay {
+  z-index: 960;
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.json-editor-panel {
+  display: flex;
+  flex-direction: column;
+  width: calc(100vw - 80px);
+  height: calc(100vh - 80px);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.json-editor-head {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.json-editor-head-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.json-editor-hint {
+  font-size: 12px;
+  font-weight: 400;
+  opacity: 0.6;
+}
+
+/* 与 .provider-json 同节点：这里只覆盖尺寸/边框。min-height:0 是必须的——
+   没有它，flex 子项的自动最小高度会撑破容器，内部滚动条就不出现了 */
+.json-editor-area {
+  flex: 1;
+  min-height: 0;
+  border: none;
+  border-radius: 0;
+  resize: none;
+  padding: 12px 16px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
 .provider-templates {
   display: flex;
   flex-direction: column;

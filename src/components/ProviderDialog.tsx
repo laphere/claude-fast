@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import Modal from "./Modal";
+import Modal, { useModalLayer } from "./Modal";
 import ConfirmDialog from "./ConfirmDialog";
 import PresetPicker, { CATEGORY_LABEL } from "./PresetPicker";
 import {
@@ -7,6 +7,7 @@ import {
   ChevronRightIcon,
   ChevronUpIcon,
   CopyIcon,
+  ExpandIcon,
   ExternalLinkIcon,
   EyeIcon,
   EyeOffIcon,
@@ -262,8 +263,60 @@ function usageLevel(pct: number): string {
   return pct < 70 ? "ok" : pct < 90 ? "warn" : "bad";
 }
 
+/**
+ * 配置 JSON 的「放大编辑」：整窗覆盖层里编辑**同一份** `form.jsonText`（受控，
+ * 不复制第二份状态），所以没有「确定/取消」，关掉即已同步。
+ *
+ * 单独抽成组件是为了 `useModalLayer` 的挂载时机：它必须随覆盖层一起挂/卸，否则
+ * 覆盖层没开时也占着弹层栈顶，Esc 会被它吃掉（供应商弹窗就关不掉了）。
+ * 挂载晚于外层 Modal ⇒ 栈顶是它 ⇒ 一次 Esc 只关本层，不会顺手把整个表单关掉。
+ */
+function JsonExpandOverlay({
+  value,
+  onChange,
+  onClose,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  onClose: () => void;
+}) {
+  useModalLayer(onClose);
+  return (
+    <div
+      className="overlay json-editor-overlay"
+      // 只在点遮罩本身时关（与图片预览同款 target 判定）
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div className="json-editor-panel">
+        <div className="json-editor-head">
+          <span>配置 JSON（写入 ~/.claude/settings.json）</span>
+          <span className="json-editor-head-right">
+            <span className="json-editor-hint">
+              Esc 返回，改动实时同步
+            </span>
+            <button className="btn btn-primary" onClick={onClose}>
+              完成
+            </button>
+          </span>
+        </div>
+        <textarea
+          className="provider-json json-editor-area"
+          spellCheck={false}
+          autoFocus
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+        />
+      </div>
+    </div>
+  );
+}
+
 export default function ProviderDialog({ state, onClose, onChanged, toast }: Props) {
   const [form, setForm] = useState<FormState | null>(null);
+  /** 配置 JSON 是否在整窗编辑器里打开（表单态专用；每次进表单重置） */
+  const [jsonExpanded, setJsonExpanded] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<ProviderInfo | null>(null);
   const [busy, setBusy] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
@@ -577,6 +630,7 @@ export default function ProviderDialog({ state, onClose, onChanged, toast }: Pro
   const openCreate = () => {
     setFormError(null);
     setAdvancedOpen(false);
+    setJsonExpanded(false);
     setFetchedModels(null);
     setShowKey(false);
     echoRef.current = null;
@@ -597,6 +651,7 @@ export default function ProviderDialog({ state, onClose, onChanged, toast }: Pro
 
   const openEdit = (p: ProviderInfo) => {
     setFormError(null);
+    setJsonExpanded(false);
     setFetchedModels(null);
     setShowKey(false);
     echoRef.current = null;
@@ -1039,22 +1094,39 @@ export default function ProviderDialog({ state, onClose, onChanged, toast }: Pro
           <div className="provider-field">
             <label>
               <span>配置 JSON（写入 ~/.claude/settings.json）</span>
-              <button
-                className="provider-link"
-                title="把当前生效的 settings.json 内容填进来"
-                onClick={importLive}
-              >
-                导入当前配置
-              </button>
+              <span className="provider-json-actions">
+                <button
+                  className="provider-link"
+                  title="在整窗编辑器里查看 / 修改这段 JSON"
+                  onClick={() => setJsonExpanded(true)}
+                >
+                  <ExpandIcon size={11} />
+                  放大编辑
+                </button>
+                <button
+                  className="provider-link"
+                  title="把当前生效的 settings.json 内容填进来"
+                  onClick={importLive}
+                >
+                  导入当前配置
+                </button>
+              </span>
             </label>
             <textarea
               className="provider-json"
-              rows={10}
+              rows={18}
               spellCheck={false}
               value={form.jsonText}
               onChange={(e) => setForm({ ...form, jsonText: e.target.value })}
             />
           </div>
+          {jsonExpanded && (
+            <JsonExpandOverlay
+              value={form.jsonText}
+              onChange={(v) => setForm({ ...form, jsonText: v })}
+              onClose={() => setJsonExpanded(false)}
+            />
+          )}
         </div>
       ) : (
         // ---------- 供应商卡片列表 ----------
