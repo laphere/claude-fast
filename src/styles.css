@@ -5118,7 +5118,11 @@ mark {
    第一眼认不出是按钮、细看又是「很宽很宽一条」（2026-09-25 用户反馈）。
    .ask-options 是 flex 纵列 → align-self:center + width:auto 收成**内容宽的胶囊**。
    padding 沿用 .ask-option 那条墨迹补偿（line-height:1 下 YaHei 墨迹偏上 ~1px），
-   **只加大左右、上下保持不对称，勿改成对称** */
+   **只加大左右、上下保持不对称，勿改成对称**。
+   ⚠️ 底色必须是 --panel（选项行与 tab 条同款），**不是 .plan-approve 卡体的 --panel-2**：
+   当年取 --panel-2 是为了让那条通栏长条跟上面的选项行区分开，收成胶囊后这条理由就没了，
+   反而成了「卡片底色画在卡片底色上」——整颗按钮只剩一道虚边，几乎看不见
+   （2026-09-25 用户反馈「按钮的可见性比较差」） */
 .ask-option-next {
   align-self: center;
   align-items: center;
@@ -5127,7 +5131,7 @@ mark {
   padding: 9px 26px 7px;
   border-radius: 999px;
   font-weight: 600;
-  background: var(--panel-2);
+  background: var(--panel);
 }
 
 /* 末题的「提交」才是主操作：填充强调色，与复核页那颗 btn btn-primary 同款。
