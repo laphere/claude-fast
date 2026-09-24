@@ -2717,8 +2717,8 @@ export default function ChatView({
               </button>
             ) : (
               /* 纯图标钮（参考图形态）：没有文字，不吃 .btn 那套中文墨迹补偿；
-                 图标自己的落点补偿在 .composer-action（padding-top: 1.5px，
-                 吸附边界机制见彼处注释，2026-09-24 截图实测后定） */
+                 图标自己的落点补偿在 .composer-action（单一常量，跨 dpr 实测到物理
+                 下限，勿改成按 dpr 特调，2026-09-24 见彼处注释） */
               <button
                 className="btn btn-primary composer-action composer-send"
                 disabled={(!input.trim() && pendingImages.length === 0) || status.phase === "exited"}
