@@ -20,12 +20,22 @@
  * 或需要额外契约面）：选项 `preview` 分栏渲染、`n` 加 notes、
  * `annotations`/`followUp` 回传、AFK 倒计时自动提交、Ctrl+G 外部编辑器。
  *
+ * app 侧新增（**TUI 没有**）：
+ * - **卡头「收起/展开」**。TUI 的提问卡印在 scrollback 里、上下文一直可滚；app 是底部固定
+ *   卡槽，展开态吃 70% 视口（`.card-slot` 的 max-height），作答前想重读会话就很困难。
+ *   收起 = 只留卡头（标题 + 「N 题待答 / 已答 x/y」摘要），其余三段 `display: none`：
+ *   **藏而不卸**——picks / idx / focus 全在组件 state 里，父组件又是按 requestId 挂载的，
+ *   一旦改成条件渲染就会重挂载、用户逐题选好的答案全丢（见 styles.css `.ask-card-collapsed`）。
+ * - 收起态的键位与展开态**不同**：**Esc = 展开**（不是取消！收起时摊在眼前的是开关而不是
+ *   题目，取消不该这么容易被误触，要取消先展开）、Enter/Space 同样展开、↑↓/PgUp/PgDn
+ *   转发给消息区滚动、其余键一概不拦（Tab 必须能走原生离卡）。别把它当 parity 偏差改回去。
+ *
  * ⚠️ 答案必须经 `updatedInput.answers` 回传（key = 题目完整文本，多选逗号分隔）；
  * 只回 allow 不带 answers 等于「用户没选」——不报错但静默失效。这里只在
  * 确实有答案时给对应 key（不补空串），与 CLI 侧「未答的题不进 answers」一致。
  */
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { CheckIcon, CircleIcon } from "./Icons";
+import { CheckIcon, CircleIcon, CollapseIcon, ExpandIcon } from "./Icons";
 
 /** AskUserQuestion 的一道题（字段来自 sdk-tools.d.ts 的 AskUserQuestionInput） */
 export interface AskQuestionItem {
@@ -95,8 +105,14 @@ export default function AskQuestionCard({ items, busy, onSubmit, onCancel, onDis
   const [picks, setPicks] = useState<Record<string, { picked: string[]; text: string }>>({});
   /** 键盘在选项列表里的焦点行（TUI 的 cursor） */
   const [focus, setFocus] = useState(0);
+  /** 收起态 = 阅读模式（**app 侧新增，TUI 没有**）：只留一条卡头，把高度让回消息区，
+   *  好让用户重读会话（模型为什么要问这些）再作答。
+   *  ⚠️ 只能靠这份 state + CSS 隐藏，**绝不能由 ChatView 条件渲染**——父组件是按
+   *  `key={requestId}` 挂载的，一卸载 picks/idx/focus 全没，用户逐题选好的答案直接丢 */
+  const [collapsed, setCollapsed] = useState(false);
   const cardRef = useRef<HTMLDivElement>(null);
   const otherRef = useRef<HTMLInputElement>(null);
+  const toggleRef = useRef<HTMLButtonElement>(null);
 
   /** 只有一题且单选：没有提交格，选中即提交（TUI 的 hideSubmitTab） */
   const shortCircuit = items.length === 1 && items[0].multiSelect !== true;
@@ -128,6 +144,14 @@ export default function AskQuestionCard({ items, busy, onSubmit, onCancel, onDis
   };
 
   const missing = items.filter((it) => answerOf(it) === "").length;
+  const answeredCount = items.length - missing;
+
+  /** 收起 / 展开（两个方向都把焦点收到开关上）：收起时「其他」输入框会被 display:none，
+   *  焦点若留在里面会掉到 body，收起态那套键盘分支就再也收不到键了 */
+  const toggleCollapsed = () => {
+    setCollapsed((v) => !v);
+    toggleRef.current?.focus({ preventScroll: true });
+  };
 
   const rows: Row[] = useMemo(() => {
     if (!cur) return [];
@@ -223,6 +247,37 @@ export default function AskQuestionCard({ items, busy, onSubmit, onCancel, onDis
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     const t = e.target as HTMLElement;
+    if (collapsed) {
+      // 收起态 = 阅读模式：卡内只剩卡头那颗开关还看得见
+      // ① **Esc 改绑成「展开」**：收起时摊在眼前的是开关而不是题目，取消不该这么容易被误触
+      // ② 绝不接管 Tab——焦点要能走原生离卡（拦了就成键盘陷阱）
+      // ③ 绝不让看不见的选项行被 Enter/Space 激活（单题单选会当场凭空提交一个答案）
+      if (e.key === "Escape" || e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        setCollapsed(false);
+        return;
+      }
+      // ↑↓ / PgUp / PgDn 转发给消息区：收起就是为了读会话，键盘也得能滚。
+      // 卡根持焦时原生滚动到不了 .chat-body（它在 .chat-main 里，不是本卡的祖先），
+      // 而 .card-slot 是 overflow:hidden、滚不动，所以只能显式转发
+      if (e.key === "ArrowUp" || e.key === "ArrowDown" || e.key === "PageUp" || e.key === "PageDown") {
+        const msg = cardRef.current?.closest(".chat")?.querySelector<HTMLElement>(".chat-body");
+        if (msg) {
+          e.preventDefault();
+          const page = e.key === "PageUp" || e.key === "PageDown";
+          const up = e.key === "ArrowUp" || e.key === "PageUp";
+          msg.scrollBy({ top: (up ? -1 : 1) * (page ? msg.clientHeight * 0.9 : 60) });
+        }
+      }
+      return;
+    }
+    // 卡头那颗开关是**键盘孤岛**：焦点在它身上时走原生语义（Enter/Space = 点它、
+    // Tab = 走原生离卡——它是卡内 DOM 序最后一个焦点项，Tab 出去正好落到输入区）。
+    // ⚠️ 不早退的话，展开态下鼠标点过开关再按 Enter 会落到下面的行激活分支——
+    // 把 ↑↓ 光标那一行激活，单题单选（shortCircuit）直接 onSubmit，等于凭空提交一个答案
+    // （2026-09-24 复核发现）。Esc 例外，留给下面那条「Esc = 取消」的主分支（按钮本来
+    // 也没有 Esc 原生动作，放行不冲突）
+    if (t === toggleRef.current && e.key !== "Escape") return;
     const inField = t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement;
     if (e.key === "Escape") {
       e.preventDefault();
@@ -279,13 +334,45 @@ export default function AskQuestionCard({ items, busy, onSubmit, onCancel, onDis
 
   return (
     <div
-      className="plan-approve ask-card"
+      className={`plan-approve ask-card${collapsed ? " ask-card-collapsed" : ""}`}
       ref={cardRef}
       tabIndex={0}
       onKeyDown={onKeyDown}
       autoFocus
     >
-      <div className="plan-approve-title">模型想先确认几件事</div>
+      {/* 卡头与方案卡同一套（.plan-card-head + .icon-btn-sm）；但开关方向相反：
+          方案卡是「展开读卡」，提问卡是「收起读会话」——卡在底部固定卡槽，展开态
+          会吃掉 70% 视口，作答前想重读上下文就没法看 */}
+      <div className="plan-card-head">
+        <div className="ask-card-head-left">
+          <div className="plan-approve-title">模型想先确认几件事</div>
+          {/* 收起时补一句进度摘要：细栏上也得看得出还剩几题、答了几题 */}
+          {collapsed && (
+            <span className="ask-card-summary">
+              {answeredCount === 0
+                ? `${items.length} 题待答`
+                : answeredCount < items.length
+                  ? `已答 ${answeredCount}/${items.length}`
+                  : `已答完 ${items.length} 题`}
+            </span>
+          )}
+        </div>
+        <button
+          ref={toggleRef}
+          type="button"
+          className="icon-btn icon-btn-sm"
+          aria-expanded={!collapsed}
+          aria-label={collapsed ? "展开提问卡" : "收起提问卡"}
+          title={
+            collapsed
+              ? "展开提问卡继续作答"
+              : "收起提问卡，整屏阅读会话内容（作答状态保留）"
+          }
+          onClick={toggleCollapsed}
+        >
+          {collapsed ? <ExpandIcon size={13} /> : <CollapseIcon size={13} />}
+        </button>
+      </div>
 
       <div className="ask-tabs">
         {items.map((it, i) => {

@@ -3186,7 +3186,9 @@ mark {
   gap: 8px;
   padding: 10px 22px;
   /* 护栏：卡槽不许吃光消息区（原来是 .ask-card 上的 max-height:60%）。
-     卡体是槽内的 flex 项且 min-height:0，超出时收缩，由卡内的滚动区收尾 */
+     卡体是槽内的 flex 项且 min-height:0，超出时收缩，由卡内的滚动区收尾。
+     70% 只是**上限**（本槽 flex:none、按内容高度走）：提问卡收起时卡体只剩卡头，
+     卡槽跟着缩、空出的高度归 .chat-main（flex:1），消息区当场长回来 */
   max-height: 70%;
   min-height: 0;
   overflow: hidden;
@@ -3231,7 +3233,9 @@ mark {
   color: var(--accent);
 }
 
-/* 方案卡头部一行：标题在左，展开/收起按钮在右 */
+/* 交互卡头部一行：标题在左，展开/收起按钮在右。**方案卡与提问卡共用**（与
+   .plan-approve / .plan-approve-title 同理，改一处两边都变）——但开关方向相反：
+   方案卡是「展开读卡」（.chat.plan-expanded），提问卡是「收起读会话」 */
 .plan-card-head {
   display: flex;
   align-items: center;
@@ -4744,6 +4748,39 @@ mark {
    超出部分只有中间的 .ask-body 滚，composer 位置不动 */
 .ask-card {
   min-height: 0;
+}
+
+/* 收起态（**app 侧新增，TUI 没有**）：只留卡头，把高度让回消息区，好让用户在作答前
+   重读会话（模型为什么要问这些）——展开态那张卡有 480~500px 高，720px 的窗口里
+   消息区只剩三四行（2026-09-24 用户反馈）。
+   ⚠️ 必须用 display:none **藏而不卸**：卡内 picks/idx/focus 全在组件 state 里、
+   父组件又是按 requestId 挂载的，改成条件渲染就会重挂载、逐题答案全丢。
+   收起后卡体 ≈ 46px，.card-slot 是 flex:none（按内容走，70% 只是上限），
+   空出的高度自动归 .chat-main（flex:1）——这就是「消息区立刻变高」的依据 */
+.ask-card-collapsed .ask-tabs,
+.ask-card-collapsed .ask-body,
+.ask-card-collapsed .plan-approve-actions {
+  display: none;
+}
+
+/* 卡头左半：标题 +（收起时）进度摘要 */
+.ask-card-head-left {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* 收起态的进度摘要（还剩几题 / 答了几题）：细栏上唯一的进度信息。
+   药丸外观对齐 .ask-question-tag，但取 muted——它是状态，不该跟标题抢注意力 */
+.ask-card-summary {
+  flex: none;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 8px;
 }
 
 /* 卡片整体可聚焦（键盘 ↑↓/Enter 走这里的事件），但焦点环只画在行上——
