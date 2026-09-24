@@ -2509,8 +2509,9 @@ export default function ChatView({
                 <StopIcon size={14} />
               </button>
             ) : (
-              /* 纯图标钮（参考图形态）：没有文字，所以不用 .btn 那套不对称墨迹补偿，
-                 靠它自带的 flex 居中即可（.composer-action 里 padding 归零） */
+              /* 纯图标钮（参考图形态）：没有文字，不吃 .btn 那套中文墨迹补偿；
+                 图标自己的落点补偿在 .composer-action（padding-top: 1.5px，
+                 吸附边界机制见彼处注释，2026-09-24 截图实测后定） */
               <button
                 className="btn btn-primary composer-action composer-send"
                 disabled={(!input.trim() && pendingImages.length === 0) || status.phase === "exited"}
