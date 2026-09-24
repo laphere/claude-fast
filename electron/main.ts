@@ -448,6 +448,10 @@ function registerIpc(): void {
   handle("chat_interrupt", (p) => chatManager.interrupt(String(p.sessionId)));
   handle("chat_set_permission_mode", (p) =>
     chatManager.setPermissionMode(String(p.sessionId), p.mode));
+  handle("chat_models", (p) => chatManager.supportedModels(String(p.sessionId)));
+  handle("chat_set_model", (p) => chatManager.setModel(String(p.sessionId), p.model ?? null));
+  handle("chat_commands", (p) => chatManager.supportedCommands(String(p.sessionId)));
+  handle("chat_rewind_last", (p) => chatManager.rewindLast(String(p.sessionId), p.dryRun === true));
   handle("chat_permission_response", (p) =>
     chatManager.respondToPermission(
       String(p.sessionId),

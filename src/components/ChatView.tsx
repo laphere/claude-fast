@@ -54,12 +54,15 @@ import {
   StopIcon,
   XIcon,
 } from "./Icons";
+import ModelPicker from "./ModelPicker";
 import type {
+  ChatCommandInfo,
   ChatEvent,
   ChatImage,
   ChatItem,
   ChatPermissionMode,
   ChatPermissionRequest,
+  ChatRewindResult,
   ChatUsage,
   ContentBlock,
   SessionInfo,
@@ -309,6 +312,18 @@ export default function ChatView({
   const [effort, setEffort] = useState<string | null>(null);
   const [ctx, setCtx] = useState<{ used: number; window: number } | null>(null);
   const [realSessionId, setRealSessionId] = useState<string | null>(null);
+  /** 会话键的渲染镜像（真源仍是 sessionKeyRef：所有 IPC 读它，且它能在回调里同步读到）。
+   *  进程起来了才有模型选择器 / `/` 补全 / 撤销本轮——这三样要跟着「是否已启动」渲染，
+   *  而 ref 赋值不触发渲染。⚠️ 二者**只能经 setSessionKey 一起改**：散着写就会出现
+   *  「ref 已清空、state 还在」，于是死会话上仍渲染着活按钮，点下去全是「会话不存在」 */
+  const [chatKey, setChatKey] = useState<string | null>(null);
+  /** `/` 命令补全：命令表（首次触发补全时拉一次）、键盘选中项、Esc 收起标记 */
+  const [cmds, setCmds] = useState<ChatCommandInfo[] | null>(null);
+  const [cmdIdx, setCmdIdx] = useState(0);
+  const [cmdDismissed, setCmdDismissed] = useState(false);
+  /** 撤销本轮改动：null = 未发起；{preview, armed} = 已出预览、等二次点击确认 */
+  const [rewind, setRewind] = useState<{ preview: ChatRewindResult; armed: boolean } | null>(null);
+  const [rewindBusy, setRewindBusy] = useState(false);
   /** 待审批的方案，两种来源：
    *  - native：CLI 经 ExitPlanMode 下发（requestId 非空，应答走 control_response）
    *  - heuristic：计划模式本轮产出结束时的兜底触发。**实测 `--print` 模式下 CLI 的
@@ -382,6 +397,12 @@ export default function ChatView({
 
   /** 后端跟踪的会话 id（chat_start 返回，chat_send 等凭它寻址） */
   const sessionKeyRef = useRef<string | null>(null);
+  /** 改会话键的**唯一入口**：ref（所有 IPC 读的真源）与 chatKey（渲染镜像）一起动。
+   *  散着写就会漂移——ref 清了 state 还在，死会话上照样渲染出可点的模型选择器与撤销按钮 */
+  const setSessionKey = useCallback((key: string | null) => {
+    sessionKeyRef.current = key;
+    setChatKey(key);
+  }, []);
   /** 会话是否已启动（session_ready 上报过；未启动不弹方案审批卡） */
   const realSessionIdRef = useRef<string | null>(null);
   /** 当前权限模式镜像（handleEvent 等无依赖回调里读最新值） */
@@ -657,7 +678,7 @@ export default function ChatView({
         break;
       case "exited": {
         setStatus({ phase: "exited", code: ev.code, stderrTail: ev.stderrTail });
-        sessionKeyRef.current = null;
+        setSessionKey(null);
         startPromiseRef.current = null;
         // 进程没了，方案卡/提问卡再也应答不出去：收掉，别留按钮点不动的死卡
         setPlan(null);
@@ -911,13 +932,13 @@ export default function ChatView({
       const key = sessionKeyRef.current;
       if (!key) return;
       // 关完即摘掉：随后的卸载路径（removeTabs → cleanup）按空跳过，不二次 close
-      sessionKeyRef.current = null;
+      setSessionKey(null);
       await api.chatClose(key).catch(() => {});
     });
     return () => {
       map.delete(tabId);
     };
-  }, [killers, tabId]);
+  }, [killers, tabId, setSessionKey]);
 
   /** 懒启动对话进程（首次发送时调用）。只读页永远走不到这里（send 已拦）。 */
   const ensureStarted = useCallback((): Promise<string> => {
@@ -936,7 +957,7 @@ export default function ChatView({
           channel,
         )
         .then((key) => {
-          sessionKeyRef.current = key;
+          setSessionKey(key);
           setStatus({ phase: "idle" });
           return key;
         })
@@ -1171,6 +1192,64 @@ export default function ChatView({
     }
   }, [onToast, recallSent]);
 
+  /** 撤销本轮改动（`Query.rewindFiles()`）：两段式——第一击跑 dryRun 出预览并转入
+   *  「待确认」态，第二击才真回滚（与回收站的行内二次确认同款，不另开弹窗）。
+   *  ⚠️ 只回滚文件、不回滚对话：jsonl 原样保留，模型下一轮经 edited_text_file 附件
+   *  自动知道文件被还原（2026-09-24 探针验证），所以确认文案里明说「对话记录保留」。 */
+  const onRewindClick = useCallback(async () => {
+    const key = sessionKeyRef.current;
+    if (!key || rewindBusy) return;
+    if (rewind?.armed) {
+      setRewindBusy(true);
+      try {
+        const r = await api.chatRewindLast(key, false);
+        if (r && r.canRewind) {
+          onToast(
+            r.skippedLinks > 0
+              ? `已回滚（${r.skippedLinks} 个链接类文件跳过）；对话记录保留，模型下一轮自动知晓`
+              : "已回滚；对话记录保留，模型下一轮自动知晓文件已还原",
+          );
+        } else if (r?.error) {
+          // canRewind:false 有两种成因，CLI 给了 error 就是「真的失败了」——
+          // 报成「没有可回滚的改动」会让用户以为没事（2026-09-24 code review）
+          onToast("回滚失败：" + r.error);
+        } else {
+          onToast("回滚未生效：最近一轮没有可回滚的改动");
+        }
+      } catch (e) {
+        onToast("回滚失败：" + String(e));
+      } finally {
+        setRewindBusy(false);
+        setRewind(null);
+      }
+      return;
+    }
+    setRewindBusy(true);
+    try {
+      const p = await api.chatRewindLast(key, true);
+      if (p === null) {
+        onToast("尚无可撤销的轮次——先完整跑完一轮对话");
+        return;
+      }
+      if (!p.canRewind || !p.filesChanged || p.filesChanged.length === 0) {
+        onToast(p.error ? "回滚预览失败：" + p.error : "最近一轮没有可回滚的文件改动");
+        return;
+      }
+      setRewind({ preview: p, armed: true });
+    } catch (e) {
+      onToast("回滚预览失败：" + String(e));
+    } finally {
+      setRewindBusy(false);
+    }
+  }, [onToast, rewind, rewindBusy]);
+
+  // 预览的「待确认」态 4 秒没人点就收回（防误触隔太久后的第二击）
+  useEffect(() => {
+    if (!rewind?.armed) return;
+    const t = setTimeout(() => setRewind(null), 4000);
+    return () => clearTimeout(t);
+  }, [rewind]);
+
   /** Esc = 停止本轮（与卡片上那颗停止钮同语义，触发条件逐字对齐）。
    *  为什么要有键盘路径：模型跑起来之后再去够鼠标往往来不及；停止钮的 title 本来就写着
    *  「等价 Esc」。它是全局键（焦点在哪都该生效），所以挂 window。
@@ -1191,8 +1270,9 @@ export default function ChatView({
       if (!isBusy(status) || plan?.source === "native") return;
       if (isModalOpen()) return;
       if (permissions.length > 0 || question) return;
-      // 右键菜单（三个组件各自管）、权限档位下拉（ModePicker）都没有共享状态可查，只能问 DOM
-      if (document.querySelector(".context-menu, .mode-panel")) return;
+      // 右键菜单（三个组件各自管）、权限档位下拉（ModePicker/ModelPicker）、/ 命令补全
+      // 面板都没有共享状态可查，只能问 DOM
+      if (document.querySelector(".context-menu, .mode-panel, .cmd-panel")) return;
       const t = e.target as HTMLElement | null;
       const tag = t?.tagName;
       if (
@@ -1844,6 +1924,32 @@ export default function ChatView({
     }
   }, [status, realSessionId]);
 
+  /** `/` 补全的激活条件：输入恰是「/ 开头、还没空格的单个词」——命令带参数后就
+   *  不再拦 Enter/Tab（那时 Enter 该发送）。cmdDismissed 是 Esc 收起标记（打进
+   *  一半的词保留），输入一变就复位（见 textarea onChange）。 */
+  const cmdPrefix = /^\/(\S*)$/.exec(input)?.[1] ?? null;
+  const cmdList = useMemo(() => {
+    if (cmdPrefix === null || !cmds) return [];
+    const q = cmdPrefix.toLowerCase();
+    return cmds.filter(
+      (c) =>
+        c.name.toLowerCase().startsWith(q) ||
+        c.aliases.some((a) => a.toLowerCase().startsWith(q)),
+    );
+  }, [cmdPrefix, cmds]);
+  /** 面板是否真的开着——**键盘拦截必须用这个、不能用 cmdPrefix**：
+   *  Esc 收起面板后输入框里那个 `/词` 还在，若只判 cmdPrefix，Enter/Tab 会被
+   *  一个看不见的面板吃掉（消息发不出去、还偷改输入内容），Esc 更会被
+   *  stopPropagation 永久吞掉——那是「停止本轮」的主入口（2026-09-24 code review 发现） */
+  const cmdOpen = cmdPrefix !== null && !cmdDismissed && cmdList.length > 0;
+  // 换了个词就从第一项开始（键盘导航的选中项不跨词保留）
+  useEffect(() => setCmdIdx(0), [cmdPrefix]);
+  // 选中项滚进可视区：66 条命令 + 264px 面板，↓ 几下就选到看不见的行了
+  const cmdActiveRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (cmdOpen) cmdActiveRef.current?.scrollIntoView({ block: "nearest" });
+  }, [cmdOpen, cmdIdx]);
+
   /** 头部统计行：jsonl 口径（stats）优先——挂载/刷新后它覆盖全量历史；新对话
    *  收编后的整个 sitting 没有 jsonl 快照，用实时累计兜底（liveMsgs + 每条
    *  assistant 消息的 usage 累加，与 jsonl 代表行求和同口径），长轮次中途也有数可看 */
@@ -2255,7 +2361,29 @@ export default function ChatView({
         {filesOpen && (
           <div className="viewer-files">
             <div className="files-head">
-              变更文件 <span className="files-count">{changedFiles.length}</span>
+              <span>
+                变更文件 <span className="files-count">{changedFiles.length}</span>
+              </span>
+              {/* 撤销本轮改动（rewindFiles）：只在活会话上出现——只读页没有进程，没有
+                  可撤销对象。行内二次确认（与回收站同款）：第一击出预览，第二击真回滚 */}
+              {chatKey && (
+                <button
+                  className="files-rewind"
+                  disabled={rewindBusy || isBusy(status)}
+                  onClick={() => void onRewindClick()}
+                  title={
+                    rewind?.armed
+                      ? (rewind.preview.filesChanged ?? []).join("\n")
+                      : "把最近一轮的文件改动回滚到该轮开始前；对话记录保留，模型下一轮自动知晓文件已还原"
+                  }
+                >
+                  {rewindBusy
+                    ? "回滚中…"
+                    : rewind?.armed
+                      ? `确认回滚 ${rewind.preview.filesChanged?.length ?? 0} 个文件？`
+                      : "撤销本轮改动"}
+                </button>
+              )}
             </div>
             <div className="files-body">
               {fileGroups.length === 0 ? (
@@ -2442,6 +2570,36 @@ export default function ChatView({
       >
         {/* 卡片：输入框在上、控件在下（高度与宽度由 .composer-card / .chat-input 给） */}
         <div className="composer-card">
+          {/* `/` 命令补全面板（supportedCommands() 的数据源，进程起来后可用）。
+              挂在卡片里、向上弹——与 ModePicker 的 .mode-panel 同一方向语言 */}
+          {cmdOpen && (
+            <div className="cmd-panel" role="listbox">
+              {cmdList.map((c, i) => {
+                const sel = i === Math.min(cmdIdx, cmdList.length - 1);
+                return (
+                  <button
+                    key={`${i}-${c.name}`}
+                    ref={sel ? cmdActiveRef : null}
+                    type="button"
+                    role="option"
+                    aria-selected={sel}
+                    className={`cmd-item${sel ? " active" : ""}`}
+                    title={c.description}
+                    // mousedown 先于 blur：拦掉默认行为，点选项不丢输入框焦点
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => {
+                      setInput(`/${c.name} `);
+                      inputRef.current?.focus();
+                    }}
+                  >
+                    <span className="cmd-name">/{c.name}</span>
+                    {c.argumentHint && <span className="cmd-arg">{c.argumentHint}</span>}
+                    <span className="cmd-desc">{c.description}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
           <textarea
             ref={inputRef}
             className="chat-input"
@@ -2453,9 +2611,54 @@ export default function ChatView({
             value={input}
             rows={1}
             disabled={status.phase === "exited"}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={(e) => {
+              const v = e.target.value;
+              setInput(v);
+              setCmdDismissed(false);
+              // 首次触发补全时拉一次命令表（缓存在本 tab 生命周期）。
+              // ⚠️ 只在**拿到非 null 结果**时缓存：后端在进程还没起时返回 null（首次
+              // `/` 很可能落在 spawn 之前那个窗口里），失败时若也写 [] 就永久缓存了空表、
+              // 之后再打 `/` 永不弹面板（2026-09-24 code review 发现）。空数组是合法结果，
+              // 照常缓存（这是真的没有命令，不必反复问）
+              if (chatKey && cmds === null && /^\/\S*$/.test(v)) {
+                api
+                  .chatCommands(chatKey)
+                  .then((list) => {
+                    if (list !== null) setCmds(list);
+                  })
+                  .catch(() => {
+                    /* null 留着，下次输入再试 */
+                  });
+              }
+            }}
             onPaste={onPasteImages}
             onKeyDown={(e) => {
+              // 补全面板开着：↑↓ 移动、Tab/Enter 采纳（Enter 这时不再发送）、Esc 只收面板。
+              // ⚠️ 判据是 cmdOpen（含 !cmdDismissed），不是 cmdPrefix —— 见 cmdOpen 的注释
+              if (cmdOpen) {
+                if (e.key === "ArrowDown") {
+                  e.preventDefault();
+                  setCmdIdx((i) => (i + 1) % cmdList.length);
+                  return;
+                }
+                if (e.key === "ArrowUp") {
+                  e.preventDefault();
+                  setCmdIdx((i) => (i - 1 + cmdList.length) % cmdList.length);
+                  return;
+                }
+                if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing)) {
+                  e.preventDefault();
+                  const c = cmdList[Math.min(cmdIdx, cmdList.length - 1)];
+                  setInput(`/${c.name} `);
+                  return;
+                }
+                if (e.key === "Escape" && !e.nativeEvent.isComposing) {
+                  // 只收面板、打进一半的词保留；停掉冒泡，全局 Esc（打断本轮）不接手
+                  e.stopPropagation();
+                  setCmdDismissed(true);
+                  return;
+                }
+              }
               if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                 e.preventDefault();
                 void send();
@@ -2477,11 +2680,15 @@ export default function ChatView({
                 这一块**恒渲染**（哪怕三项全空）：它挂着 margin-left:auto，
                 空白由它吸走，发送钮才停在最右 */}
             <div className="composer-meta">
-              {modelName && (
+              {/* 模型：进程起来后可点开热切（supportedModels + setModel）；
+                  没起来时退回只读显示（正常情况下那会儿 modelName 也是 null，不渲染） */}
+              {chatKey ? (
+                <ModelPicker sessionId={chatKey} modelName={modelName} />
+              ) : modelName ? (
                 <span className="meta-item meta-model" title={modelName}>
                   {modelName}
                 </span>
-              )}
+              ) : null}
               {effort && (
                 <span className="meta-item" title={`思考强度 ${effort}`}>
                   {effort}

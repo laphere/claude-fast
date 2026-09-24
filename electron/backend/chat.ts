@@ -12,6 +12,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { randomUUID } from "node:crypto";
 import { spawn, execFileSync } from "node:child_process";
 // 起名失败退回兜底标题时与列表同一口径（首条消息的清洗规则）
 import { cleanSummary } from "./text";
@@ -54,6 +55,40 @@ export interface ChatUsage {
   outputTokens: number;
   cacheReadInputTokens: number;
   cacheCreationInputTokens: number;
+}
+
+/** `Query.supportedModels()` 的精简条目（渲染层在 src/types.ts 有同形副本）。
+ *  resolvedModel 保留大小写原样：探针实测 default 槽解析成 `glm-5.3[1m]`、
+ *  opus 槽解析成 `glm-5.3[1M]`，1M 标记的大小写即两者之别，不能归一化。 */
+export interface ChatModelInfo {
+  value: string;
+  resolvedModel: string | null;
+  displayName: string;
+  description: string;
+}
+
+/** `Query.supportedCommands()` 的精简条目（渲染层在 src/types.ts 有同形副本） */
+export interface ChatCommandInfo {
+  name: string;
+  description: string;
+  argumentHint: string | null;
+  aliases: string[];
+  builtin: boolean;
+}
+
+/** `Query.rewindFiles()` 的归一化结果。dryRun 给全量预览（filesChanged/增删行数），
+ *  真回滚只回 canRewind + skippedLinks —— 两条口径不同是 CLI 的设计（探针实测，
+ *  docs/agent-sdk-capabilities.md §6.10），UI 要展示「将回滚哪些」必须先跑 dryRun。
+ *  `error` 必须透传：`canRewind:false` 有两种成因（本来就没有可回滚的改动 / 回滚真的
+ *  失败了——d.ts 写着「每个有差异的文件都还原失败时回滚本身失败」），不看 error 就会把
+ *  「失败」报成「没有改动」，用户拿不到任何线索（2026-09-24 code review 发现）。 */
+export interface ChatRewindResult {
+  canRewind: boolean;
+  filesChanged: string[] | null;
+  insertions: number | null;
+  deletions: number | null;
+  skippedLinks: number;
+  error: string | null;
 }
 
 /** 后端经 IPC 推送给前端的流式事件（tag = type）
@@ -280,7 +315,14 @@ export function buildUserMessage(text: string | null, images: ChatImage[]): SDKU
   if (content.length === 0) {
     throw new Error("消息不能为空：纯文本或至少一张图片");
   }
-  return { type: "user", message: { role: "user", content } } as SDKUserMessage;
+  // uuid：rewindFiles 的锚点（探针实测客户端 uuid 会落盘进链、CLI 在 result 帧上原样
+  // 回显 user_message_uuid）。SDKUserMessage 类型没声明这个字段——又一处运行时认、
+  // d.ts 没写的内部面（与 generateSessionTitle 同类），靠这个 as 塞进去。
+  return {
+    type: "user",
+    message: { role: "user", content },
+    uuid: randomUUID(),
+  } as SDKUserMessage;
 }
 
 /** 起名用的描述文本（`generate_session_title` 的 `description`）：只有**新建会话**的
@@ -821,6 +863,10 @@ class ChatSession {
   private exited = false;
   /** 等进程退出的回调（close 的优雅退出窗口用） */
   private exitWaiters: Array<() => void> = [];
+  /** 最近一个**完整结束的轮次**的起点用户消息 uuid（rewindFiles 的锚点）。
+   *  从 result 帧的 user_message_uuids **首位**取（= 本轮消费的第一条用户消息，
+   *  即这一轮开始动手之前），只在轮次收尾时更新。 */
+  private lastTurnUserUuid: string | null = null;
 
   /** 进程是否已退出（ChatManager.send 据此拒绝往死会话里塞消息） */
   hasExited(): boolean {
@@ -870,6 +916,10 @@ class ChatSession {
       // （实测报 Not logged in）。不传 = CLI 用自身默认（user+project+local）。
       abortController: this.abort,
       spawnClaudeCodeProcess: (o: SpawnOptions) => this.spawnProcess(o),
+      // 文件检查点：每条用户消息在 ~/.claude/file-history/<id>/@vN 落一份快照，
+      // rewindFiles 靠它做「撤销本轮改动」（与 CLI /rewind 同一快照仓）。开销是
+      // 每轮一次快照记账——CLI 自己在 TUI 里也恒开，可接受（探针见 §6.10）。
+      enableFileCheckpointing: true,
     };
 
     if (this.explicitMode) {
@@ -942,6 +992,18 @@ class ChatSession {
           void this.generateTitle();
         }
         for (const e of events) this.emit(e);
+        // 轮次收尾时记下本轮的用户消息 uuid（rewindFiles 的锚点）。
+        // ⚠️ 取 user_message_uuids 的**首位**，不是末位：数组是「本轮消费掉的全部用户
+        // 消息」（按消费顺序），首位 = 本轮的起点 —— rewindFiles(该 uuid) 还原到「这一轮
+        // 开始动手之前」，正是按钮承诺的语义。取末位会漏掉「中途塞进本轮的第二条消息
+        // 之前」那些改动（一轮里 Edit 完再发一条接着改，末位只回滚后半段，
+        // 2026-09-24 code review 发现）。旧 CLI 没有数组字段则退单个。
+        if (msg.type === "result") {
+          const uuids = (msg as Rec).user_message_uuids;
+          const single = (msg as Rec).user_message_uuid;
+          const uuid = Array.isArray(uuids) && uuids.length > 0 ? String(uuids[0]) : single;
+          if (typeof uuid === "string" && uuid) this.lastTurnUserUuid = uuid;
+        }
         // 每轮结束刷一次上下文占用（起进程那次由 start() 里的 pullContextUsageSoon 负责，
         // 因为 init 要等第一条消息才到 —— 光靠这里会漏掉"一启动就显示"）。
         // 放在这里而不是 translator 里：那层是纯翻译，而 getContextUsage 要 this.query。
@@ -1130,6 +1192,65 @@ class ChatSession {
     await this.query?.setPermissionMode(toSdkPermissionMode(mode));
   }
 
+  /** 可选模型表（`Query.supportedModels()`）。进程没起 / 已退出返回 null —— 前端据此
+   *  显示「发送首条消息后可选」。条目是供应商映射后的槽位：第三方供应商下
+   *  opus/fable/sonnet/haiku 各自解析到供应商的模型变体（探针实测 §6.13）。 */
+  async supportedModels(): Promise<ChatModelInfo[] | null> {
+    const q = this.query;
+    if (!q || this.exited) return null;
+    const list = await q.supportedModels();
+    return list.map((m) => ({
+      value: String(m.value),
+      resolvedModel: m.resolvedModel != null ? String(m.resolvedModel) : null,
+      displayName: String(m.displayName ?? m.value),
+      description: String(m.description ?? ""),
+    }));
+  }
+
+  /** 热切模型。成功后 CLI **立即**补发一帧 init（不用等下一轮，探针实测 §6.13），
+   *  经既有 session_ready 翻译把新模型名送到前端——不需要专门的事件。
+   *  model 为 null 复位默认。非法名会 reject（供应商 400），交给调用方 toast。 */
+  async setModel(model: string | null): Promise<void> {
+    await this.query?.setModel(model ?? undefined);
+  }
+
+  /** 斜杠命令表（`Query.supportedCommands()`），`/` 补全的数据源。
+   *  进程没起 / 已退出返回 null。命令集合会随插件/技能装载变化，前端开了面板现查、
+   *  不做长缓存（实测往返 <1ms）。 */
+  async supportedCommands(): Promise<ChatCommandInfo[] | null> {
+    const q = this.query;
+    if (!q || this.exited) return null;
+    const list = await q.supportedCommands();
+    return list.map((c) => ({
+      name: String(c.name),
+      description: String(c.description ?? ""),
+      argumentHint: c.argumentHint != null ? String(c.argumentHint) : null,
+      aliases: Array.isArray(c.aliases) ? c.aliases.map(String) : [],
+      builtin: c.builtin === true,
+    }));
+  }
+
+  /** 撤销「最近一个完整轮次」的文件改动（`Query.rewindFiles()`）。
+   *  dryRun = true 只算清单不动磁盘（filesChanged/增删行数只有这条给）；真回滚只回
+   *  canRewind + skippedLinks —— UI 先 preview 再 apply 是设计使然（探针实测 §6.10）。
+   *  ⚠️ 只回滚文件、不回滚对话：jsonl 原样保留，下一轮模型经 edited_text_file 附件
+   *  自动知道文件被还原（探针验证过，宿主不用补纠偏）。
+   *  没起进程 / 本 sitting 还没跑完过一轮（没有锚点 uuid）→ 返回 null。 */
+  async rewindLast(dryRun: boolean): Promise<ChatRewindResult | null> {
+    const q = this.query;
+    const uuid = this.lastTurnUserUuid;
+    if (!q || this.exited || !uuid) return null;
+    const r = await q.rewindFiles(uuid, { dryRun });
+    return {
+      canRewind: r.canRewind === true,
+      filesChanged: Array.isArray(r.filesChanged) ? r.filesChanged.map(String) : null,
+      insertions: r.insertions != null ? Number(r.insertions) : null,
+      deletions: r.deletions != null ? Number(r.deletions) : null,
+      skippedLinks: r.skippedLinks != null ? Number(r.skippedLinks) : 0,
+      error: r.error != null ? String(r.error) : null,
+    };
+  }
+
   async rename(title: string): Promise<void> {
     const sdk = await import("@anthropic-ai/claude-agent-sdk");
     await sdk.renameSession(this.id, title, { dir: this.projectPath });
@@ -1223,6 +1344,26 @@ export class ChatManager {
 
   async setPermissionMode(sessionId: string, mode: ChatPermissionMode): Promise<void> {
     await this.sessions.get(sessionId)?.setPermissionMode(mode);
+  }
+
+  /** 可选模型表（进程没起返回 null；会话不存在同 null） */
+  async supportedModels(sessionId: string): Promise<ChatModelInfo[] | null> {
+    return (await this.sessions.get(sessionId)?.supportedModels()) ?? null;
+  }
+
+  /** 运行中热切模型（null 复位默认；成功后 init 帧自动把新模型送到前端） */
+  async setModel(sessionId: string, model: string | null): Promise<void> {
+    await this.sessions.get(sessionId)?.setModel(model);
+  }
+
+  /** 斜杠命令表（进程没起返回 null） */
+  async supportedCommands(sessionId: string): Promise<ChatCommandInfo[] | null> {
+    return (await this.sessions.get(sessionId)?.supportedCommands()) ?? null;
+  }
+
+  /** 撤销最近一轮的文件改动（dryRun 决定预览或真回滚；没锚点返回 null） */
+  async rewindLast(sessionId: string, dryRun: boolean): Promise<ChatRewindResult | null> {
+    return (await this.sessions.get(sessionId)?.rewindLast(dryRun)) ?? null;
   }
 
   /** 前端对权限/方案审批的应答 */

@@ -77,6 +77,16 @@ export interface IpcContract {
   chat_prewarm: { sessionId: string };
   chat_interrupt: { sessionId: string };
   chat_set_permission_mode: { sessionId: string; mode: ChatPermissionMode };
+  /** 可选模型表（进程没起 / 已退出 → null，前端据此提示「发送首条消息后可选」） */
+  chat_models: { sessionId: string };
+  /** 运行中热切模型；model 为 null 复位默认。成功后 init 帧经 session_ready 送新模型名 */
+  chat_set_model: { sessionId: string; model: string | null };
+  /** 斜杠命令表（`/` 补全数据源；进程没起 → null） */
+  chat_commands: { sessionId: string };
+  /** 撤销最近一轮的文件改动：dryRun=true 只出预览清单（filesChanged/增删行数），
+   *  false 真回滚（只回 canRewind + skippedLinks，两条口径不同是 CLI 设计）。
+   *  没起进程 / 本 sitting 没跑完过一轮 → null */
+  chat_rewind_last: { sessionId: string; dryRun: boolean };
   /** 权限 / 方案审批 / 提问的应答；denyMessage 仅拒绝时生效。
    *  ⚠️ `answers` 是 `AskUserQuestion` 的**唯一**有效回传方式——只回 allow 不带它
    *  等于「用户没选」，不报错但静默失效（见 docs/agent-sdk-interactive-tools.md） */
@@ -189,6 +199,10 @@ export const IPC_CHANNELS = [
   "chat_prewarm",
   "chat_interrupt",
   "chat_set_permission_mode",
+  "chat_models",
+  "chat_set_model",
+  "chat_commands",
+  "chat_rewind_last",
   "chat_permission_response",
   "chat_close",
   "pty_spawn_claude",

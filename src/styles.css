@@ -1182,11 +1182,39 @@ mark {
 }
 
 .files-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   padding: 9px 12px;
   font-size: 12px;
   font-weight: 600;
   color: var(--muted);
   border-bottom: 1px solid var(--border);
+}
+
+/* 撤销本轮改动（rewindFiles）：第一击出预览、第二击确认（行内二次确认，与回收站同款） */
+.files-rewind {
+  margin-left: auto;
+  /* 墨迹补偿，勿改对称（字号 11.5px 与 .trash-restore 同档：line-height 1 墨迹偏上） */
+  padding: 6px 5px 4px;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--muted);
+  background: none;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.files-rewind:hover:not(:disabled) {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.files-rewind:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .files-count {
@@ -3284,6 +3312,8 @@ mark {
   margin-right: auto;
   display: flex;
   flex-direction: column;
+  /* `/` 命令补全面板（.cmd-panel）向上弹的定位锚点 */
+  position: relative;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 14px;
@@ -3622,6 +3652,113 @@ mark {
 
 .chat-mode:hover {
   border-color: var(--dim);
+}
+
+/* ModelPicker 复用 .mode-picker 那套，只补三样：面板内的提示行、错误行、resolved 模型名 */
+
+/* ⚠️ 必须覆盖 .mode-picker 的 flex-shrink: 0 —— 模型名长度不可控
+   （`deepseek-v4.1-flash[1m]` 这种），不缩就会把同一行的上下文占用挤出容器被裁掉。
+   对齐被它替掉的那个 .meta-model（flex-shrink:1 + min-width:0 + 省略号）*/
+.model-picker {
+  flex-shrink: 1;
+  min-width: 0;
+}
+
+.model-picker .mode-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mode-hint {
+  padding: 6px 10px;
+  font-size: 11.5px;
+  color: var(--dim);
+  white-space: nowrap;
+}
+
+.mode-hint-error {
+  color: var(--danger);
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mode-item-main {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.model-resolved {
+  font-size: 10.5px;
+  font-weight: 400;
+  color: var(--dim);
+  font-family: var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ============ `/` 命令补全面板（supportedCommands） ============ */
+/* 挂在 .composer-card 里、向上弹（与 .mode-panel 同一方向语言）；
+   .composer-card 的 position:relative 加在文件上方它自己的块里 */
+
+.cmd-panel {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  z-index: 20;
+  max-height: 264px;
+  overflow-y: auto;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  padding: 4px;
+}
+
+.cmd-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 8px;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  font-size: 12.5px;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.cmd-item.active {
+  background: var(--accent-soft);
+}
+
+.cmd-name {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.cmd-arg {
+  font-size: 11px;
+  color: var(--dim);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+
+.cmd-desc {
+  flex: 1;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ============ 多会话 tab（并行对话） ============ */

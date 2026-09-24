@@ -208,6 +208,38 @@ export interface ChatUsage {
   cacheCreationInputTokens: number;
 }
 
+/** 可选模型条目（`Query.supportedModels()` 的精简形；electron/backend/chat.ts 有同形副本）。
+ *  resolvedModel 是该槽位实际解析到的模型 id——第三方供应商下 opus/fable/sonnet/haiku
+ *  各自映射到供应商的模型变体，选择器要把它亮出来（大小写原样，[1m]/[1M] 是两回事） */
+export interface ChatModelInfo {
+  value: string;
+  resolvedModel: string | null;
+  displayName: string;
+  description: string;
+}
+
+/** 斜杠命令条目（`Query.supportedCommands()` 的精简形；electron/backend/chat.ts 有同形副本） */
+export interface ChatCommandInfo {
+  name: string;
+  description: string;
+  argumentHint: string | null;
+  aliases: string[];
+  builtin: boolean;
+}
+
+/** `Query.rewindFiles()` 的归一化结果：dryRun 给全量预览，真回滚只回 canRewind +
+ *  skippedLinks（CLI 设计如此）——「将回滚哪些」必须先跑 dryRun 拿。
+ *  `error` 要透传：canRewind:false 可能是「没有可回滚的改动」也可能是「回滚失败」，
+ *  不看它就等于把失败报成没有改动 */
+export interface ChatRewindResult {
+  canRewind: boolean;
+  filesChanged: string[] | null;
+  insertions: number | null;
+  deletions: number | null;
+  skippedLinks: number;
+  error: string | null;
+}
+
 /** 后端 chat 模块经 ipc::Channel 推送的流式事件（tag = type） */
 export type ChatEvent =
   | {

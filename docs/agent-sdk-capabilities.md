@@ -22,7 +22,7 @@
 |---|---|---|
 | SDK 版本 | `0.3.278` | `package.json` 的 `version` |
 | 对应 CLI | `2.1.278` | `package.json` 的 `claudeCodeVersion` + `manifest.json` 的 `version`，两处一致 |
-| 原生二进制 | `optionalDependencies` 列 8 个平台包 | npm 只装匹配本机的那一个（win32-x64 的 `claude.exe` 237MB）。**2026-09-23 起从 `build.files` 排除、不进安装包**——对话层只认本机 claude（§10 第 5 条），安装包不再因它变大 |
+| 原生二进制 | `optionalDependencies` 列 8 个平台包 | npm 只装匹配本机的那一个（win32-x64 的 `claude.exe` 237MB）。**2026-09-23 起从 `build.files` 排除、不进安装包**——对话层只认本机 claude（§8 第 5 条），安装包不再因它变大 |
 | peerDependencies | `@anthropic-ai/sdk >=0.93.0`、`@modelcontextprotocol/sdk ^1.29.0`、`zod ^4.0.0` | **都不在本仓 `package.json` 的 dependencies 里**，是 npm 7+ 自动装的 peer。本机 zod 实际是 `4.6.5` |
 
 > ⚠️ **想用 `tool()` / `createSdkMcpServer()`（§6.2）就得显式把 `zod` 与 `@modelcontextprotocol/sdk` 加进 `dependencies`**。现在是传递装进来的，`npm install` 时解析不到就会炸；靠「本机恰好有」不是依赖声明。
@@ -302,7 +302,7 @@ options.sandbox = { enabled: true, network: { allowLocalBinding: true }, filesys
 
 `userMessageId` 传**宿主 yield `SDKUserMessage` 时自带的 `uuid`**（客户端 uuid 会落盘进链、`rewindFiles` 直接认它；轮次回显——assistant 首帧 / result 帧上的 `user_message_uuid`——用的也是它）。
 
-**对本项目的用处**：会话页「变更文件面板」（聚合 `Edit` / `Write` / `MultiEdit`，点一下只能定位、不能回退）加「撤销本轮改动」。落地时 UI 要向用户讲清语义：**文件回去了、对话记录还在**（下一轮模型经 `edited_text_file` 附件自己知道文件被还原）。仍待验：跟踪文件集合与自家面板聚合口径的重合度——探针只跑了 Write 单文件场景，哪些改动能撤、哪些不在跟踪内没铺开测。
+**对本项目的用处**：会话页「变更文件面板」（聚合 `Edit` / `Write` / `MultiEdit`，点一下只能定位、不能回退）加「撤销本轮改动」。落地时 UI 要向用户讲清语义：**文件回去了、对话记录还在**（下一轮模型经 `edited_text_file` 附件自己知道文件被还原）。~~仍待验：跟踪文件集合与自家面板聚合口径的重合度~~ → **2026-09-24 二次探针已验**（`%TEMP%\sdk2-probe\`）：同一轮里 `Write` 新建 + `Edit` 修改**两个文件都在跟踪集**，dryRun 的 `filesChanged` 与面板的 Edit/Write 聚合口径一致；Write 建的文件回滚后被**删除**（不留空文件）。已落地：`chat.ts` 的 `rewindLast`（锚点取 result 帧 `user_message_uuids` 的**首位**——数组是「本轮消费掉的整批用户消息」，首位 = 本轮起点；取末位会漏掉「中途塞进本轮的第二条消息之前」的改动，2026-09-24 code review 修正；用户消息的 uuid 由 `buildUserMessage` 生成，SDKUserMessage 类型未声明、运行时认——又一处内部面）+ 变更文件面板的行内二次确认按钮 + **`error` 透传**（`canRewind:false` 有两种成因，吞掉 error 会把「失败」报成「没有改动」）。
 
 ### 6.11 上下文占用（**实**，2026-09-22 复验）
 
@@ -347,23 +347,32 @@ generateSessionTitle(description: string, opts?: { persist?: boolean }) → Prom
 - **调用失败会 reject**（起名用的那个模型不可用时），宿主该降级：标题退回「首条用户消息」那档，不要让它影响对话。
 - 描述文本就是「首条用户消息」（TUI 也是这么传的）；纯图消息没有可读文本，TUI 会跳过，宿主同理。
 
+### 6.13 模型热切与命令表：`supportedModels()` / `setModel()` / `supportedCommands()`（**实**，2026-09-24 探针）
+
+探针 `%TEMP%\sdk2-probe\sdk2.mjs`（本机 CLI 2.1.278，GLM 供应商配置），六条硬结论：
+
+- **`supportedModels()` 反映供应商映射后的槽位**：default/opus/fable/sonnet/haiku 各自带 `resolvedModel`——第三方供应商下它们解析到**不同的模型变体**（实测 default → `glm-5.3[1m]`、opus → `glm-5.3[1M]`、haiku → `glm-5.3`），`[1m]` 与 `[1M]` 仅大小写之别即是两回事，**选择器要亮出 resolvedModel 且不能归一化大小写**。
+- **`setModel()` 热切后 CLI 立即补发一帧 init（不等下一轮）**——经既有 `session_ready` 翻译链把新模型名送到前端，**不需要新增事件**。
+- **`setModel(undefined)` 复位默认**，同样立即回 init。
+- **非法名 reject**（供应商 400，错误串带 `model not changed`），reject 而非静默——UI 可以放心 toast / 内联报错。
+- **`supportedCommands()` 实测 66 条**（含用户装的技能），形状与 d.ts 一致（name/description/argumentHint/aliases/builtin），往返 <1ms，开了面板现查即可、不必缓存。
+- **effort 全程零回显**：`applyFlagSettings({effortLevel})` 成功但没有任何帧带 effort（before=after=0）——SDK 宿主上 effort 只能「自己设过自己记」，盲控制器 + resume 后状态丢失，**v1 砍掉 effort UI**，等有回显通道再做。
+
+与 `getContextUsage`/`generateSessionTitle` 一样，这三个都已在对话层落地（`chat.ts` 的 `supportedModels` / `setModel` / `supportedCommands` + `ModelPicker.tsx` + `/` 补全面板）。
+
 ---
 
 ## 7. 本项目现状对照
 
-**用的（`chat.ts` 全部家当）**：`cwd`、`canUseTool`、`includePartialMessages`、`abortController`、`spawnClaudeCodeProcess`、`permissionMode`（条件）、`resolvePermissionModeInCli`（内部选项，`@ts-expect-error`）、`resume` \| `sessionId`、`pathToClaudeCodeExecutable`；运行中调 `interrupt()` / `setPermissionMode()` / `close()` / `getContextUsage()` / `generateSessionTitle()`（后两个也是内部/未声明面，见 §6.11、§6.12）。
+**用的（`chat.ts` 全部家当）**：`cwd`、`canUseTool`、`includePartialMessages`、`abortController`、`spawnClaudeCodeProcess`、`permissionMode`（条件）、`resolvePermissionModeInCli`（内部选项，`@ts-expect-error`）、`resume` \| `sessionId`、`pathToClaudeCodeExecutable`、`enableFileCheckpointing`；运行中调 `interrupt()` / `setPermissionMode()` / `close()` / `getContextUsage()` / `generateSessionTitle()`（内部/未声明面，§6.11、§6.12）/ `supportedModels()` / `setModel()` / `supportedCommands()` / `rewindFiles()`（§6.13、§6.10，2026-09-24 落地：`ModelPicker.tsx` 模型热切、`/` 命令补全面板、变更文件面板的「撤销本轮改动」）。
 
 **没用但值得排队的**（按「对本 app 的收益 ÷ 落地成本」粗排）：
 
 | 能力 | 落地点 | 备注 |
 |---|---|---|
-| `getContextUsage()` | 会话页头部加「上下文占用」 | 纯读取，最低成本 |
-| `supportedCommands()` | composer 的 `/` 命令补全 | 数据现成，UI 是主要工作量 |
-| `supportedModels()` + `setModel()` | 模型选择器（**热切，不用重开 tab**） | 权限档位选择器已有先例（`ModePicker.tsx`） |
 | `startup()` | 消掉首条消息的冷启等待 | 需先定预热时机 + warm 池失效策略，见 §6.8 |
 | `agents` | app 内置子代理，跨项目可用 | 与「项目 `.claude/agents/`」互补 |
 | `outputFormat` | 会话导出 / 批量分析的结构化输出 | 只在特定功能里用 |
-| `enableFileCheckpointing` + `rewindFiles()` | 变更文件面板加「撤销本轮改动」 | 机制已实测（§6.10，2026-09-23）：只回滚文件、模型经 `edited_text_file` 附件自动纠偏；剩「跟踪范围 vs 面板聚合口径」待验 |
 | `maxTurns` / `maxBudgetUsd` | 成本护栏（设置项） | 客户端侧，不依赖账单 |
 | `options.title` | 新会话标题**开进程时直接给** | 注意与 §6.12 分工：那个是**宿主自己定**一个写死的标题（且给了就不再自动起名）；要让 CLI 起名走 `generateSessionTitle()`。头部统计 / 四按钮现在仍靠轮询 `chat_session_meta` 等 jsonl 里出现标题 |
 | `tool()` + `createSdkMcpServer()` | 把会话搜索 / 用量查询 / 回收站做成工具 | 需先显式加 `zod` 依赖 |
@@ -394,7 +403,7 @@ generateSessionTitle(description: string, opts?: { persist?: boolean }) → Prom
 
 1. `getSessionMessages()` 的合并 / usage 口径是否与本项目 `sessions.ts` 一致（§6.6）——**不同就用自家的，别混用**。
 2. `startup()` 预热后 `query()` 的 `Options` 是否仍可部分覆盖（cwd / resume 是否被 warm 时定死）。
-3. `setModel()` / `setPermissionMode()` 热切的**生效边界**——是下一轮生效还是当轮？会不会导致 jsonl 里出现不一致的 `permissionMode`（本项目 `listSessions` 会读这个字段）。
-4. ~~`rewindFiles()` 的跟踪范围与自家「变更文件面板」的重合度~~ → **2026-09-23 探针已验大半**（`%TEMP%\rewind-probe\`，§6.10）：只回滚文件不回滚对话、dryRun / 真回滚、回滚后模型自动纠偏全过；**仍待验**「跟踪文件集合 vs 自家面板聚合」的重合度（探针只跑了 Write 单文件场景）。
+3. ~~`setModel()` / `setPermissionMode()` 热切的**生效边界**~~ → **2026-09-24 探针已验**（§6.13）：`setModel()` 后 CLI **立即**补发 init（不等下一轮）、`setModel(undefined)` 复位、非法名 reject（供应商 400）。jsonl 的 `permissionMode` 字段一致性仍未单独核对（低风险，`listSessions` 只读它做展示）。
+4. ~~`rewindFiles()` 的跟踪范围与自家「变更文件面板」的重合度~~ → **2026-09-24 二次探针已验**（§6.10）：Write 新建 + Edit 修改都在跟踪集，与面板聚合口径一致。
 5. ~~`getContextUsage()` 的数值口径~~ → **2026-09-22 已接进对话层并复验**：可用，`kind==='used'` 求和 + `maxTokens` 作分母即得占用率；**只有 `percentage` 的单位没验**（所以对话层不转发它，见 §6.11）。
 6. `tool()` + `createSdkMcpServer()` 在**打包后**（asar / unpack）能否正常调用。

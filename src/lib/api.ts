@@ -10,9 +10,12 @@
 import type { IpcChannel } from "../../electron/ipc-contract";
 import { Channel } from "./channel";
 import type {
+  ChatCommandInfo,
   ChatEvent,
   ChatImage,
+  ChatModelInfo,
   ChatPermissionMode,
+  ChatRewindResult,
   ClaudeProject,
   ClaudeUpdateStatus,
   Config,
@@ -176,6 +179,18 @@ export const api = {
   /** 运行中切换权限模式（等价终端 Shift+Tab；CLI 回执失败会以 error 事件浮出） */
   chatSetPermissionMode: (sessionId: string, mode: ChatPermissionMode) =>
     invoke("chat_set_permission_mode", { sessionId, mode }),
+  /** 可选模型表；进程没起（首条消息未发）返回 null —— 此时选择器应保持禁用 */
+  chatModels: (sessionId: string) => invoke<ChatModelInfo[] | null>("chat_models", { sessionId }),
+  /** 运行中热切模型（null 复位默认）；成功后 session_ready 帧自动送来新模型名 */
+  chatSetModel: (sessionId: string, model: string | null) =>
+    invoke("chat_set_model", { sessionId, model }),
+  /** 斜杠命令表（`/` 补全数据源）；进程没起返回 null */
+  chatCommands: (sessionId: string) =>
+    invoke<ChatCommandInfo[] | null>("chat_commands", { sessionId }),
+  /** 撤销最近一轮的文件改动。dryRun=true 只出预览清单不动磁盘；真回滚只回
+   *  canRewind + skippedLinks —— 所以 UI 流程固定是先 preview 再 apply */
+  chatRewindLast: (sessionId: string, dryRun: boolean) =>
+    invoke<ChatRewindResult | null>("chat_rewind_last", { sessionId, dryRun }),
   /** 权限 / 方案审批 / 提问的应答；denyMessage 仅拒绝时生效。
    *  ⚠️ 提问（AskUserQuestion）必须经 `answers` 回传（key = 题目完整文本），
    *  只回 allow 不带 answers 等于「用户没选」——不报错但静默失效 */
