@@ -426,17 +426,22 @@ export function FindingsCard({
       <div className="findings-body">
         {findings.map((f, i) => {
           const v = verdictOf(f.verdict);
+          // short_summary 是可选字段，缺了就回落拿 summary 当标题。
+          // ⚠️ 正文判重必须对着「实际用作标题的这段」比——对着 short_summary 比，
+          // 在它缺失时恒不等，同一段 summary 会在标题和正文各画一遍（2026-09-25
+          // 用户实测每条重复两遍的根因）。
+          const title = f.short_summary || f.summary || "发现";
           return (
             <div className="finding" key={i}>
               <div className="finding-title">
-                {i + 1}. {f.short_summary || f.summary || "发现"}
+                {i + 1}. {title}
               </div>
               <div className="finding-meta">
                 <span className={v.cls}>{v.label}</span>
                 {f.category ? ` · ${f.category}` : ""}
                 {f.file ? ` · ${f.file}${f.line != null ? `:${f.line}` : ""}` : ""}
               </div>
-              {f.summary && f.summary !== f.short_summary && (
+              {f.summary && f.summary !== title && (
                 <div className="finding-summary">{f.summary}</div>
               )}
               {f.failure_scenario && (
