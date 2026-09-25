@@ -360,11 +360,36 @@ generateSessionTitle(description: string, opts?: { persist?: boolean }) → Prom
 
 与 `getContextUsage`/`generateSessionTitle` 一样，这三个都已在对话层落地（`chat.ts` 的 `supportedModels` / `setModel` / `supportedCommands` + `ModelPicker.tsx` + `/` 补全面板）。
 
+### 6.14 命令与子代理可见性：`command_lifecycle` / `system:task_*` / `system:local_command` / `forwardSubagentText`（**实**，2026-09-25 探针+真机）
+
+探针 `%TEMP%\fst-probe\probe.mjs`（本机 CLI 2.1.281，与 SDK 0.3.278 **版本错位**下实测，全部照常工作）。起因：app 内发 `/code-review`，界面「思考中…」82 秒无反应，用户以为卡死按了停止（那轮烧了 ~$1）。
+
+**事件流上实际会来、且容易整类被丢掉的帧**（翻译层的 switch 别只认 d.ts 列过的形状）：
+
+- `command_lifecycle`：`{command_uuid, state}`，`queued` → `started`，**没有终态**——结束只能由 result/turn_end 推断。帧里**没有命令名**（宿主要拿自己刚发的文本对上）。CLI 对**任何** `/` 开头、首词无空白的消息都发（连本环境不可用的 `/status` 也发）。
+- `system` 的 `task_started|task_progress|task_updated|task_notification`：子代理心跳。`task_progress` 才带 `usage:{tool_uses,duration_ms}` 与 `last_tool_name`；`task_notification` 带 `status`+`summary`；`task_updated` 只有 `patch`——**缺的字段给 null、别补 0**（补了 UI 数字会在 task_updated 到达时闪零）。
+- 命令执行期间主流可以长时间**只有这几帧**（技能整轮跑在子代理里，实测 82 秒）——丢掉它们 = 整段执行期零可渲染内容，看起来像卡死。
+
+**本地命令的产物在 jsonl、不在事件流**：CLI 拦截执行的那类命令（jsonl 里带 `<local-command-caveat>` 的 user 行）把结果写成 `system` + `subtype:"local_command"`、正文包 `<local-command-stdout>`——**8 次探针里事件流 0 命中**，读取端只有解析 jsonl 一条路（`sessions.ts` 的 `parseSessionMessages`）。⚠️ 这轮**不经过父模型**：主 jsonl 无 assistant 帧、无任何工具回执（连 ReportFindings 都没有），结果就是命令自己的 stdout、**没有父代理汇总**——「子代理结果经父模型汇总回主流」只在模型自己调 Task/Skill 那条路上成立（探针 B/E：tool_result 回父 → 父继续写正文）。
+
+**子代理数据面（`forwardSubagentText`，默认 false）**：
+
+- 默认：子代理的 `tool_use`/`tool_result` 与提示词（user text）带 `parent_tool_use_id` 转发到主流（够心跳/工具行渲染）；**text/thinking 不转发**，`stream_event` 也一律不带 ptuid（子代理不流式）。裸 `/code-review` 默认落 **high effort**（子代理首条提示词自述 `8 inline angles`；给 `low` 则 `1 diff pass`、实测 19 秒跑完）——长耗时来自这里，不是卡死。
+- `forwardSubagentText: true`：额外转发子代理 text/thinking（探针 B 243 帧 vs C 468 帧），完整嵌套转录要靠它。**v1 不开**：完整上下文留在磁盘 `<会话>/subagents/agent-*.jsonl`，要做「查看子代理」优先读文件复用只读会话页（还差 `task_id`↔文件名 映射一个探针）。
+- CLI TUI 能切进去看子代理上下文，是因为它自己就是宿主、数据全在手上；SDK 宿主的数据面 = 事件流 + 磁盘文件，仅此两种。
+
+**踩坑两则**：
+
+- `/` 采纳补尾随空格 = 命令不被识别：`/code-review `（带空格）实测 CLI 不走命令通道，模型把它当「路径」瞎探索 15 秒、技能一次不调。采纳要发裸命令、用 dismissed 标记关面板。
+- 命令输出的渲染**两侧必须成对补**（`chat.ts` 事件翻译 + `sessions.ts` 历史解析各一处）：只补一边就是「活着看得到、关掉 resume 就没了」（2026-09-25 实测返工）。
+
+**版本错位补充**：CLI 2.1.281 + SDK 0.3.278 下，上述全部帧 + `generateSessionTitle` + 权限面在真机 app 均照常工作——错位本身不构成升级阻塞，但 §8.8 那批内部面在升级时仍要回归。
+
 ---
 
 ## 7. 本项目现状对照
 
-**用的（`chat.ts` 全部家当）**：`cwd`、`canUseTool`、`includePartialMessages`、`abortController`、`spawnClaudeCodeProcess`、`permissionMode`（条件）、`resolvePermissionModeInCli`（内部选项，`@ts-expect-error`）、`resume` \| `sessionId`、`pathToClaudeCodeExecutable`、`enableFileCheckpointing`；运行中调 `interrupt()` / `setPermissionMode()` / `close()` / `getContextUsage()` / `generateSessionTitle()`（内部/未声明面，§6.11、§6.12）/ `supportedModels()` / `setModel()` / `supportedCommands()` / `rewindFiles()`（§6.13、§6.10，2026-09-24 落地：`ModelPicker.tsx` 模型热切、`/` 命令补全面板、变更文件面板的「撤销本轮改动」）。
+**用的（`chat.ts` 全部家当）**：`cwd`、`canUseTool`、`includePartialMessages`、`abortController`、`spawnClaudeCodeProcess`、`permissionMode`（条件）、`resolvePermissionModeInCli`（内部选项，`@ts-expect-error`）、`resume` \| `sessionId`、`pathToClaudeCodeExecutable`、`enableFileCheckpointing`；运行中调 `interrupt()` / `setPermissionMode()` / `close()` / `getContextUsage()` / `generateSessionTitle()`（内部/未声明面，§6.11、§6.12）/ `supportedModels()` / `setModel()` / `supportedCommands()` / `rewindFiles()`（§6.13、§6.10，2026-09-24 落地：`ModelPicker.tsx` 模型热切、`/` 命令补全面板、变更文件面板的「撤销本轮改动」）；事件翻译认 `command_lifecycle` / `system:task_*` / `system:local_command` 三类帧（§6.14，2026-09-25 落地：命令与子代理可见性 + 命令输出 jsonl 侧补齐）。
 
 **没用但值得排队的**（按「对本 app 的收益 ÷ 落地成本」粗排）：
 
