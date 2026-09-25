@@ -3882,6 +3882,8 @@ mark {
 }
 
 .chat-tab {
+  /* 拖拽落点指示条（.drop-before/after 伪元素）的定位基准 */
+  position: relative;
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -3959,6 +3961,33 @@ mark {
 .chat-tab-close:hover {
   color: var(--danger);
   background: var(--danger-soft);
+}
+
+/* ============ tab 拖拽调序（视觉状态见 ChatTabs 的 dragId/overId） ============ */
+.chat-tab.dragging {
+  opacity: 0.45;
+}
+
+.chat-tab.drop-before::before,
+.chat-tab.drop-after::after {
+  content: "";
+  position: absolute;
+  top: 4px;
+  bottom: 0;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+  pointer-events: none;
+}
+
+/* .chat-tabs gap:4px，指示条落在间隙里。负偏移不会被裁：容器只裁到 padding box，
+   而首/尾 tab 的 ±3px 落在左右各 10px 的内边距内（与项目行拖拽同款做法） */
+.chat-tab.drop-before::before {
+  left: -3px;
+}
+
+.chat-tab.drop-after::after {
+  right: -3px;
 }
 
 /* ============ 对话进度条（左侧用户发言导航轨，自 v1.0.0 查看页移植） ============ */
