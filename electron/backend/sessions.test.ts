@@ -323,6 +323,44 @@ describe("parseSessionMessages", () => {
     expect(r[0].blocks[0].text).toBe("正常的对话");
   });
 
+  it("system/local_command → 解出 <local-command-stdout> 内联正文（命令结果不能整行丢掉）", () => {
+    // 2026-09-25 用户实测：app 内 `/code-review` 的结果「活着看得到、关掉再 resume 就没了」。
+    // 原因就是 CLI 把本地命令的产物记成 system + subtype:"local_command" 一行，
+    // 被上面那句「不是 user/assistant 就 continue」整行丢掉了。
+    const jsonl = [
+      JSON.stringify({
+        type: "user",
+        message: { role: "user", content: "/code-review" },
+        timestamp: "t1",
+      }),
+      JSON.stringify({
+        type: "system",
+        subtype: "local_command",
+        content:
+          '<local-command-stdout>I have the full picture.\n```json\n[{"file":"a.java"}]\n```</local-command-stdout>',
+        timestamp: "t2",
+      }),
+      // 空正文、以及别的 system 子类型，都不该变成一条空消息
+      JSON.stringify({
+        type: "system",
+        subtype: "local_command",
+        content: "<local-command-stdout></local-command-stdout>",
+      }),
+      JSON.stringify({ type: "system", subtype: "init", content: "不该出现" }),
+      "",
+    ].join("\n");
+    const r = parseSessionMessages(jsonl);
+    expect(r.length).toBe(2);
+    expect(r[0].blocks[0].text).toBe("/code-review");
+    expect(r[1].kind).toBe("assistant"); // 内联展示（观感与 CLI 的代码框一致）
+    expect(r[1].blocks.map((b) => b.kind)).toEqual(["text"]);
+    expect(r[1].blocks[0].text).toContain("I have the full picture.");
+    expect(r[1].blocks[0].text).toContain('[{"file":"a.java"}]');
+    expect(r[1].blocks[0].text).not.toContain("local-command-stdout"); // 包裹标签要去掉
+    expect(r[1].timestamp).toBe("t2");
+    expect(r[1].usage).toBeNull();
+  });
+
   it("相邻同 message.id 的 assistant 行合并为一条（消息数不虚高）", () => {
     // 真实 jsonl 里一轮工具循环会拆成多条共用一个 message.id 的 assistant 行
     const jsonl = [

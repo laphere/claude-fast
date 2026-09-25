@@ -15,7 +15,7 @@ import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import { spawn, execFileSync } from "node:child_process";
 // 起名失败退回兜底标题时与列表同一口径（首条消息的清洗规则）
-import { cleanSummary } from "./text";
+import { cleanSummary, extractXmlTag } from "./text";
 
 // 仅类型导入：编译期擦除，安全。
 import type {
@@ -113,6 +113,35 @@ export type ChatEvent =
    *  生效的**同一刻**发这帧（2026-09-22 探针实测），只关心 status/init 不带的那部分
    *  （status:'requesting' 那类帧 permissionMode 为 undefined）。 */
   | { type: "permission_mode"; mode: string }
+  /** `/xxx` 斜杠命令的生命周期（`command_lifecycle` 帧）。CLI 对**任何以 `/` 开头的
+   *  用户消息**都发这一对（实测连 `/status` 这种在本环境不可用的命令也发）：
+   *  `queued` → `started`，**没有终态** —— 结束只能由 result/turn_end 推断。
+   *  ⚠️ 帧里只有 command_uuid、**没有命令名**：名字要由前端拿自己刚发出去的文本对上。
+   *  它是「命令整轮跑在子代理里、主流长时间静默」时唯一能渲染的依据：2026-09-25 探针实测，
+   *  一次 `/code-review` 的 82 秒里主流只剩这类帧 + 下面 task_* 心跳，其余全空
+   *  （此前这两类都被 translate 的 default 分支静默丢弃 → 界面看起来是卡死）。 */
+  | { type: "command_state"; state: string }
+  /** 本地命令的**输出正文**（`system` + subtype:"local_command" 的 `<local-command-stdout>`）。
+   *  `/code-review` 这类 CLI 自带实现整轮不经过模型：结果就是这条 stdout（实测 3996 字符的
+   *  findings 全在里面），母会话 jsonl 里既没有 assistant 消息、也没有任何 ReportFindings
+   *  tool_use。⚠️ 与历史侧 sessions.ts 的 parseSessionMessages 成对补 —— 只补一边就会出现
+   *  「活视图有、resume 没有」那种不对称（2026-09-25 用户实测报的就是它）。 */
+  | { type: "command_output"; text: string }
+  /** 子代理活动心跳（`system/task_started|task_progress|task_updated|task_notification`）。
+   *  载荷按「拿不到就不给」处理——不同任务类型发的字段不一样（见 sdk.d.ts），别补默认值。 */
+  | {
+      type: "subagent_activity";
+      phase: "started" | "progress" | "done";
+      /** 已用工具数 / 已跑毫秒（task_progress 的 usage；task_updated 不带） */
+      toolUses?: number | null;
+      durationMs?: number | null;
+      /** 最后一个工具名（task_progress.last_tool_name） */
+      lastTool?: string | null;
+      /** 终态：completed / failed / stopped / killed…（notification.status 或 patch.status） */
+      status?: string | null;
+      /** 一句话摘要（progress / notification 的 summary） */
+      summary?: string | null;
+    }
   /** 上下文占用（getContextUsage 的读数）；init 一到与每轮结束各推一次。
    *  送**原始数字**而不是 API 的 percentage —— 那个字段的单位（0-100 / 0-1）没验过 */
   | { type: "context_usage"; usedTokens: number; windowTokens: number; model?: string | null }
@@ -381,6 +410,10 @@ export class SdkMessageTranslator {
         return this.translateStreamEvent(m);
       case "result":
         return translateResult(m);
+      case "command_lifecycle":
+        // `/xxx` 命令的生命周期（queued → started，无终态）。见 ChatEvent 里那段注释：
+        // 这是命令跑在子代理里时主流的唯一可渲染依据，别再让它落进 default 被丢掉。
+        return [{ type: "command_state", state: String(m.state ?? "") }];
       case "control_request":
         // 运行时 SDK 已把 can_use_tool 经 canUseTool 回掉消费、不会落到这里；
         // 此分支供单测与防御性使用，事件形状与 canUseTool 回调用同一份 buildControlRequestEvent。
@@ -407,6 +440,19 @@ export class SdkMessageTranslator {
   }
 
   private translateSystem(m: Rec): ChatEvent[] {
+    // 子代理活动心跳：命令型技能（/code-review、/verify 那类）整轮跑在子代理里，
+    // 主流只发这几帧。丢掉它们的后果就是整段执行期界面完全静默、看起来像卡死
+    // （2026-09-25 探针实测：82 秒里只有它们）。放在 status 之前——两者 subtype 不重叠。
+    if (typeof m.subtype === "string" && m.subtype.startsWith("task_")) {
+      return [taskActivity(m)];
+    }
+    // 本地命令的输出（`/code-review` 这类）：正文在 `<local-command-stdout>` 里。
+    // 与历史侧 sessions.ts 的 parseSessionMessages 成对，见 ChatEvent.command_output 的注释
+    if (m.subtype === "local_command") {
+      const raw = m.content != null ? String(m.content) : "";
+      const body = extractXmlTag(raw, "local-command-stdout");
+      return body !== null && body.trim() !== "" ? [{ type: "command_output", text: body }] : [];
+    }
     // status 帧：CLI 把「模式变了」压在它上面（permissionMode 字段）。进计划模式、
     // 批准 ExitPlanMode 退出计划模式时，这帧与工具结果同刻到达——底部模式选择器
     // 就靠它跟手。status:'requesting' 那类帧不带该字段，故有才认。
@@ -590,6 +636,34 @@ function translateResult(m: Rec): ChatEvent[] {
     },
     { type: "status", state: "idle" },
   ];
+}
+
+/** `system/task_*` → 一条子代理活动心跳。
+ *  字段一律「拿不到就不给」：SDK d.ts 写明不同任务类型发的字段不同（task_progress 才有
+ *  usage/last_tool_name，task_notification 才有 status/summary，task_updated 只有 patch），
+ *  所以缺了就是 null，绝不补默认值 —— 补了会让「没数据」看起来像「数据是 0」。 */
+function taskActivity(m: Rec): ChatEvent {
+  const usage = (m.usage as Rec) ?? {};
+  const patch = (m.patch as Rec) ?? {};
+  const num = (v: unknown): number | null => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+  const phase: "started" | "progress" | "done" =
+    m.subtype === "task_started" ? "started" : m.subtype === "task_notification" ? "done" : "progress";
+  const status =
+    m.status != null ? String(m.status) : patch.status != null ? String(patch.status) : null;
+  const summary = m.summary != null ? String(m.summary) : null;
+  return {
+    type: "subagent_activity",
+    phase,
+    toolUses: num(usage.tool_uses),
+    durationMs: num(usage.duration_ms),
+    lastTool: m.last_tool_name != null ? String(m.last_tool_name) : null,
+    status,
+    // 摘要可能很长（notification 的 summary 是模型写的一句话）；截断免得事件体撑爆
+    summary: summary != null && summary.length > 200 ? summary.slice(0, 200) : summary,
+  };
 }
 
 /** 主模型的上下文窗口（给「已用上下文 %」做分母）。

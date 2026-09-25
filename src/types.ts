@@ -265,6 +265,30 @@ export type ChatEvent =
       mode: string;
     }
   | {
+      /** `/xxx` 斜杠命令的生命周期（`command_lifecycle` 帧翻译而来）：`queued` → `started`，
+       *  **没有终态**（结束由 turn_end 推断）。⚠️ 帧里没有命令名，名字由 ChatView 拿自己
+       *  刚发出去的文本对上。命令型技能整轮跑在子代理里、主流静默，这一条是「不是卡死」
+       *  的唯一依据（2026-09-25 探针：一次 /code-review 82 秒里只有它 + subagent_activity） */
+      type: "command_state";
+      state: string;
+    }
+  | {
+      /** 本地命令的输出正文（`system` + subtype:"local_command" 解出 `<local-command-stdout>`）。
+       *  与历史侧 sessions.ts 成对：一边不补就会「活视图有、resume 没有」（2026-09-25 实测） */
+      type: "command_output";
+      text: string;
+    }
+  | {
+      /** 子代理活动心跳（`system/task_*`）。字段「拿不到就不给」，别补默认值 */
+      type: "subagent_activity";
+      phase: "started" | "progress" | "done";
+      toolUses?: number | null;
+      durationMs?: number | null;
+      lastTool?: string | null;
+      status?: string | null;
+      summary?: string | null;
+    }
+  | {
       /** 上下文占用（`Query.getContextUsage()` 的读数），init 一到与每轮结束各推一次。
        *  用户要求「像终端状态行那样一启动就有」，所以不能等第一轮跑完。
        *  ⚠️ 这里送的是**原始数字**而不是 API 的 `percentage` —— 那个字段是 0-100 还是

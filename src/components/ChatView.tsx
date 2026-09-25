@@ -152,6 +152,13 @@ function isBusy(status: ChatStatus): boolean {
   return status.phase === "starting" || status.phase === "thinking";
 }
 
+/** 毫秒 → 「1m20s」/「45s」。子代理心跳用（task_progress 的 usage.duration_ms）。
+ *  命令型技能一跑就是几十秒到几分钟，光显示「运行中」看不出它是不是卡住了 */
+function fmtDur(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000));
+  return s >= 60 ? `${Math.floor(s / 60)}m${String(s % 60).padStart(2, "0")}s` : `${s}s`;
+}
+
 /** 「还贴着底」的容差（px）：滚动位置离内容末尾不超过它就算跟在底部，跟随开关据此翻转。
  *  ⚠️ 只在**用户滚动**时量（见 onChatScroll），不要在每次内容更新后量一次距离 ——
  *  流式输出两次更新之间就长高一截，量出来必然超容差，跟随会自己断掉 */
@@ -171,6 +178,11 @@ const REPLY_EVENTS = new Set<ChatEvent["type"]>([
   // 兜底：模型只回了 usage、内容块全空时也只剩这一条（message_complete 只由
   // assistant 消息产出，不会把用户自己那条算成「已回复」）
   "message_complete",
+  // 斜杠命令与子代理：命令已经被 CLI 拿去执行了，此时「把消息退回输入框」是错的
+  // （跑过的东西不会因为撤回就没发生，退回去只会与 jsonl 里那条重复）。
+  // 代价是 `/` 打头的消息少了一段「打错字马上撤回」的窗口 —— 认了。
+  "command_state",
+  "subagent_activity",
 ]);
 
 type ChatStatus =
@@ -321,6 +333,18 @@ export default function ChatView({
   const [cmds, setCmds] = useState<ChatCommandInfo[] | null>(null);
   const [cmdIdx, setCmdIdx] = useState(0);
   const [cmdDismissed, setCmdDismissed] = useState(false);
+  /** 正在执行的斜杠命令（`/code-review` 这种，含斜杠）。`command_state` 帧里**没有命令名**
+   *  ——名字只能由发送时记下的那条文本对上（见 pendingCmdRef），所以这里是个字符串。
+   *  空串 = 命令在跑但没记到名字（显示成「正在执行命令…」而不是编一个名字出来）。
+   *  非 null 即表示本轮是命令型，状态胶囊会把「思考中…」换成明确的执行提示 ——
+   *  命令整轮跑在子代理里、主流静默几十秒，不换的话用户只会觉得卡死（2026-09-25 实测）。 */
+  const [runningCmd, setRunningCmd] = useState<string | null>(null);
+  const [subagent, setSubagent] = useState<{
+    toolUses: number | null;
+    durationMs: number | null;
+  } | null>(null);
+  /** 本轮发出去的文本若是 `/命令`，把命令名记这儿供 command_state 认领（那帧不带名字）。 */
+  const pendingCmdRef = useRef<string | null>(null);
   /** 撤销本轮改动：null = 未发起；{preview, armed} = 已出预览、等二次点击确认 */
   const [rewind, setRewind] = useState<{ preview: ChatRewindResult; armed: boolean } | null>(null);
   const [rewindBusy, setRewindBusy] = useState(false);
@@ -493,12 +517,35 @@ export default function ChatView({
           }
         }
         break;
+      case "command_state":
+        // 命令生命周期（queued → started，无终态）。**名字来自 pendingCmdRef**：帧里只有
+        // command_uuid。queued 就先亮起（实测 ~0.5s 到，比 spawn 快的多），不等到 started。
+        // 清理由 turn_end / status:idle 负责 —— 别在这儿等终态，那种帧根本不存在
+        if (ev.state === "queued" || ev.state === "started") {
+          setRunningCmd(pendingCmdRef.current ?? "");
+        }
+        break;
+      case "subagent_activity":
+        // 子代理心跳：有了它，「命令/技能在子代理里跑」这段才有东西显示。
+        // ⚠️ 只有 task_progress 带 usage，其余几帧不带 → 缺的字段沿用上一次的值
+        // （不能覆盖成 null，否则数字会在收到 task_updated 时闪一下归零）
+        setSubagent((s) => ({
+          toolUses: ev.toolUses ?? s?.toolUses ?? null,
+          durationMs: ev.durationMs ?? s?.durationMs ?? null,
+        }));
+        break;
       case "status":
         if (ev.state === "thinking") {
           setStatus({ phase: "thinking" });
         } else {
           const wasThinking = statusRef.current === "thinking";
           setStatus((s) => (s.phase === "thinking" ? { phase: "idle" } : s));
+          // 命令/子代理显示态也在这里收 —— turn_end 一般会先到，但「启动期间被撤回」
+          // 那条路只发 status:idle（没有 result 帧），只挂在 turn_end 上会留下一个
+          // 再也消不掉的「正在执行…」徽标
+          setRunningCmd(null);
+          setSubagent(null);
+          pendingCmdRef.current = null;
           setItems((prev) =>
             prev.map((it) =>
               (it.kind === "text" || it.kind === "thinking") && it.streaming
@@ -518,6 +565,17 @@ export default function ChatView({
             setPlanBusy(false);
           }
         }
+        break;
+      case "command_output":
+        // 本地命令的正文（`/code-review` 的 findings 这种）：**内联成一条普通正文条目**,
+        // 不走 assistant 流式那套（没有 message.id、也没有 usage）。markdown 会把正文里的
+        // ```json 渲染成代码框 —— 与终端里那条命令输出的观感一致。
+        // 不进 REPLY_EVENTS：它天然晚于命令启动，且撤回窗口该由 command_state 关
+        setItems((prev) => [
+          ...prev,
+          { id: nextItemId++, kind: "text", text: ev.text, streaming: false },
+        ]);
+        setLiveMsgs((n) => n + 1);
         break;
       case "content_start":
         setItems((prev) => {
@@ -675,6 +733,10 @@ export default function ChatView({
         // 于是 isError 为真 —— 那不是故障，别报成「本轮执行出错」
         if (ev.isError && !interruptedRef.current) onToast("本轮执行出错");
         interruptedRef.current = false; // 用完即清（send 里也会清，防止它跨轮残留）
+        // 命令/子代理的显示态随本轮一起收掉（command_state 没有终态帧，只能收在这儿）
+        setRunningCmd(null);
+        setSubagent(null);
+        pendingCmdRef.current = null;
         break;
       case "exited": {
         setStatus({ phase: "exited", code: ev.code, stderrTail: ev.stderrTail });
@@ -1060,6 +1122,12 @@ export default function ChatView({
     }
     setInput("");
     setPendingImages([]);
+    // 本轮若是 `/命令`，把命令名记下供 command_state 认领（那帧只有 uuid、不带名字）。
+    // 判据与 CLI 对齐：**任何以 `/` 开头、第一个词无空白的消息**都算（实测连不可用的
+    // `/status` 也会发 command_lifecycle），所以这里不做「是否在命令表里」的二次判断
+    pendingCmdRef.current = /^\/\S+/.exec(text)?.[0] ?? null;
+    setRunningCmd(null);
+    setSubagent(null);
     const itemId = nextItemId++; // 记住它：本条若在启动期间被撤回，要按 id 把气泡收掉
     // 记下原话（连图），供「模型还没回话就按停止」时原样退回输入框；本轮一开口即作废
     sentRef.current = { text, images, itemId };
@@ -1912,8 +1980,22 @@ export default function ChatView({
     switch (status.phase) {
       case "starting":
         return "启动中…";
-      case "thinking":
+      case "thinking": {
+        // 命令型回合说「思考中…」是在骗人：命令整轮跑在子代理里、主流几十秒一个字都不发,
+        // 用户看到的就是卡死（2026-09-25 实测反馈）。有名字就报名字，没记到名字就泛称,
+        // **绝不编一个命令名**。子代理心跳有数就带上（几十秒的活儿，能不能看出在动全靠它）
+        if (runningCmd !== null) {
+          const parts = [runningCmd ? `正在执行 ${runningCmd}…` : "正在执行命令…"];
+          if (subagent) {
+            const bits: string[] = [];
+            if (subagent.toolUses != null) bits.push(`${subagent.toolUses} 个工具`);
+            if (subagent.durationMs != null) bits.push(fmtDur(subagent.durationMs));
+            parts.push(bits.length > 0 ? `子代理 ${bits.join(" ")}` : "子代理运行中");
+          }
+          return parts.join(" · ");
+        }
         return "思考中…";
+      }
       case "exited":
         return status.code !== null && status.code !== 0
           ? `已退出（code ${status.code}）`
@@ -1922,7 +2004,7 @@ export default function ChatView({
         // 未开始时不显示徽标（搜索按钮旁留白即可）
         return realSessionId ? "已连接" : "";
     }
-  }, [status, realSessionId]);
+  }, [status, realSessionId, runningCmd, subagent]);
 
   /** `/` 补全的激活条件：输入恰是「/ 开头、还没空格的单个词」——命令带参数后就
    *  不再拦 Enter/Tab（那时 Enter 该发送）。cmdDismissed 是 Esc 收起标记（打进
@@ -2588,7 +2670,12 @@ export default function ChatView({
                     // mousedown 先于 blur：拦掉默认行为，点选项不丢输入框焦点
                     onMouseDown={(e) => e.preventDefault()}
                     onClick={() => {
-                      setInput(`/${c.name} `);
+                      // ⚠️ 采纳**不补尾随空格**（旧写法 `/${name} `）：实测 `/code-review `
+                      // 带空格时 CLI 根本不认它是命令，模型会把它当「一个路径」去瞎探索、
+                      // 技能一次都不调（2026-09-25 探针）。改用 cmdDismissed 关面板，
+                      // 语义与 Esc 收起一致，发出的就是裸命令
+                      setInput(`/${c.name}`);
+                      setCmdDismissed(true);
                       inputRef.current?.focus();
                     }}
                   >
@@ -2649,7 +2736,9 @@ export default function ChatView({
                 if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing)) {
                   e.preventDefault();
                   const c = cmdList[Math.min(cmdIdx, cmdList.length - 1)];
-                  setInput(`/${c.name} `);
+                  // 同点击采纳：不补尾随空格（带空格则命令不被识别），靠 cmdDismissed 关面板
+                  setInput(`/${c.name}`);
+                  setCmdDismissed(true);
                   return;
                 }
                 if (e.key === "Escape" && !e.nativeEvent.isComposing) {

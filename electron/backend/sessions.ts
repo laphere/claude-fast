@@ -478,6 +478,29 @@ export function parseSessionMessages(content: string): SessionMessage[] {
     }
     if (!v || typeof v !== "object") continue;
     const ty = asString(v.type);
+    // 本地命令的输出（`/code-review`、`/verify` 这类 CLI 自带实现）：CLI 把它记成一条
+    // `system` + subtype:"local_command" 的帧，正文包在 `<local-command-stdout>` 里。
+    // ⚠️ 它不属于 user/assistant，原先「不是这两类就 continue」那句把整行丢掉 —— 于是命令
+    // 结果「活着时看得到、关掉再 resume 就没了」（2026-09-25 用户实测：`/code-review` 的
+    // findings 就这么丢的，3996 字符全在那一行里，会话里只剩 3 条消息）。
+    // 与 chat.ts 的 translateSystem 成对：只补一边就会出现上面那种不对称。
+    if (ty === "system" && asString(v.subtype) === "local_command") {
+      const raw = asString(v.content);
+      const body = raw === null ? null : extractXmlTag(raw, "local-command-stdout");
+      if (body !== null && body.trim() !== "") {
+        messages.push({
+          // 用 assistant 内联展示：观感与 CLI 一致（markdown 会把正文里的 ```json 渲染成
+          // 代码框）。进度轨只收 kind === "user"，所以不会被它污染
+          kind: "assistant",
+          blocks: [{ kind: "text", text: body }],
+          timestamp: asString(v.timestamp),
+          model: null,
+          usage: null,
+        });
+        lastMsgId = null; // 它没有 message.id：别让下一条同 id 的行并到它身上
+      }
+      continue;
+    }
     if (ty !== "user" && ty !== "assistant") continue;
     // sidechain / isMeta 消息跳过（与列表过滤语义一致）
     if (asBool(v.isSidechain) || asBool(v.isMeta)) continue;
