@@ -1383,6 +1383,37 @@ mark {
   font-size: 12.5px;
 }
 
+/* ---- 定高面板：从「统计中…」到出结果，弹窗尺寸全程不变 ----
+ *  统计是异步的（首次要全量扫会话文件），而 .modal 的高度是内容撑的、.overlay 是
+ *  垂直居中：占位态只有一行字（约 190px），结果一到内容涨到 700+px，面板上下两条边
+ *  同时向两侧弹开——观感就是「跳了一下」（且每次打开都重来一遍，StatsDialog 是条件挂载）。
+ *  改为恒取现有高度上限（760 封顶，免得大屏上留一大片空），body 吃掉剩余高度并保持
+ *  overflow-y:auto：加载态与结果态是同一个盒子，内容只在盒内滚动，尺寸零变化。
+ *  ⚠️ `flex:1` 的兄弟必须有 `min-height:0`，否则 body 撑破面板（flex 项默认 min-height:auto）。 */
+.modal.stats-modal {
+  height: min(760px, calc(100vh - 80px));
+}
+
+.modal.stats-modal .modal-body {
+  flex: 1;
+  min-height: 0;
+  position: relative; /* 占位态的定位锚 */
+}
+
+/* 占位态（统计中 / 加载失败 / 暂无数据）在盒内垂直居中，免得整块空白全压在下面。
+ *  用 absolute 而不是 height:100%：高度百分比是相对 body 的**内容盒**算的，
+ *  而占位块上面还压着一条工具栏，100% 会撑出去 42px、凭空多出一条滚动条（实测）。
+ *  absolute 完全不参与滚动，也不会顶走工具栏（pointer-events:none 让按钮照常可点）。 */
+.modal.stats-modal .stats-empty.stats-fill {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 16px;
+  pointer-events: none;
+}
+
 /* 刷新失败：旧数据继续渲染（面板高度不变，避免内容塌缩导致误关面板），
    错误就近贴在内容顶部而非替换整块内容 */
 .stats-error {

@@ -8,6 +8,8 @@ interface Props {
   children: ReactNode;
   /** 可选底部操作条：渲染在滚动区外、固定于弹窗底部（内容超长时按钮也始终可见） */
   footer?: ReactNode;
+  /** 附加在 `.modal` 上的类名：给单个弹窗定制尺寸（如使用统计的定高面板） */
+  className?: string;
 }
 
 /** 已挂载 Modal 的关闭栈：叠加弹窗（如 ConfirmDialog 盖在 HealthDialog 上）各自
@@ -56,13 +58,13 @@ export function useModalLayer(onClose: () => void, onKey?: (e: KeyboardEvent) =>
 }
 
 /** 通用模态框外壳：遮罩 + 居中面板 + Esc 关闭 */
-export default function Modal({ title, width = 520, onClose, children, footer }: Props) {
+export default function Modal({ title, width = 520, onClose, children, footer, className }: Props) {
   useModalLayer(onClose);
 
   return (
     <div className="overlay" onMouseDown={onClose}>
       <div
-        className="modal"
+        className={className ? `modal ${className}` : "modal"}
         style={{ width }}
         onMouseDown={(e) => e.stopPropagation()}
       >

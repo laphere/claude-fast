@@ -146,12 +146,10 @@ export default function StatsDialog({ onClose }: Props) {
    *  用 ref 而非 state——它只在 effect 里读一次，不该触发重渲染。 */
   const hasDataRef = useRef(false);
 
-  /** 刷新**不能**退回整块 loading 占位态：占位态只有一行「统计中…」，
-   *  而 modal 是 flex 垂直居中的定高内容盒，内容一塌，面板上下边界同时向中心收，
-   *  刷新按钮就从鼠标脚下移走——连点的第二下落到遮罩上（`.overlay` 的
-   *  onMouseDown = 关闭），整个统计面板被误关。故第二次起只标记 refreshing，
-   *  旧数据继续渲染（高度不变），按钮原地禁用并显示「刷新中…」，
-   *  连点期间鼠标始终落在面板内。 */
+  /** 刷新**不能**退回整块 loading 占位态：那会让已渲染的仪表盘闪一下「统计中…」，
+   *  而刷新按钮就在鼠标脚下，连点时会误触旁边的东西（面板本身已是定高、不会塌缩，
+   *  见 `styles.css` 的 `.modal.stats-modal`）。故第二次起只标记 refreshing，
+   *  旧数据继续渲染，按钮原地禁用并显示「刷新中…」。 */
   useEffect(() => {
     let cancelled = false;
     if (hasDataRef.current) {
@@ -414,7 +412,7 @@ export default function StatsDialog({ onClose }: Props) {
   }, [hoverDay, series]);
 
   return (
-    <Modal title="使用统计" width={660} onClose={onClose}>
+    <Modal title="使用统计" width={660} className="stats-modal" onClose={onClose}>
       <div className="stats-toolbar">
         <div className="stats-range">
           {RANGE_LABELS.map(([r, label]) => (
@@ -444,12 +442,13 @@ export default function StatsDialog({ onClose }: Props) {
         </button>
       </div>
 
+      {/* 三类占位态都用 stats-fill：在定高面板里垂直居中（见 styles.css） */}
       {!stats && loading ? (
-        <div className="stats-empty">统计中…（首次需扫描所有会话文件）</div>
+        <div className="stats-empty stats-fill">统计中…（首次需扫描所有会话文件）</div>
       ) : !stats && loadError ? (
-        <div className="stats-empty">加载失败：{loadError}</div>
+        <div className="stats-empty stats-fill">加载失败：{loadError}</div>
       ) : !stats || stats.sessions === 0 ? (
-        <div className="stats-empty">暂无可统计的会话数据</div>
+        <div className="stats-empty stats-fill">暂无可统计的会话数据</div>
       ) : (
         <>
           {/* 刷新失败：旧数据继续渲染（面板不塌缩），错误就近提示在内容顶部 */}
