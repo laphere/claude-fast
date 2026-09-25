@@ -1,10 +1,12 @@
 /**
- * 内容区 tab 右键菜单（关闭其他/所有会话）。移植自 Tauri 线 App 的 tabMenuView。
+ * 内容区 tab 右键菜单（置顶 / 取消置顶 + 关闭其他/所有会话）。移植自 Tauri 线 App 的 tabMenuView。
  *
  * ⚠️ **纯渲染，不含任何可关性判断**：能关哪些、跳过几个、为什么跳过，全部由 App
  * 在打开菜单那一刻按同一份快照算好传进来（策略只有 App 一处，见其 openTabMenu）。
  * 本组件曾经自己重写一遍「对话非 thinking/starting + 终端已退出或判空闲」，
  * 与 App 各判各的——阈值或状态集一改就漂移成「这菜单敢关的，App 那边不肯关」。
+ * 「置顶」这一项也一样：能不能置顶（对话 tab 有没有 session）与当前置没置顶，
+ * 都是 App 冻结在快照里的（`pinned === null` = 不渲染该项）。
  */
 import { useEffect, useRef } from "react";
 
@@ -16,6 +18,9 @@ interface Props {
   tabId: string | null;
   /** 右键命中的 tab 标题（快照里的值，不跟着实时清单变） */
   title: string | null;
+  /** 「置顶」项的当前状态：true 已置顶（显示「取消置顶」）/ false 未置顶；
+   *  null = 这个 tab 不能置顶（点在栏背景上、或新对话还没收编出 session）→ 不渲染该项 */
+  pinned: boolean | null;
   /** 「关闭其他会话」会关掉几个（tabId 非空时必然有值） */
   otherCount: number | null;
   /** 「关闭所有会话」会关掉几个（0 = 禁用） */
@@ -25,6 +30,8 @@ interface Props {
   /** 跳过原因分项，如「2 个干活中」（空数组 = 不显示提示行） */
   why: string[];
   onClose: () => void;
+  /** 置顶 / 取消置顶该 tab 的会话（顶部聚合区常驻显示） */
+  onTogglePin: () => void;
   /** 关闭除指定 tab 外的其他会话（在跑的不在关闭范围） */
   onCloseOthers: (id: string) => void;
   /** 关闭全部会话（在跑的不在关闭范围） */
@@ -36,11 +43,13 @@ export default function TabContextMenu({
   y,
   tabId,
   title,
+  pinned,
   otherCount,
   allCount,
   skippedCount,
   why,
   onClose,
+  onTogglePin,
   onCloseOthers,
   onCloseAll,
 }: Props) {
@@ -69,7 +78,9 @@ export default function TabContextMenu({
       ref={ref}
       style={{
         left: Math.min(x, window.innerWidth - 230),
-        top: Math.min(y, window.innerHeight - 150),
+        // 预留高度要盖住最高的那种组合：标题 + 置顶项 + 两条分隔 + 两个关闭项
+        // + 跳过提示行（没有置顶项时留白一点，菜单永远贴在鼠标处更不值得）
+        top: Math.min(y, window.innerHeight - 210),
       }}
     >
       {tabId !== null && title !== null && (
@@ -77,6 +88,20 @@ export default function TabContextMenu({
           <div className="context-title">
             <span className="context-title-text">{title}</span>
           </div>
+          <div className="context-sep" />
+        </>
+      )}
+      {tabId !== null && pinned !== null && (
+        <>
+          <button
+            className="context-item"
+            onClick={() => {
+              onTogglePin();
+              onClose();
+            }}
+          >
+            {pinned ? "取消置顶" : "置顶（顶部聚合区常驻）"}
+          </button>
           <div className="context-sep" />
         </>
       )}

@@ -58,6 +58,19 @@ export type ContentTab =
     }
   | ({ kind: "term" } & TerminalTab);
 
+/** tab 右键菜单「置顶 / 取消置顶」项的载荷（打开菜单那一刻现算，见 pinInfoForTab）。
+ *  三种 tab 给不出同一份东西，所以分成「已知路径」与「只有会话 id」两档。 */
+interface TabPinTarget {
+  /** 当前是否已置顶（决定菜单文案） */
+  pinned: boolean;
+  /** 所属项目绝对路径（置顶条目要记它） */
+  projectPath: string;
+  /** 会话 jsonl 路径；null = 手上只有会话 id（终端 tab 未置顶时），点的时候现问后端 */
+  file: string | null;
+  /** 仅 file 为 null 时用得上 */
+  sessionId: string | null;
+}
+
 /** 会话进行中 = 正在启动/思考中（"关闭其他会话"时跳过这类 tab）。
  *  **唯一定义处**：ChatTabs 的忙碌小圆点、App 的可关性判断、tab 右键菜单的计数
  *  都从这里取——散成三份后改一处（比如加个 "starting" 之外的过渡态）必然漏改，
@@ -492,17 +505,19 @@ export default function App() {
     [pinnedSessions],
   );
 
-  /** 置顶 / 取消置顶。新置顶插在最前（置顶区不支持拖拽排序，顺序即置顶时间倒序） */
+  /** 置顶 / 取消置顶。新置顶插在最前（置顶区不支持拖拽排序，顺序即置顶时间倒序）。
+   *  参数是 jsonl 路径而不是整个 SessionInfo：置顶条目只存 file + projectPath，
+   *  而调用方未必握着一份完整元数据（tab 右键菜单从终端 tab 过来时就只有会话 id）。 */
   const togglePin = useCallback(
-    async (projectPath: string, session: SessionInfo) => {
-      const pinned = pinnedSessions.some((p) => p.file === session.file);
+    async (projectPath: string, file: string) => {
+      const pinned = pinnedSessions.some((p) => p.file === file);
       const next = pinned
-        ? pinnedSessions.filter((p) => p.file !== session.file)
-        : [{ file: session.file, projectPath }, ...pinnedSessions];
+        ? pinnedSessions.filter((p) => p.file !== file)
+        : [{ file, projectPath }, ...pinnedSessions];
       setPinnedSessions(next);
       if (pinned) {
         // 立刻从置顶区移除，避免等待后端往返
-        setPinnedMeta((prev) => prev.filter((s) => s.file !== session.file));
+        setPinnedMeta((prev) => prev.filter((s) => s.file !== file));
       }
       if (!(await persistConfig(order, next, dark))) {
         // 落盘失败必须回滚：否则该会话被 pinnedFiles 从项目列表滤掉、又不在置顶区，
@@ -515,6 +530,57 @@ export default function App() {
       showToast(pinned ? "已取消置顶" : "已置顶（见顶部置顶会话）");
     },
     [pinnedSessions, order, dark, persistConfig, refreshPinned, showToast],
+  );
+
+  /** tab 右键菜单「置顶 / 取消置顶」的载荷：能不能置顶、当前是不是已置顶、怎么落地。
+   *  · 对话 tab 有完整 `session` → 路径直接给（`session === null` 的新对话还没收编
+   *    成续聊态、后端也还没给它分配 id，不渲染该项；收编完成后自然出现）；
+   *  · 终端 tab 只握着一个会话 id → 与置顶清单**按 id 比对**（`sessionIdFromFile`：
+   *    两边都指同一个会话的 jsonl），命中就拿它的路径（已置顶的取消动作因此不用问后端）；
+   *    没命中则 file 为 null，点的时候现问一次。 */
+  const pinInfoForTab = useCallback(
+    (t: ContentTab): TabPinTarget | null => {
+      if (t.kind === "chat") {
+        if (!t.session) return null;
+        return {
+          pinned: pinnedFiles.has(t.session.file),
+          projectPath: t.projectPath,
+          file: t.session.file,
+          sessionId: null,
+        };
+      }
+      const sid = t.resumeSessionId ?? t.newSessionId;
+      if (sid === null) return null;
+      const hit = pinnedSessions.find((p) => sessionIdFromFile(p.file) === sid);
+      return {
+        pinned: hit !== undefined,
+        projectPath: t.projectPath,
+        file: hit?.file ?? null,
+        sessionId: sid,
+      };
+    },
+    [pinnedFiles, pinnedSessions],
+  );
+
+  /** tab 右键菜单的置顶动作。只有 `file` 未知时才要问后端一次（终端 tab）——
+   *  `chatSessionMeta` 返回 null = 这份 jsonl 还没落盘（终端新会话要发过一条消息
+   *  才有文件），此时**不置顶**：置进去后端也解析不出标题，只会在置顶区留个空条目。 */
+  const toggleTabPin = useCallback(
+    async (target: TabPinTarget) => {
+      let file = target.file;
+      if (file === null && target.sessionId !== null) {
+        const meta = await api
+          .chatSessionMeta(target.projectPath, target.sessionId)
+          .catch(() => null);
+        file = meta?.file ?? null;
+      }
+      if (file === null) {
+        showToast("这个会话还没落盘内容，发一条消息后再置顶");
+        return;
+      }
+      await togglePin(target.projectPath, file);
+    },
+    [togglePin, showToast],
   );
 
   // ---------- 列表派生数据 ----------
@@ -1269,6 +1335,9 @@ export default function App() {
     activity: Record<string, TabActivity>;
     /** 右键命中的 tab 标题（null = 点在 tab 栏背景上）；菜单只拿它当标题显示 */
     title: string | null;
+    /** 「置顶 / 取消置顶」的载荷；null = 那个 tab 不能置顶（点在栏背景上 / 新对话还没
+     *  收编出 session），该项不渲染 */
+    pin: TabPinTarget | null;
     /** 「关闭其他会话」会关掉几个；null = 没命中 tab，该项不渲染 */
     otherCount: number | null;
     /** 「关闭所有会话」会关掉几个 */
@@ -1304,12 +1373,15 @@ export default function App() {
       if (busyChat + busyTerm > 0) why.push(`${busyChat + busyTerm} 个干活中`);
       if (keptTerm.length - busyTerm > 0) why.push(`${keptTerm.length - busyTerm} 个没识别出空闲态`);
       const others = tabId ? snapshot.filter((t) => t.id !== tabId) : null;
+      const hit = snapshot.find((t) => t.id === tabId) ?? null;
       setTabMenu({
         x: e.clientX,
         y: e.clientY,
         tabId,
         activity,
-        title: snapshot.find((t) => t.id === tabId)?.title ?? null,
+        title: hit?.title ?? null,
+        // 置顶态与关闭计数一样在**这一刻**冻结：菜单是纯渲染，点下去不再回查
+        pin: hit ? pinInfoForTab(hit) : null,
         otherCount: others
           ? others.filter((t) => tabClosableNow(t, activity)).length
           : null,
@@ -1318,7 +1390,7 @@ export default function App() {
         why,
       });
     },
-    [tabClosableNow],
+    [tabClosableNow, pinInfoForTab],
   );
 
   /** 批量关 tab：只关 closable 的，其余跳过并如实报数（对话/终端同一套规则）。
@@ -1534,7 +1606,7 @@ export default function App() {
           onClose={() => setSessionMenu(null)}
           onResumeSystem={() => resumeSession(sessionMenu.key, sessionMenu.session)}
           onRename={() => setRenameTarget({ session: sessionMenu.session, key: sessionMenu.key })}
-          onTogglePin={() => togglePin(sessionMenu.key, sessionMenu.session)}
+          onTogglePin={() => togglePin(sessionMenu.key, sessionMenu.session.file)}
           onDelete={() => confirmDeleteSession(sessionMenu.key, sessionMenu.session)}
         />
       )}
@@ -1545,11 +1617,15 @@ export default function App() {
           y={tabMenu.y}
           tabId={tabMenu.tabId}
           title={tabMenu.title}
+          pinned={tabMenu.pin ? tabMenu.pin.pinned : null}
           otherCount={tabMenu.otherCount}
           allCount={tabMenu.allCount}
           skippedCount={tabMenu.skippedCount}
           why={tabMenu.why}
           onClose={() => setTabMenu(null)}
+          onTogglePin={() => {
+            if (tabMenu.pin) void toggleTabPin(tabMenu.pin);
+          }}
           onCloseOthers={(id) => closeTabsSafely(id, tabMenu.activity)}
           onCloseAll={() => closeTabsSafely(null, tabMenu.activity)}
         />

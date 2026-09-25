@@ -17,7 +17,8 @@ interface Props {
   onSelect: (key: string) => void;
   /** 全局拖拽排序：把 draggedKey 移动到 targetKey 之前/之后 */
   onReorder: (draggedKey: string, targetKey: string, before: boolean) => void;
-  onTogglePin: (key: string, session: SessionInfo) => void;
+  /** 置顶 / 取消置顶（置顶条目只存 jsonl 路径 + 项目路径，故传 file 而非整份元数据） */
+  onTogglePin: (key: string, file: string) => void;
   /** 是否启用拖拽排序（搜索过滤期间禁用） */
   dragEnabled: boolean;
   onToggleExpand: (key: string) => void;
@@ -228,7 +229,7 @@ export default function ProjectList({
                         title="置顶（在顶部聚合区常驻显示）"
                         onClick={(e) => {
                           e.stopPropagation();
-                          onTogglePin(l.key, s);
+                          onTogglePin(l.key, s.file);
                         }}
                       >
                         <PinIcon />
