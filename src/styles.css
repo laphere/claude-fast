@@ -2796,8 +2796,11 @@ mark {
 }
 
 /* ============ 滚动条 ============ */
+/* height 与 width 是两个独立维度：height 管横向滚动条的厚度，不写会落回系统默认
+   （Windows ~17px），代码块/表格底下的横条就比竖条厚一倍（2026-09-25 用户反馈） */
 ::-webkit-scrollbar {
   width: 8px;
+  height: 8px;
 }
 
 ::-webkit-scrollbar-thumb {
