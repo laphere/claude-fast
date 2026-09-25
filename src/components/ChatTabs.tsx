@@ -7,7 +7,7 @@
  * 可发言的对话 tab 常驻状态点（空闲淡而静、思考中/启动中点亮并闪烁；只读会话页
  * 无点，两类 chat tab 靠它区分）；已退出的终端 tab 整体弱化（缓冲仍可回看）；
  * tab 放不下时滚轮横向滚动（VS Code 式）。
- * tab 可拖拽调序（左侧竖线指示落点）——顺序只存在内存里，见 App 的 reorderTabs。
+ * tab 可拖拽调序（竖线指示落点）——顺序只存在内存里，见 App 的 reorderTabs。
  */
 import { useCallback, useRef, useState } from "react";
 import type { DragEvent, WheelEvent } from "react";
@@ -22,8 +22,8 @@ interface Props {
   onClose: (id: string) => void;
   /** 打开 tab 右键菜单（App 现算忙/闲快照后渲染菜单；tabId null = 点在栏背景上） */
   onTabContextMenu: (e: React.MouseEvent, tabId: string | null) => void;
-  /** 拖拽调序：把 draggedId 移到 targetId 的左侧/右侧（before = 插在它前） */
-  onReorder: (draggedId: string, targetId: string, before: boolean) => void;
+  /** 拖拽调序：把 draggedId 插到「原数组第 gap 个空隙」处（见 lib/tab-order 的语义） */
+  onReorder: (draggedId: string, gap: number) => void;
 }
 
 export default function ChatTabs({
@@ -49,15 +49,13 @@ export default function ChatTabs({
 
   /** 正在拖的 tab id */
   const [dragId, setDragId] = useState<string | null>(null);
-  /** 悬停目标 tab id */
-  const [overId, setOverId] = useState<string | null>(null);
-  /** 悬停在目标的左半/右半（决定插到它前/后） */
-  const [overPos, setOverPos] = useState<"left" | "right">("left");
+  /** 落点：原数组坐标下的**空隙位**（0..tabs.length，tabs.length = 移到最后） */
+  const [dropGap, setDropGap] = useState<number | null>(null);
 
   /** dragend 兜底清理：Esc 取消 / 拖到窗外释放都会触发（不清理会留下常驻的拖拽残影） */
   const clearDragState = useCallback(() => {
     setDragId(null);
-    setOverId(null);
+    setDropGap(null);
   }, []);
 
   const handleDragStart = (e: DragEvent<HTMLDivElement>, id: string) => {
@@ -67,32 +65,48 @@ export default function ChatTabs({
     setDragId(id);
   };
 
-  const handleDragOver = (e: DragEvent<HTMLDivElement>, id: string) => {
+  /** 由光标 X 算空隙位：取第一个「中点还在光标右边」的 tab 的下标。
+   *
+   *  ⚠️ **落点判据挂在栏容器上、不挂在各个 tab 上**（2026-09-25 实测踩坑）：
+   *  原来每个 tab 各自当落点，于是**落在 tab 以外的任何位置都是无操作**——而这条栏
+   *  只有 27px 高、上面还有 6px 内边距，最后一个 tab 右侧又是一大片空白，「拖到最右边
+   *  想挪到最后」这个最自然的动作正好落在死区里，表现为「拖动不生效、位置没变」
+   *  （探针复现：落在 tab 上能换位，落在空白/上内边距一律没反应）。改成整条栏都是
+   *  落点后，光标在哪都能算出一个空隙位。
+   *  用 `getBoundingClientRect` 而不是缓存宽度：tab 栏横向滚动时它自带你当前可视坐标。 */
+  const gapAt = (clientX: number): number => {
+    const els = barRef.current?.querySelectorAll<HTMLElement>(".chat-tab");
+    if (!els || els.length === 0) return 0;
+    for (let i = 0; i < els.length; i++) {
+      const r = els[i].getBoundingClientRect();
+      if (clientX < r.left + r.width / 2) return i;
+    }
+    return els.length;
+  };
+
+  const handleBarDragOver = (e: DragEvent<HTMLDivElement>) => {
+    // 只认本组件自己发起的拖拽：否则外部拖进来的文件也会被这条栏当成落点
     if (!dragId) return;
-    e.preventDefault(); // 任意 tab 都是合法落点
+    e.preventDefault(); // 整条栏都是合法落点
     e.dataTransfer.dropEffect = "move";
-    const r = e.currentTarget.getBoundingClientRect();
     // dragover 高频触发：值没变时 React 按 Object.is 跳过重渲染，直接 set 即可
-    setOverId(id);
-    setOverPos(e.clientX < r.left + r.width / 2 ? "left" : "right");
+    setDropGap(gapAt(e.clientX));
   };
 
-  const handleDragLeave = (e: DragEvent<HTMLDivElement>, id: string) => {
-    if (overId !== id) return;
+  const handleBarDragLeave = (e: DragEvent<HTMLDivElement>) => {
     const rt = e.relatedTarget as Node | null;
-    if (rt && e.currentTarget.contains(rt)) return; // 仍在 tab 内（子元素间移动）
-    setOverId(null);
+    if (rt && e.currentTarget.contains(rt)) return; // 仍在栏内（子元素间移动）
+    setDropGap(null);
   };
 
-  const handleDrop = (e: DragEvent<HTMLDivElement>, id: string) => {
+  const handleBarDrop = (e: DragEvent<HTMLDivElement>) => {
     if (!dragId) return;
     e.preventDefault();
     e.stopPropagation();
-    const r = e.currentTarget.getBoundingClientRect();
-    const before = e.clientX < r.left + r.width / 2; // 从事件重算，不依赖 state
+    const gap = gapAt(e.clientX); // 从事件重算，不依赖 state
     const dragged = dragId;
     clearDragState();
-    onReorder(dragged, id, before);
+    onReorder(dragged, gap);
   };
 
   return (
@@ -100,12 +114,19 @@ export default function ChatTabs({
       className="chat-tabs"
       ref={barRef}
       onWheel={onWheel}
+      onDragOver={handleBarDragOver}
+      onDragLeave={handleBarDragLeave}
+      onDrop={handleBarDrop}
       onContextMenu={(e) => onTabContextMenu(e, null)}
     >
-      {tabs.map((t) => {
+      {tabs.map((t, i) => {
         const busy = t.kind === "chat" && isBusyPhase(t.phase);
         const exited = t.kind === "term" && t.status === "exited";
-        const showDrop = overId === t.id && t.id !== dragId;
+        // 指示条画在哪：空隙位落在某个 tab 上 = 它的左侧；落在末尾（= 数组长度）= 最后
+        // 一个 tab 的右侧。拖拽中的那个 tab 不画（拖到自己身上本来就不会换位）。
+        const showDrop =
+          dropGap !== null &&
+          (dropGap === i || (dropGap === tabs.length && i === tabs.length - 1));
         return (
           <div
             key={t.id}
@@ -113,13 +134,10 @@ export default function ChatTabs({
               exited ? "chat-tab-exited" : ""
             } ${t.id === activeId ? "active" : ""} ${
               t.id === dragId ? "dragging" : ""
-            } ${showDrop ? (overPos === "left" ? "drop-before" : "drop-after") : ""}`}
+            } ${showDrop ? (dropGap === i ? "drop-before" : "drop-after") : ""}`}
             draggable
             onDragStart={(e) => handleDragStart(e, t.id)}
             onDragEnd={clearDragState}
-            onDragOver={(e) => handleDragOver(e, t.id)}
-            onDragLeave={(e) => handleDragLeave(e, t.id)}
-            onDrop={(e) => handleDrop(e, t.id)}
             onClick={() => onSelect(t.id)}
             onContextMenu={(e) => onTabContextMenu(e, t.id)}
             title={t.title}

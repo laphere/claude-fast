@@ -52,7 +52,7 @@
 - **顶栏与左栏布局（单行顶栏 + 可收起左栏）**：工具栏整行已撤，功能入口全在顶栏右侧（搜索 / 新建 / 批量添加 / 回收站 / 统计，纯图标 + title），品牌区已移除（应用名只在窗口/任务栏标题）。顶栏右端还有两个状态胶囊：供应商（未配置显示「默认配置」）与健康检查（「检查中…」/「claude 可用」/「claude 未找到」，有失效项目时变红并带「N 失效」角标）。搜索框收在左栏顶部、默认隐藏，由顶栏搜索按钮展开（Esc 或再点即收起并清空），常驻不被列表滚走。左栏可手动收起（顶栏最左 panel-left 开关，收起后内容区占满全宽）；窄于 980 自动收起、宽于 1020 才恢复（40px 迟滞带 + resize 80ms 防抖），**只恢复「被自动收起」的那次**——手动切换会清掉 `autoCollapsedRef`，此后 resize 不再干预；收起态仅内存、不落盘。默认窗口 1120×720、最小 800×500。
 - **全局拖拽排序（`order`）**：项目行整行可拖拽调序（拖到目标行上半/下半 = 插到它前/后；松手写回 `order` 落盘；位置没变不写盘），起手必须 `setData("text/plain", key)`（WebKit 下不带 data 的拖拽根本不启动）；搜索过滤期间禁用拖拽；右键菜单「移到最前」是同一套全序列语义的快捷入口。前端用原生 HTML5 DnD——主进程的 **`will-navigate` 拦截是前提**（Electron 渲染层默认拖文件/链接会导航离开页面，`main.ts` 里 `webContents.on("will-navigate", e => e.preventDefault())` 与 `setWindowOpenHandler` deny 保证页面内 dragover/drop 可用，勿当冗余代码删掉）。
 - **置顶会话聚合区（`pinnedSessions`）**：会话行左侧图钉按钮置顶/取消置顶（会话行右键菜单与内容区 tab 右键菜单是同一套语义的另两个入口，都落在 `togglePin(projectPath, file)` 上），置顶项聚到左栏顶部**跨项目**区域（无置顶项时整块不渲染；带项目名徽标消歧）。`listPinnedSessions` 按清单顺序**实时**解析元数据（不存快照），文件缺失的条目静默跳过；**已置顶会话不再在项目列表中重复显示**（前端按 file 过滤；某项目会话全被置顶时展开区提示「会话已全部置顶」）。语义：新置顶插最前、不支持拖拽排序；**删除会话保留条目**（恢复后自动复活），只有彻底删除才清理——`purgeSession` / `purgeTrash` 后 `pruneDeadPins`，`removeProject` / `purgeClaudeProjectData` 按 projectPath 撤条目（`dropPinsForProjects`）。⚠️ **后端这四个入口改的是磁盘 config，前端内存里的 `pinnedSessions` 必须重新读盘同步**（`syncPinsFromConfig`）——它是下次保存的真源，不同步则之后任意一次保存（切主题/拖拽排序/置顶取消）都会把已清掉的死条目写回；`refreshPinned` 只刷展示元数据、与真源清单不可互相替代。
-- **app 内嵌终端（node-pty + xterm.js，2026-09-21 自 Tauri `embedded-terminal` 分支移植，该分支已退休、留本机 tag `embedded-terminal-final`）**：与页面对话共存于同一条 tab 栏（tab 模型为判别联合 `kind: "chat" | "term"`，状态收在 tab 对象上）；tab 可**拖拽调序**（落在目标 tab 的左/右半 = 插到它前/后，`reorderTabs` 用与项目拖拽同一套全序列语义），顺序**只存在内存**——tab 清单本就不持久化（关掉重开即回到打开先后），与项目 `order`「拖拽即写 config」不是一回事。真 claude CLI 跑在 PTY 里，`TerminalPane.tsx` + `src/lib/{pty,bold-bright,term-unicode,term-title,ime-anchor}.ts` 与 `styles.css` 终端样式块**逐字搬运**（含注释里的实测数据，别改）。要点：
+- **app 内嵌终端（node-pty + xterm.js，2026-09-21 自 Tauri `embedded-terminal` 分支移植，该分支已退休、留本机 tag `embedded-terminal-final`）**：与页面对话共存于同一条 tab 栏（tab 模型为判别联合 `kind: "chat" | "term"`，状态收在 tab 对象上）；tab 可**拖拽调序**（整条 tab 栏都是落点：光标落在某个 tab 的左/右半 = 插到它前/后，落在最后一个 tab 右侧的空白 = 移到最后；算出的「空隙位」交 `App` 的 `reorderTabs` → `lib/tab-order.ts` 的 `reorderItems` 补偿插入位，那份纯逻辑有单测），顺序**只存在内存**——tab 清单本就不持久化（关掉重开即回到打开先后），与项目 `order`「拖拽即写 config」不是一回事。⚠️ 落点**必须挂在栏容器上、不能挂在各个 tab 上**（2026-09-25 实测踩坑：挂 tab 上时「落在 tab 以外」全是死区——这条栏只有 27px 高、上方还有 6px 内边距，最后一个 tab 右侧又是一大片空白，于是最自然的「往后拖、放到最后」正好落进死区，用户看到的就是「拖动不生效、位置没变」）。真 claude CLI 跑在 PTY 里，`TerminalPane.tsx` + `src/lib/{pty,bold-bright,term-unicode,term-title,ime-anchor}.ts` 与 `styles.css` 终端样式块**逐字搬运**（含注释里的实测数据，别改）。要点：
   - **通道**：渲染层预生成 token、**先订阅** `pty:data:<token>` / `pty:exit:<token>` 再 invoke——主进程早于应答就推首字节（实测 ~13ms），订阅先行零丢失，Tauri 侧 earlyExits 记账从根上不需要（同 chat 层设计）。
   - **spawn 链**：`where claude` 择优（.exe > .cmd/.bat > 无扩展名，过滤商店别名）→ `.cmd/.bat` 走 `cmd /D /S /C call`（⚠️ cmd 必须用 `ComSpec` 全路径——node-pty 不做 PATH 解析，裸名 File not found）；env 置 `TERM=xterm-256color`/`COLORTERM=truecolor` 并剥 `CLAUDE_CODE_CHILD_SESSION`/`CLAUDE_CODE_ENTRYPOINT`/`CLAUDECODE`（不剥则子会话 jsonl 不落盘）。
   - **kill 契约**：Windows 先 `taskkill /PID <pid> /T /F`（等跑完）再 `pty.kill()`，**handler 返回 = 进程树已杀完**——删会话「先杀完进程再动文件」依赖它（走 `killers` 注册表 await，不靠卸载路径的 fire-and-forget）。⚠️ **该注册表两种 tab 共用**（`TerminalPane` 与 `ChatView` 都注册，App 的 `tabKillersRef`）：删会话要关的是**挂着这个会话的全部 tab**（`tabsForSession`：终端按会话 id、对话按 jsonl 路径反查），只查终端那一半的话，对话 tab（尤其只读页）会留下继续指一份已被移走的文件——那条路径的进程同样会写文件（chat 走 `chat_close` 优雅退出）。已知残留：MCP 守护进程（如 codegraph `--liftoff-only`）在深树里可能脱离父链存活（与 Tauri 线同机制同残留；根治要 Job Object，未做）。退出路径 `quit_app` 与 `before-quit` 都会 `shutdownAll`。
@@ -148,7 +148,7 @@ app 内对话层改用官方 `@anthropic-ai/claude-agent-sdk` 前必须先确认
 
 **2026-09-21 真机打包实测：安装包可用、app 内对话正常，未发现问题**（此前「真机打包未验」的字样已作废）。下面几条机制是打包前定下的约束，仍照此执行——真机通过只说明现状配置没问题，不代表可以放宽。
 
-已验证的机制（本机 Node 22.22.2 + 项目 `tools/build-electron.mjs` 的 esbuild 配置）：
+已验证的机制（本机 Node v24.19.0 + 项目 `tools/build-electron.mjs` 的 esbuild 配置）：
 
 - **不能把 SDK 打进主进程 bundle**。实测 `bundle:true / format:cjs / target:node20` 编译 1.6MB 产物「构建成功」但**载入即抛 `ERR_INVALID_ARG_VALUE`**——esbuild 把 `import.meta.url` 降级成占位对象，SDK 靠它定位平台原生二进制。→ esbuild 必须 `external: ["electron", "@anthropic-ai/claude-agent-sdk"]`。
 - **动态 `import()` 是稳妥写法**：external 后静态 import 会被编译成 `require("@anthropic-ai/claude-agent-sdk")`，在 Node 22 上靠 `require(esm)` 侥幸跑通（实测真实 query 成功、工具数 27），但这取决于运行时 Node 版本；动态 import 产物保留真 `import(...)`，实测同样跑通。
@@ -177,12 +177,14 @@ app 内对话层改用官方 `@anthropic-ai/claude-agent-sdk` 前必须先确认
 ```bash
 npm install                  # 依赖（国内可设 ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ 加速）
 npm run dev                  # 开发模式（vite 热更新 + electron，主进程改动自动重启）
-npm test                     # 后端单元测试（390 个：路径解析/配置/扫描/根目录定位/会话管理/mangle/回收站/终端 PTY/剪贴板图片/对话层（含会话标题/本机 claude 探测/模型热切/命令表/rewind）/用量台账）
+npm test                     # 后端单元测试（394 个：路径解析/配置/扫描/根目录定位/会话管理/mangle/回收站/终端 PTY/剪贴板图片/对话层（含会话标题/本机 claude 探测/模型热切/命令表/rewind）/用量台账）
 npm run typecheck            # 类型检查（前端 tsc + electron tsc）
 npm run build                # 生产构建（typecheck + vite build + esbuild 编译主进程）
 npm run dist:win             # Windows NSIS 安装包（别名：npm run electron:build）
 npm run dist:mac             # macOS dmg（x64 + arm64）
 ```
+
+> ⚠️ **这个 shell 里默认的 `node` 是 v12**（nvm 指过去的那个）：直接 `npm test` / `npm run typecheck` 会炸成 `ERR_UNSUPPORTED_ESM_URL_SCHEME`（vitest 4）与 tsc 的 `SyntaxError: Unexpected token '?'`——**都是工具链版本问题，不是代码问题**，别据此判定改动有错。先 `export PATH="/e/DevTool/node:$PATH"`（本机 v24.19.0）再跑（2026-09-25 实测：两个 tsc project 全过、394 passed / 1 skipped）。`./node_modules/.bin/electron` 不受影响（原生二进制，不经 PATH 上的 node）。
 
 构建产物：Windows 为 NSIS 安装包（`release/CC Desktop_<版本>_x64-setup.exe`，`perMachine`、默认装到 `C:\Program Files\CC Desktop`、安装界面中英双语、免管理员、可换安装目录）；macOS 为 `release/CC Desktop-<版本>-<arch>.dmg`（x64 + arm64 双架构）。绿色版取安装目录内容（asar 包内含 dist 与 dist-electron），与 config.json/scripts 同层放置即为便携模式。
 

@@ -33,6 +33,7 @@ import TerminalPane from "./components/TerminalPane";
 import SessionContextMenu from "./components/SessionContextMenu";
 import TabContextMenu from "./components/TabContextMenu";
 import { sessionIdFromFile } from "./lib/session-file";
+import { reorderItems } from "./lib/tab-order";
 
 export type DialogKind = "new" | "batch" | "health" | null;
 
@@ -237,19 +238,17 @@ export default function App() {
     [updateTabs],
   );
 
-  /** tab 拖拽调序：把 draggedId 插到 targetId 前/后（全序列语义，与项目拖拽同一套）。
+  /** tab 拖拽调序：把 draggedId 插到「原数组第 gap 个空隙」处（gap 由 ChatTabs 按光标
+   *  算出，语义与补偿见 `lib/tab-order.ts`，那里有单测）。
    *  与项目拖拽的区别：**只动内存、不落盘**——tab 清单本就不持久化（关掉重开回到
    *  打开先后），没有 `order` 那种「拖拽即写 config」与失败回滚。位置没变时原样
-   *  返回旧数组，省掉一次重渲染（dragover/drop 每轮都可能落在这里）。 */
+   *  返回旧数组，省掉一次重渲染（dragover 每轮都可能落在这里）。 */
   const reorderTabs = useCallback(
-    (draggedId: string, targetId: string, before: boolean) => {
-      if (draggedId === targetId) return;
+    (draggedId: string, gap: number) => {
       updateTabs((prev) => {
         const fromIdx = prev.findIndex((t) => t.id === draggedId);
-        if (fromIdx < 0 || !prev.some((t) => t.id === targetId)) return prev;
-        const next = prev.filter((t) => t.id !== draggedId);
-        const to = next.findIndex((t) => t.id === targetId);
-        next.splice(before ? to : to + 1, 0, prev[fromIdx]);
+        if (fromIdx < 0) return prev;
+        const next = reorderItems(prev, fromIdx, gap);
         return next.every((t, i) => t.id === prev[i].id) ? prev : next;
       });
     },
