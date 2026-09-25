@@ -3508,17 +3508,18 @@ mark {
   border-radius: 50%;
 }
 
-/* 停止：圆角方形 + 浅底（参考图形态）。
-   底色不能用 --panel —— 卡片本身就是 --panel，那样按钮只剩一圈边框。
-   也刻意不上 --danger：中断是常规操作，不是危险操作 */
+/* 停止：与发送钮**同形同色**（accent 实心圆），只换字形 —— 同一个控件、两个状态。
+   ⚠️ 别再改回「圆角方形 + --panel-2 淡底 + border-color: transparent」：
+   --panel-2 在本 app 的词汇表里是**面**（stat-card / md-body th / .ctx-bar 轨道 /
+   各处 :hover），全仓没有第二处拿它当某个控件的静置底色；抹掉描边又等于去掉
+   「它是按钮」的唯一标志。那样同一槽位会同时改掉形状（圆↔9px 圆角方）、
+   填充族（提交态 accent 实心 ↔ 面的淡底）与字形三样，整行唯一带色的位置
+   变成一块中性淡底 —— 看着不像同一个控件（2026-09-26 用户指出「两种形态在
+   设计语言上不统一」）。
+   形状/填充/hover/disabled 全套继承 .btn-primary，故本类只剩圆角一句。
+   也仍刻意不上 --danger：中断是常规操作，不是危险操作 */
 .composer-stop {
-  border-radius: 9px;
-  background: var(--panel-2);
-  border-color: transparent;
-}
-
-.composer-stop:hover {
-  background: var(--border);
+  border-radius: 50%;
 }
 
 /* 工具行内合并显示的执行结果（折叠展开后可见） */

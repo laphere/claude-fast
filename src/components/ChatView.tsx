@@ -2796,8 +2796,10 @@ export default function ChatView({
               )}
             </div>
             {isBusy(status) && plan?.source !== "native" ? (
+              /* 停止态与发送态是同一个控件的两个状态：同 accent 实心圆、只换字形
+                 （btn-primary 给形状/填充/hover，.composer-stop 只补 border-radius: 50%） */
               <button
-                className="btn composer-action composer-stop"
+                className="btn btn-primary composer-action composer-stop"
                 onClick={() => void interrupt()}
                 title="中断当前轮（等价 Esc）；模型还没回话时消息退回输入框"
                 aria-label="中断当前轮"
