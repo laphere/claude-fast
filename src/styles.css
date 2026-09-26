@@ -441,9 +441,13 @@ code {
   justify-content: center;
   gap: 6px; /* 图标（SVG）与文字间距；纯文字按钮单项不受影响 */
   line-height: 1;
-  /* 中文字体（YaHei）ascent/descent 不对称导致墨迹视觉偏上 ~1px，
-     上下 padding 各让 1px 补偿（总高不变，内容下移） */
-  padding: 10px 14px 8px;
+  /* ⚠️ 上下 padding **必须对称**（原来写 10/8「上多下少」，把文字整体压低 1px）。
+     2026-09-26 用真 Chromium(dpr1.5) 逐像素量：line-height:1 下 CJK 墨迹本来就落在
+     盒中心（对称 padding 时 dy 0~±0.5 物理 px，字号 10→16px 全档实测），所谓
+     「雅黑墨迹偏上 1px」在本字体栈（Segoe UI 打头 + 雅黑回退）下并不成立 —— 那 1px
+     反而成了「字明显偏下」，用户报的就是 11.5px 那档的 .btn-sm（实测 +2 物理 px）。
+     唯一真需要不对称的一档是「行高 normal + 小字号」的文字（见 .chat-status 注释）。 */
+  padding: 9px 14px;
   border-radius: 8px;
   border: 1px solid var(--border);
   background: var(--panel);
@@ -464,11 +468,11 @@ code {
   cursor: default;
 }
 
-/* .btn 内的 SVG 图标：flex 居中于行盒中心，但 YaHei 文字墨迹偏上 ~1px
-   （即上方 padding 补偿的同一现象），图标需上移 1px 与文字墨迹对齐 */
-.btn svg {
-  transform: translateY(-1px);
-}
+/* 纯图标 .btn（发送钮那种）的落点补偿：本类一律按图标自己的需要写
+   （见 .composer-action）—— **不再给 .btn svg 统一加 translateY(-1px)**。
+   那条老规则是为「上方多 1px padding」配套的（图标上移 1px 去对压低过的文字墨迹）；
+   padding 改对称后它就成了「图标比文字高 1px」，两边都不落好，故一并撤掉。
+   纯图标钮撤掉前后落点不变（padding 与 translate 一减一加正好抵消）。 */
 
 .btn-primary {
   background: var(--accent);
@@ -1309,8 +1313,10 @@ mark {
 /* 撤销本轮改动（rewindFiles）：第一击出预览、第二击确认（行内二次确认，与回收站同款） */
 .files-rewind {
   margin-left: auto;
-  /* 墨迹补偿，勿改对称（字号 11.5px 与 .trash-restore 同档：line-height 1 墨迹偏上） */
-  padding: 6px 5px 4px;
+  /* 这里**要**不对称，但方向与老代码相反：本行是「行高 normal + 11.5px」那一档
+     （同 .chat-status），墨迹天然偏下 ~1px，故上少下多（4/6）把它顶回中心。
+     老代码写的 6/4 是「line-height 1 墨迹偏上」那套，方向反了 → 实测偏下 4 物理 px。 */
+  padding: 4px 5px 6px;
   font-size: 11.5px;
   font-weight: 500;
   color: var(--muted);
@@ -1494,8 +1500,10 @@ mark {
 .stats-range button {
   border: none;
   background: none;
-  /* normal 行高下 YaHei 墨迹偏下 ~1px，减小上 padding 让内容上移 1px（总高不变） */
-  padding: 5px 12px 7px;
+  /* 上下对称（2026-09-26 实测：normal 行高 12px 这档墨迹本来就在中心，
+     老的「上减下加」1px 反而让它高出 1.5 物理 px）。真正需要 1px 上补的是
+     11~11.5px 那档（.chat-status / .files-rewind），见彼处注释 */
+  padding: 6px 12px;
   font-size: 12px;
   color: var(--muted);
   cursor: pointer;
@@ -2440,15 +2448,15 @@ mark {
 
 .trash-restore {
   flex-shrink: 0;
-  /* 墨迹补偿，勿改对称（字号 11.5px 与 .btn-sm 同档：line-height 1 墨迹偏上） */
-  padding: 6px 12px 4px;
+  /* 同 .btn-sm 那一档（11.5px + line-height:1）：上少下多抵消字形墨迹偏低 */
+  padding: 4.5px 12px 5.5px;
   font-size: 11.5px;
 }
 
 .trash-purge {
   flex-shrink: 0;
-  /* 墨迹补偿，勿改对称（同 .trash-restore） */
-  padding: 6px 12px 4px;
+  /* 同 .trash-restore */
+  padding: 4.5px 12px 5.5px;
   font-size: 11.5px;
 }
 
@@ -2577,7 +2585,10 @@ mark {
   display: block;
   width: 100%;
   text-align: left;
-  padding: 7px 10px;
+  /* 12.5px + 行高 normal 这档实测墨迹中心比盒中心低 ~1px（两处独立位置复测一致，
+     非 raster 噪声；同档 .mode-item 的 7/7 却是平的——字体逐规格栅格化，别互相套值）。
+     上 6 下 8 顶回中心（总高不变） */
+  padding: 6px 10px 8px;
   border: none;
   background: none;
   color: var(--text);
@@ -3736,22 +3747,20 @@ mark {
 }
 
 /* 发送 / 停止：正方形，边长就是 --composer-h（定宽定高、贴右）。
-   .btn 那套不对称 padding（上 10 下 8）是给中文文字补墨迹的，对纯图标反会让图标偏心，
-   故这里换成图标自己的落点补偿（勿改对称）。
+   它是**纯图标钮**（没有文字），不吃文字那套 padding，只需给图标自己一个落点补偿。
    ⚠️ 关键实测结论（2026-09-24 跨 dpr）：**不补偿时那颗偏移与 dpr 无关**——1/1.25/1.5/
    1.75/2/2.5 六档下两颗图标都被画高约 1 CSS px（-1 ~ -2.5 物理 px），所以这是**一个恒定
    的布局偏差**，该用一个常量补，**不要按 dpr 特调**（曾误判为「150% 屏的吸附事故」并
-   写成 media query，方向错了）。
-   padding-top 2px 下六个 dpr 上两颗图标的 dy 全部落在 ±0.5 物理 px（= 非整数 dpr 下的
-   物理下限：按钮与图标的物理尺寸差为奇数时无法整像素居中）。各档最差 dy：不补 2.5 /
-   1px 1.5 / 1.5px 1.0 / **2px 0.5**。
+   写成 media query，方向错了）。2026-09-26 撤掉 `.btn svg{translateY(-1px)}` 后这个常量
+   同步减 1（那条 -1px 原本也在这颗图标上生效）：同理 padding-top 2px → 1px，
+   六个 dpr 上 dy 仍落在 ±0.5 物理 px。
    复跑法：`electron --force-device-scale-factor=<dpr>` 起窗渲染真实 styles.css + 真实
    按钮结构，`capturePage().toBitmap()` 逐像素量 dy。改这个值、改 --composer-h 或改图标
    尺寸都要重新跨档实测。 */
 .composer-action {
   width: var(--composer-h);
   min-width: var(--composer-h);
-  padding: 2px 0 0;
+  padding: 1px 0 0;
 }
 
 /* 发送：圆形 */
@@ -4759,7 +4768,9 @@ mark {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 7px 10px;
+  /* 13px + 行高 normal：实测墨迹低 ~1px（复测一致），上 6 下 8 顶回中心（总高不变）。
+     与 .context-item 同一条结论，但别当通式——同档的 .preset-item 7/7 是平的 */
+  padding: 6px 10px 8px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg);
@@ -5089,8 +5100,11 @@ mark {
 
 /* ============ 小号按钮（卡片操作行） ============ */
 .btn-sm {
-  /* 中文字体墨迹居中补偿（同 .btn：line-height 1 时墨迹偏上，padding-top +1 / bottom -1） */
-  padding: 6px 10px 4px;
+  /* 同 .btn 改对称，但这一档要多让半像素：11.5px 的字形墨迹本身比行盒中心低
+     约 1 物理 px（字体在 17.25ppem 下的栅格化，跨 dpr 实测 1.25/1.5/2 三档一致），
+     故上 4.5 / 下 5.5 抵消（原来是反方向的 6/4，合起来偏下 2~2.5 物理 px，
+     就是用户看到的那颗「启用」按钮字偏下的根因）。 */
+  padding: 4.5px 10px 5.5px;
   font-size: 11.5px;
 }
 
@@ -5506,6 +5520,16 @@ mark {
   opacity: 0.7;
 }
 
+/* 单行选项（模型没给说明行的选项）：两行版那套 9/7「补偿」对单行失去对象，
+   会把字压低 ~1.7 物理 px —— 12px + line-height:1 这一档实测 7.5/8.5 落中心
+   （与 .ask-option-next 同档同值，复测两处均值 ~0）。
+   :has 需 Chromium 105+（本 app 的 Electron 146 满足）。ask-option-next 本身
+   无 desc、但走自己的同名 padding，用 :not 摘出去避免双重命中 */
+.ask-option:not(:has(.ask-option-desc)):not(.ask-option-next) {
+  padding-top: 7.5px;
+  padding-bottom: 8.5px;
+}
+
 .ask-freeinput {
   font-family: inherit;
   font-size: 12px;
@@ -5558,8 +5582,9 @@ mark {
    ⚠️ 它是「动作」不是「选项」：上面几行选项都是通栏、同形状同圆角，它只多一层底色，
    第一眼认不出是按钮、细看又是「很宽很宽一条」（2026-09-25 用户反馈）。
    .ask-options 是 flex 纵列 → align-self:center + width:auto 收成**内容宽的胶囊**。
-   padding 沿用 .ask-option 那条墨迹补偿（line-height:1 下 YaHei 墨迹偏上 ~1px），
-   **只加大左右、上下保持不对称，勿改成对称**。
+   ⚠️ 上下 padding 用 7.5/8.5（2026-09-26 实测）：12px + line-height:1 这一档对称 8/8
+   仍偏低 ~0.7 物理 px，7.5/8.5 落 0（复测两处一致）；沿用 .ask-option 那条 9/7 则
+   压低 ~2.5 物理 px —— 它是**单行**，两行版的补偿对它失去对象。
    ⚠️ 底色必须是 --panel（选项行与 tab 条同款），**不是 .plan-approve 卡体的 --panel-2**：
    当年取 --panel-2 是为了让那条通栏长条跟上面的选项行区分开，收成胶囊后这条理由就没了，
    反而成了「卡片底色画在卡片底色上」——整颗按钮只剩一道虚边，几乎看不见
@@ -5569,7 +5594,7 @@ mark {
   align-items: center;
   width: auto;
   min-width: 104px;
-  padding: 9px 26px 7px;
+  padding: 7.5px 26px 8.5px;
   border-radius: 999px;
   font-weight: 600;
   background: var(--panel);
