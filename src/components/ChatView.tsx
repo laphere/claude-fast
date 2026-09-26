@@ -179,10 +179,12 @@ const REPLY_EVENTS = new Set<ChatEvent["type"]>([
   // 兜底：模型只回了 usage、内容块全空时也只剩这一条（message_complete 只由
   // assistant 消息产出，不会把用户自己那条算成「已回复」）
   "message_complete",
-  // 斜杠命令与子代理：命令已经被 CLI 拿去执行了，此时「把消息退回输入框」是错的
-  // （跑过的东西不会因为撤回就没发生，退回去只会与 jsonl 里那条重复）。
-  // 代价是 `/` 打头的消息少了一段「打错字马上撤回」的窗口 —— 认了。
-  "command_state",
+  // 子代理心跳：能到这帧说明模型真的在干活（Task 工具已用，tool_use_start 早就
+  // 翻过牌），收在这里只是兜底。
+  // ⚠️ command_state **不在这里**：它对每条带 uuid 的消息都发（本 app 每条都盖
+  // uuid，见 command_state 分支的闸门），放进集合会让**每一轮普通对话**的撤回窗口
+  // 在 ~0.5s 内被关死——「Esc 打断了会话、话却没退回输入框」（2026-09-26 用户实测
+  // 报的就是它）。真命令轮的翻牌挪进 command_state 分支、过同一道 pendingCmdRef 闸门。
   "subagent_activity",
 ]);
 
@@ -540,6 +542,10 @@ export default function ChatView({
         // 前提「pendingCmdRef 即本轮消息」成立：忙碌时发送键变停止，一轮只有一条用户消息
         if ((ev.state === "queued" || ev.state === "started") && pendingCmdRef.current !== null) {
           setRunningCmd(pendingCmdRef.current ?? "");
+          // 真命令轮才关撤回窗口（原来在 REPLY_EVENTS 里、无闸门）：命令已被 CLI 拿去
+          // 执行，「退回输入框」是错的；但普通轮的 queued 帧不该有这个副作用——那正是
+          // 「Esc 打断了会话、话却没退回输入框」的根因（2026-09-26 用户实测）
+          replyStartedRef.current = true;
         }
         break;
       case "subagent_activity":
