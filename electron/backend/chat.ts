@@ -113,13 +113,17 @@ export type ChatEvent =
    *  生效的**同一刻**发这帧（2026-09-22 探针实测），只关心 status/init 不带的那部分
    *  （status:'requesting' 那类帧 permissionMode 为 undefined）。 */
   | { type: "permission_mode"; mode: string }
-  /** `/xxx` 斜杠命令的生命周期（`command_lifecycle` 帧）。CLI 对**任何以 `/` 开头的
-   *  用户消息**都发这一对（实测连 `/status` 这种在本环境不可用的命令也发）：
-   *  `queued` → `started`，**没有终态** —— 结束只能由 result/turn_end 推断。
-   *  ⚠️ 帧里只有 command_uuid、**没有命令名**：名字要由前端拿自己刚发出去的文本对上。
-   *  它是「命令整轮跑在子代理里、主流长时间静默」时唯一能渲染的依据：2026-09-25 探针实测，
-   *  一次 `/code-review` 的 82 秒里主流只剩这类帧 + 下面 task_* 心跳，其余全空
-   *  （此前这两类都被 translate 的 default 分支静默丢弃 → 界面看起来是卡死）。 */
+  /** `/xxx` 斜杠命令的生命周期（`command_lifecycle` 帧）。⚠️ 2026-09-26 订正触发条件：
+   *  CLI 对**任何带 client uuid 的入站消息**都发这套帧（普通文本也发——探针双向对照：
+   *  带 uuid 全套 queued/started/completed，去掉 uuid 零帧；本 app 的 buildUserMessage
+   *  每条消息都盖 uuid），**不是**「`/` 开头才发」（当初探针走 SDK 裸 query 不盖 uuid，
+   *  恰好只剩 `/xxx` 有帧，归纳错了方向）。`queued` → `started`，宿主侧按无终态处理 ——
+   *  结束由 result/turn_end 推断（CLI 在 result 后补 completed/cancelled，翻译层透传、UI 不依赖）。
+   *  ⚠️ 帧里只有 command_uuid、**没有命令名**：名字要由前端拿自己刚发出去的文本对上，
+   *  且认领必须过「本轮确是 `/xxx`」闸门（ChatView 的 pendingCmdRef），否则普通轮整轮误亮
+   *  「正在执行命令…」。它是「命令整轮跑在子代理里、主流长时间静默」时唯一能渲染的依据：
+   *  2026-09-25 探针实测，一次 `/code-review` 的 82 秒里主流只剩这类帧 + 下面 task_* 心跳，
+   *  其余全空（此前这两类都被 translate 的 default 分支静默丢弃 → 界面看起来是卡死）。 */
   | { type: "command_state"; state: string }
   /** 本地命令的**输出正文**（`system` + subtype:"local_command" 的 `<local-command-stdout>`）。
    *  `/code-review` 这类 CLI 自带实现整轮不经过模型：结果就是这条 stdout（实测 3996 字符的

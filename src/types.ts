@@ -266,9 +266,12 @@ export type ChatEvent =
     }
   | {
       /** `/xxx` 斜杠命令的生命周期（`command_lifecycle` 帧翻译而来）：`queued` → `started`，
-       *  **没有终态**（结束由 turn_end 推断）。⚠️ 帧里没有命令名，名字由 ChatView 拿自己
-       *  刚发出去的文本对上。命令型技能整轮跑在子代理里、主流静默，这一条是「不是卡死」
-       *  的唯一依据（2026-09-25 探针：一次 /code-review 82 秒里只有它 + subagent_activity） */
+       *  **没有宿主可用的终态**（结束由 turn_end 推断；CLI 在 result 后还会补 completed/cancelled，
+       *  翻译层透传、UI 不依赖）。⚠️ 帧里没有命令名，名字由 ChatView 拿自己刚发出去的文本对上；
+       *  且**带 client uuid 的消息全都发这套帧**（普通文本也发——app 每条消息都盖 uuid），
+       *  认领必须过「本轮确是 `/xxx`」闸门，否则普通轮也会亮「正在执行命令…」。
+       *  命令型技能整轮跑在子代理里、主流静默，这一条是「不是卡死」的唯一依据
+       *  （2026-09-25 探针：一次 /code-review 82 秒里只有它 + subagent_activity） */
       type: "command_state";
       state: string;
     }

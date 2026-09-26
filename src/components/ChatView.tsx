@@ -336,7 +336,8 @@ export default function ChatView({
   const [cmdDismissed, setCmdDismissed] = useState(false);
   /** 正在执行的斜杠命令（`/code-review` 这种，含斜杠）。`command_state` 帧里**没有命令名**
    *  ——名字只能由发送时记下的那条文本对上（见 pendingCmdRef），所以这里是个字符串。
-   *  空串 = 命令在跑但没记到名字（显示成「正在执行命令…」而不是编一个名字出来）。
+   *  空串 = 命令在跑但没记到名字（显示成「正在执行命令…」而不是编一个名字出来）——
+   *  2026-09-26 起只剩防御价值：认领判据收紧后，非 null 必有名字（见 command_state 分支）。
    *  非 null 即表示本轮是命令型，状态胶囊会把「思考中…」换成明确的执行提示 ——
    *  命令整轮跑在子代理里、主流静默几十秒，不换的话用户只会觉得卡死（2026-09-25 实测）。 */
   const [runningCmd, setRunningCmd] = useState<string | null>(null);
@@ -344,7 +345,11 @@ export default function ChatView({
     toolUses: number | null;
     durationMs: number | null;
   } | null>(null);
-  /** 本轮发出去的文本若是 `/命令`，把命令名记这儿供 command_state 认领（那帧不带名字）。 */
+  /** 本轮发出去的文本若是 `/命令`，把命令名记这儿供 command_state 认领（那帧不带名字）。
+   *  ⚠️ 它同时是**认领闸门**：CLI 的 command_lifecycle 帧对**任何带 client uuid 的入站消息**
+   *  都发（2026-09-26 探针实测：普通文本 + uuid 照发 queued/started/completed，去掉 uuid 零帧；
+   *  本 app 的 buildUserMessage 自 09-24 起每条都盖 uuid），而帧里没有命令名、无法自证是命令
+   *  ——所以「本轮确实发过 `/xxx`」是唯一判据，null 时一帧都不许认领（详见 command_state 分支）。 */
   const pendingCmdRef = useRef<string | null>(null);
   /** 撤销本轮改动：null = 未发起；{preview, armed} = 已出预览、等二次点击确认 */
   const [rewind, setRewind] = useState<{ preview: ChatRewindResult; armed: boolean } | null>(null);
@@ -526,8 +531,14 @@ export default function ChatView({
       case "command_state":
         // 命令生命周期（queued → started，无终态）。**名字来自 pendingCmdRef**：帧里只有
         // command_uuid。queued 就先亮起（实测 ~0.5s 到，比 spawn 快的多），不等到 started。
-        // 清理由 turn_end / status:idle 负责 —— 别在这儿等终态，那种帧根本不存在
-        if (ev.state === "queued" || ev.state === "started") {
+        // 清理由 turn_end / status:idle 负责 —— 别在这儿等终态，那种帧根本不存在。
+        // ⚠️ 必须 pendingCmdRef 非空才认领：command_lifecycle 的真实触发条件是「消息带
+        // client uuid」而非「是斜杠命令」（2026-09-26 探针实测 + exe 内嵌源码 schema 原文
+        // "Commands enqueued without a uuid…"；2.1.278 起即如此，非新版回归），而本 app 的
+        // buildUserMessage 每条消息都盖 uuid（rewind 锚点）——不设闸门的话**每一轮普通对话**
+        // 都会被这两帧点亮成「正在执行命令…」整轮不灭（2026-09-26 用户实测报的就是它）。
+        // 前提「pendingCmdRef 即本轮消息」成立：忙碌时发送键变停止，一轮只有一条用户消息
+        if ((ev.state === "queued" || ev.state === "started") && pendingCmdRef.current !== null) {
           setRunningCmd(pendingCmdRef.current ?? "");
         }
         break;
@@ -1129,8 +1140,11 @@ export default function ChatView({
     setInput("");
     setPendingImages([]);
     // 本轮若是 `/命令`，把命令名记下供 command_state 认领（那帧只有 uuid、不带名字）。
-    // 判据与 CLI 对齐：**任何以 `/` 开头、第一个词无空白的消息**都算（实测连不可用的
-    // `/status` 也会发 command_lifecycle），所以这里不做「是否在命令表里」的二次判断
+    // 判据取「任何以 `/` 开头、第一个词无空白的消息」且不做「是否在命令表里」的二次判断
+    // （实测连不可用的 `/status` 也走命令路径）。⚠️ 2026-09-26 订正：当初以为「只有 / 开头
+    // 的消息才发 command_lifecycle」——实测 CLI 对**任何带 client uuid 的消息**都发（本 app
+    // 恰好每条都盖 uuid），所以这个值非 null 同时是上面 command_state 分支的认领闸门，
+    // 它改成「也把普通消息记进来」的话胶囊就会整轮误亮「正在执行命令…」
     pendingCmdRef.current = /^\/\S+/.exec(text)?.[0] ?? null;
     setRunningCmd(null);
     setSubagent(null);

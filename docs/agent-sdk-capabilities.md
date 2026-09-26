@@ -366,7 +366,7 @@ generateSessionTitle(description: string, opts?: { persist?: boolean }) → Prom
 
 **事件流上实际会来、且容易整类被丢掉的帧**（翻译层的 switch 别只认 d.ts 列过的形状）：
 
-- `command_lifecycle`：`{command_uuid, state}`，`queued` → `started`，**没有终态**——结束只能由 result/turn_end 推断。帧里**没有命令名**（宿主要拿自己刚发的文本对上）。CLI 对**任何** `/` 开头、首词无空白的消息都发（连本环境不可用的 `/status` 也发）。
+- `command_lifecycle`：`{command_uuid, state}`，`queued` → `started` →（result 后）`completed`/`cancelled`——宿主侧别等终态，结束由 result/turn_end 推断即可。帧里**没有命令名**（宿主要拿自己刚发的文本对上）。⚠️ **2026-09-26 订正触发条件**：不是「`/` 开头的消息才发」，而是「**入站消息带 client uuid 就发**」——`%TEMP%\cmdlc-probe\` 双向对照实测（2.1.283 与 2.1.278 双版本一致）：普通文本 + uuid 照发 `queued/started/completed` 全套，同一条消息去掉 uuid 零帧；exe 内嵌 schema 原文 "Commands enqueued without a uuid (…)"。当初探针（SDK 裸 query，不盖 uuid）里恰好只剩 `/xxx` 有帧，才归纳出斜杠判据——app 的 `buildUserMessage` 每条消息都盖 uuid（rewind 锚点），叠加后**每轮普通对话都有这两帧**，宿主必须靠「本轮确实发过 `/xxx`」（`pendingCmdRef` 闸门）认领，否则状态胶囊整轮误亮「正在执行命令…」。
 - `system` 的 `task_started|task_progress|task_updated|task_notification`：子代理心跳。`task_progress` 才带 `usage:{tool_uses,duration_ms}` 与 `last_tool_name`；`task_notification` 带 `status`+`summary`；`task_updated` 只有 `patch`——**缺的字段给 null、别补 0**（补了 UI 数字会在 task_updated 到达时闪零）。
 - 命令执行期间主流可以长时间**只有这几帧**（技能整轮跑在子代理里，实测 82 秒）——丢掉它们 = 整段执行期零可渲染内容，看起来像卡死。
 
