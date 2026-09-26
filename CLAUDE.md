@@ -27,7 +27,7 @@
 
 **本分支不生成任何 `claude-*.bat` / `.sh`**：项目清单是**路径模型**（`config.json` 的 `order`/`projects` 存项目绝对路径），启动/继续对话直接开终端跑 `claude`，不经脚本文件（见「跨平台层」）。数据根 `scripts/` 只在启动时被读一次：`ensureProjectsMigrated`（`main.ts`）调 `legacyScriptPaths`（`platform.ts`）解析老版本的脚本、把其中的项目路径补进 `config.projects`（`parseCdPath` 兼容 `cd /d "…"` 与 `cd "…"` 两种写法），迁完即不再使用。`paths.ts` 的 `scriptExt()` / `legacyMarker()` 也只剩这套迁移在用。
 
-> 历史约定（**已不适用**，留着避免误读旧提交）：脚本内容固定为 `cd` 到项目 → 检查 `claude` → 启动 `claude`；bat 必须 UTF-8 + CRLF + `chcp 65001`；Windows 调 `claude.cmd` 这类 shim **必须写 `call claude`**，否则 cmd 不返回、错误处理不执行——这条**仍适用于**今天唯一还会调 .cmd 的地方：`claude-update.ts` 跑 `claude --version` / `claude update` 时走 `cmd /D /S /C call`。
+> 历史约定（**已不适用**，留着避免误读旧提交）：脚本内容固定为 `cd` 到项目 → 检查 `claude` → 启动 `claude`；bat 必须 UTF-8 + CRLF + `chcp 65001`；Windows 调 `claude.cmd` 这类 shim **必须写 `call claude`**，否则 cmd 不返回、错误处理不执行——这条**仍适用于**今天唯一还会调 .cmd 的地方：`claude-update.ts` 跑 `claude --version` / `claude update` 时走 `cmd /D /S /C call`。同一条链还有个更阴的坑（2026-09-26 实测）：bat 里引用 PATH 上的命令**要么解析成绝对路径再加引号、要么裸名不加引号**——`call "npm"` 这种「引号包裸名」会让 cmd 不做 PATH 展开、`%0` 原样进批处理，`%~dp0` 退化成**当前目录**，nvm4w 的 npm.cmd 引导脚本随之找 `<cwd>\node_modules\npm\bin\npm-*.js` 两连 MODULE_NOT_FOUND（升级按钮「claude update 一失败、npm 兜底必死」的根因；npm 绝对路径解析在 `claude-update.ts` 的 `locateNpm`，`buildUpgradeBat` 注释是权威）。
 
 ## 跨平台层
 
@@ -178,7 +178,7 @@ app 内对话层改用官方 `@anthropic-ai/claude-agent-sdk` 前必须先确认
 ```bash
 npm install                  # 依赖（国内可设 ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ 加速）
 npm run dev                  # 开发模式（vite 热更新 + electron，主进程改动自动重启）
-npm test                     # 后端单元测试（400 个：路径解析/配置/扫描/根目录定位/会话管理/mangle/回收站/终端 PTY/剪贴板图片/对话层（含会话标题/本机 claude 探测/模型热切/命令表/rewind/命令与子代理可见性）/用量台账）
+npm test                     # 后端单元测试（410 个：路径解析/配置/扫描/根目录定位/会话管理/mangle/回收站/终端 PTY/剪贴板图片/对话层（含会话标题/本机 claude 探测/模型热切/命令表/rewind/命令与子代理可见性）/用量台账/claude 升级）
 npm run typecheck            # 类型检查（前端 tsc + electron tsc）
 npm run build                # 生产构建（typecheck + vite build + esbuild 编译主进程）
 npm run dist:win             # Windows NSIS 安装包（别名：npm run electron:build）

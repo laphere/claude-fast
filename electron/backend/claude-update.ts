@@ -233,6 +233,33 @@ export function extractVersion(output: string): string | null {
   return null;
 }
 
+/** Windows 下为 npm 候选取绝对路径：.cmd/.bat > .exe（npm 的正规入口是 cmd shim，
+ *  exe 只可能是 scoop 之类包装器）；无扩展名的是 sh 脚本（call 会按批处理解析成
+ *  乱码）、WindowsApps 是商店别名，一律排除——全部被排除返回 null。 */
+export function pickWindowsNpmHit(lines: string[]): string | null {
+  const rankOf = (l: string): number | null => {
+    if (l.includes("WindowsApps")) return null;
+    const ext = path
+      .extname(l)
+      .toLowerCase()
+      .replace(/^\./, "");
+    if (ext === "cmd" || ext === "bat") return 0;
+    if (ext === "exe") return 1;
+    return null; // 无扩展名 / 其他：不取
+  };
+  let best: string | null = null;
+  let bestRank = Number.POSITIVE_INFINITY;
+  for (const l of lines) {
+    const r = rankOf(l);
+    // 严格小于才替换：平局保留首个命中，符合 where 顺序优先
+    if (r !== null && r < bestRank) {
+      bestRank = r;
+      best = l;
+    }
+  }
+  return best;
+}
+
 function tryParseVersionAt(s: string, start: number): string | null {
   let i = start;
   for (let group = 0; group < 3; group++) {
@@ -381,13 +408,17 @@ export function parseNpmLatestVersion(body: string): string | null {
   }
 }
 
-/** 构造定位 claude 的命令：Windows `where claude`，其余 `sh -c "command -v claude"`。 */
-export function buildLocateCommand(platform: NodeJS.Platform): {
+/** 构造定位可执行文件的命令：Windows `where <name>`，其余 `sh -c "command -v <name>"`。
+ *  name 缺省 claude（版本探测/升级定位）；npm 兜底定位传 "npm"。 */
+export function buildLocateCommand(
+  platform: NodeJS.Platform,
+  name = "claude",
+): {
   cmd: string;
   args: string[];
 } {
-  if (platform === "win32") return { cmd: "where", args: ["claude"] };
-  return { cmd: "/bin/sh", args: ["-c", "command -v claude"] };
+  if (platform === "win32") return { cmd: "where", args: [name] };
+  return { cmd: "/bin/sh", args: ["-c", `command -v ${name}`] };
 }
 
 /** 构造 `--version` 探测命令：Windows 的 .cmd/.bat shim 不能直接 spawn，
@@ -408,19 +439,32 @@ export function buildVersionProbeCommand(
 
 /** Windows 升级脚本：.bat 里调 .cmd 必须加 call，否则执行完不返回；
  *  失败兜底 npm 全局安装最新版，最终 errorlevel 透传给退出码；
- *  必须 CRLF（Windows 批处理）。 */
-export function buildUpgradeBat(claudePath: string, npmCmd: string): string {
+ *  必须 CRLF（Windows 批处理）。
+ *  ⚠️ npmCmd 只能是绝对路径（加引号）或 null（退化裸名 npm，不加引号）——
+ *  「引号包裸名」会让 cmd 不做 PATH 展开，%0 按原样进批处理、%~dp0 退化成
+ *  当前目录，nvm4w 的 npm.cmd 引导脚本（%~dp0\node_modules\npm\bin\npm-*.js）
+ *  随之两连 MODULE_NOT_FOUND、npm 根本跑不起来（2026-09-26 实测：升级按钮
+ *  「claude update 一失败兜底必死」的根因；裸名不加引号 / 绝对路径加引号均正常）。 */
+export function buildUpgradeBat(
+  claudePath: string,
+  npmCmd: string | null,
+): string {
+  const npmCall = npmCmd ? `"${npmCmd}"` : "npm";
   return (
     `@echo off\r\n` +
     `call "${claudePath}" update\r\n` +
-    `if errorlevel 1 call "${npmCmd}" i -g @anthropic-ai/claude-code@latest\r\n` +
+    `if errorlevel 1 call ${npmCall} i -g @anthropic-ai/claude-code@latest\r\n` +
     `if errorlevel 1 exit /b %errorlevel%\r\n`
   );
 }
 
-/** macOS/Linux 升级命令：单行 sh，`||` 兜底。 */
-export function buildUpgradeSh(claudePath: string, npmCmd: string): string {
-  return `${shQuote(claudePath)} update || ${shQuote(npmCmd)} i -g @anthropic-ai/claude-code@latest`;
+/** macOS/Linux 升级命令：单行 sh，`||` 兜底。sh 的引号包裸名仍走 PATH 解析、
+ *  $0 拿到解析后的绝对路径，没有 cmd 的 %~dp0 问题，null 退化裸 npm 即可。 */
+export function buildUpgradeSh(
+  claudePath: string,
+  npmCmd: string | null,
+): string {
+  return `${shQuote(claudePath)} update || ${shQuote(npmCmd ?? "npm")} i -g @anthropic-ai/claude-code@latest`;
 }
 
 /** sh 单引号包裹：成对 `'` 转义为 `'\''`（闭合、转义引号、重开）。 */
@@ -428,13 +472,15 @@ export function shQuote(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
-/** npm 兜底命令：优先 claude 同目录的 npm（GUI 启动的进程 PATH 可能不全），
- *  找不到再裸用 PATH 里的 npm。exists 可注入以便单测。 */
+/** npm 兜底命令·第一路：claude 同目录的兄弟 npm（GUI 启动的进程 PATH 可能不全）。
+ *  找不到返回 null，交由 locateNpm 的 where / command -v 第二路——不再返回裸名：
+ *  裸名只有「不加引号」一种安全写法，统一在 buildUpgradeBat 处理。
+ *  exists 可注入以便单测。 */
 export function siblingOrPathNpm(
   claudePath: string,
   platform: NodeJS.Platform,
   exists: (p: string) => boolean = fs.existsSync,
-): string {
+): string | null {
   const dir = path.dirname(claudePath);
   const candidates =
     platform === "win32"
@@ -447,7 +493,7 @@ export function siblingOrPathNpm(
       // 访问失败：跳过
     }
   }
-  return "npm";
+  return null;
 }
 
 /** 取字符串尾部 maxChars 个字符（按字符截断，避免中文切成乱码半字）。 */
@@ -478,6 +524,32 @@ async function locateClaude(d: Required<IoDeps>): Promise<string | null> {
     .filter(Boolean);
   if (lines.length === 0) return null;
   return d.platform === "win32" ? pickWindowsHit(lines) : lines[0];
+}
+
+/** 解析 npm 兜底命令的绝对路径：① claude 同目录兄弟（siblingOrPathNpm）
+ *  ② where / command -v npm 择优（Windows 用 pickWindowsNpmHit）。
+ *  两路都落空返回 null——bat 侧退化裸名 npm（不加引号书写）。
+ *  ⚠️ Windows 上要尽量给绝对路径：「引号包裸名」的 call 在 cmd 里不做 PATH 展开，
+ *  %0 原样进批处理、%~dp0 退化成当前目录，nvm4w 的 npm.cmd 引导脚本因此必然崩
+ *  （见 buildUpgradeBat 的警告）。 */
+async function locateNpm(
+  d: Required<IoDeps>,
+  claudePath: string,
+): Promise<string | null> {
+  const sibling = siblingOrPathNpm(claudePath, d.platform, d.fileExists);
+  if (sibling) return sibling;
+  const loc = buildLocateCommand(d.platform, "npm");
+  const r = await d.run(loc.cmd, loc.args, {
+    timeoutMs: LOCATE_TIMEOUT_MS,
+    windowsHide: true,
+  });
+  if (r.timedOut || r.code !== 0) return null;
+  const lines = r.stdout
+    .split(/\r?\n/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (lines.length === 0) return null;
+  return d.platform === "win32" ? pickWindowsNpmHit(lines) : lines[0];
 }
 
 // ================ 对外导出函数 ================
@@ -551,8 +623,9 @@ export async function claudeUpdateStatus(
 }
 
 /** 一键升级：隐藏窗口执行临时脚本，`claude update` 失败兜底
- *  `npm i -g @anthropic-ai/claude-code@latest`（npm 优先取 claude 同目录兄弟文件），
- *  输出重定向临时文件、回传尾部 2000 字。成功返回提示+尾部；失败/超时抛 Error。 */
+ *  `npm i -g @anthropic-ai/claude-code@latest`（npm 取 claude 同目录兄弟文件，
+ *  没有则 where / command -v 解析绝对路径），输出重定向临时文件、回传尾部 2000 字。
+ *  成功返回提示+尾部；失败/超时抛 Error。 */
 export async function claudeRunUpgrade(
   deps: Partial<IoDeps> = {},
 ): Promise<string> {
@@ -561,8 +634,9 @@ export async function claudeRunUpgrade(
   const claudePath = await locateClaude(d);
   if (!claudePath) throw new Error("未找到 claude 命令，无法升级");
 
-  // npm 兜底优先同目录兄弟文件（GUI 进程 PATH 可能不全）
-  const npmCmd = siblingOrPathNpm(claudePath, d.platform, d.fileExists);
+  // npm 兜底：claude 同目录兄弟 → where / command -v 解析绝对路径（「引号包裸名」
+  // 在 cmd 里是死路，见 buildUpgradeBat 的警告）；两路落空退化裸名 npm
+  const npmCmd = await locateNpm(d, claudePath);
 
   const ext = d.platform === "win32" ? "bat" : "sh";
   const scriptPath = path.join(d.tmpDir(), `claude_fast_update_${d.pid()}.${ext}`);

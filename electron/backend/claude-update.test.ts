@@ -18,6 +18,7 @@ import {
   type IoDeps,
   parseNpmLatestVersion,
   pickWindowsHit,
+  pickWindowsNpmHit,
   shQuote,
   siblingOrPathNpm,
   tailChars,
@@ -128,6 +129,37 @@ describe("pickWindowsHit（候选路径择优）", () => {
   });
 });
 
+describe("pickWindowsNpmHit（npm 候选择优）", () => {
+  it(".cmd 优先于无扩展名 sh 脚本（nvm 全局目录常态：两行同目录并存）", () => {
+    const lines = [
+      "C:\\Users\\x\\AppData\\Local\\nvm\\.nodejs\\npm",
+      "C:\\Users\\x\\AppData\\Local\\nvm\\.nodejs\\npm.cmd",
+    ];
+    expect(pickWindowsNpmHit(lines)).toBe(
+      "C:\\Users\\x\\AppData\\Local\\nvm\\.nodejs\\npm.cmd",
+    );
+  });
+
+  it(".exe 为次选（scoop 之类包装器）", () => {
+    expect(pickWindowsNpmHit(["C:\\s\\shims\\npm.exe"])).toBe(
+      "C:\\s\\shims\\npm.exe",
+    );
+  });
+
+  it("过滤 WindowsApps 商店别名", () => {
+    expect(
+      pickWindowsNpmHit([
+        "C:\\Users\\x\\AppData\\Local\\Microsoft\\WindowsApps\\npm.exe",
+        "C:\\n\\npm.cmd",
+      ]),
+    ).toBe("C:\\n\\npm.cmd");
+  });
+
+  it("只剩无扩展名 sh 脚本 → null（call 会按批处理解析，不能进 bat）", () => {
+    expect(pickWindowsNpmHit(["C:\\n\\npm"])).toBeNull();
+  });
+});
+
 describe("parseNpmLatestVersion（registry 响应解析）", () => {
   it("合法 JSON 取 version", () => {
     expect(parseNpmLatestVersion('{"version":"2.1.300","name":"x"}')).toBe(
@@ -150,6 +182,14 @@ describe("buildLocateCommand / buildVersionProbeCommand", () => {
     expect(buildLocateCommand("darwin")).toEqual({
       cmd: "/bin/sh",
       args: ["-c", "command -v claude"],
+    });
+  });
+
+  it("name 参数定位 npm（升级兜底第二路）", () => {
+    expect(buildLocateCommand("win32", "npm")).toEqual({ cmd: "where", args: ["npm"] });
+    expect(buildLocateCommand("darwin", "npm")).toEqual({
+      cmd: "/bin/sh",
+      args: ["-c", "command -v npm"],
     });
   });
 
@@ -188,9 +228,23 @@ describe("buildUpgradeBat / buildUpgradeSh（升级命令与 errorlevel 兜底�
     expect(s).toContain("\r\n"); // 批处理必须 CRLF
   });
 
+  it("npm 未定位到（null）→ 裸名 npm 不加引号（「引号包裸名」是死路，见实现警告）", () => {
+    const s = buildUpgradeBat("C:\\Users\\x\\npm\\claude.cmd", null);
+    expect(s).toContain(
+      "if errorlevel 1 call npm i -g @anthropic-ai/claude-code@latest",
+    );
+    expect(s).not.toContain('call "npm"');
+  });
+
   it("macOS/Linux sh：锚定路径 + || 兜底", () => {
     expect(buildUpgradeSh("/usr/local/bin/claude", "/usr/local/bin/npm")).toBe(
       "'/usr/local/bin/claude' update || '/usr/local/bin/npm' i -g @anthropic-ai/claude-code@latest",
+    );
+  });
+
+  it("sh：npm null → 裸 npm（sh 引号包裸名仍走 PATH 解析，无 %~dp0 问题）", () => {
+    expect(buildUpgradeSh("/usr/local/bin/claude", null)).toBe(
+      "'/usr/local/bin/claude' update || 'npm' i -g @anthropic-ai/claude-code@latest",
     );
   });
 });
@@ -203,10 +257,8 @@ describe("siblingOrPathNpm / shQuote / tailChars", () => {
     ).toBe("E:\\n\\npm.cmd");
   });
 
-  it("同目录无 npm 时回退 PATH 裸命令", () => {
-    expect(siblingOrPathNpm("E:\\n\\claude.cmd", "win32", () => false)).toBe(
-      "npm",
-    );
+  it("同目录无 npm 时返回 null（交由 locateNpm 的 where 第二路）", () => {
+    expect(siblingOrPathNpm("E:\\n\\claude.cmd", "win32", () => false)).toBeNull();
   });
 
   it("shQuote 含引号路径正确转义", () => {
@@ -396,6 +448,46 @@ describe("claudeRunUpgrade（编排，假执行器）", () => {
     await expect(claudeRunUpgrade(deps)).rejects.toThrow("升级超时");
   });
 
+  it("无兄弟 npm 时经 where npm 解析绝对路径写进 bat（不再引号包裸名）", async () => {
+    let script = "";
+    const deps = fakeDeps({
+      run: async (_cmd, args) => ({
+        code: 0,
+        stdout:
+          args[0] === "npm"
+            ? "C:\\n\\.nodejs\\npm\nC:\\n\\.nodejs\\npm.cmd"
+            : "C:\\n\\claude.cmd",
+        stderr: "",
+        timedOut: false,
+      }),
+      writeFile: (_p, text) => {
+        script = text;
+      },
+      runUpgradeScript: async () => ({ success: true, timedOut: false }),
+    });
+    await claudeRunUpgrade(deps);
+    expect(script).toContain('call "C:\\n\\.nodejs\\npm.cmd" i -g');
+  });
+
+  it("where npm 也落空 → bat 退化裸名 npm（不加引号）", async () => {
+    let script = "";
+    const deps = fakeDeps({
+      run: async (_cmd, args) => ({
+        code: 0,
+        stdout: args[0] === "npm" ? "" : "C:\\n\\claude.cmd",
+        stderr: "",
+        timedOut: false,
+      }),
+      writeFile: (_p, text) => {
+        script = text;
+      },
+      runUpgradeScript: async () => ({ success: true, timedOut: false }),
+    });
+    await claudeRunUpgrade(deps);
+    expect(script).toContain("call npm i -g");
+    expect(script).not.toContain('call "npm"');
+  });
+
   it("找不到 claude → 抛「无法升级」", async () => {
     const deps = fakeDeps({
       run: async () => ({ code: 1, stdout: "", stderr: "", timedOut: false }),
@@ -452,5 +544,49 @@ describe.runIf(process.platform === "win32")("bat errorlevel 链端到端（真�
       "@echo off\r\nexit /b 3\r\n",
     );
     expect(fail.status).not.toBe(0);
+  });
+
+  it("兜底裸名 npm（不加引号）经 PATH 正常解析；反例：引号包裸名 %~dp0 退化成 cwd", () => {
+    // 场景还原（2026-09-26 实测踩坑）：npm 的 cmd shim 在 PATH 目录、不在 cwd。
+    // 假 shim 回显自己的 %~dp0 并落 marker，不真跑 npm。
+    const marker = path.join(tmp, "npm_bare.marker");
+    const shims = path.join(tmp, "shims");
+    fs.mkdirSync(shims);
+    fs.writeFileSync(
+      path.join(shims, "npm.cmd"),
+      '@echo off\r\necho DP0=%~dp0\r\ntype nul > "' + marker + '"\r\nexit /b 0\r\n',
+      "utf8",
+    );
+    const claude = path.join(tmp, "claude.cmd");
+    fs.writeFileSync(claude, "@echo off\r\nexit /b 1\r\n", "utf8"); // 主命令失败 → 走兜底
+
+    const runBat = (batBody: string) => {
+      const bat = path.join(tmp, "upgrade_bare.bat");
+      fs.writeFileSync(bat, batBody, "utf8");
+      fs.rmSync(marker, { force: true });
+      return spawnSync("cmd.exe", ["/D", "/S", "/C", bat], {
+        encoding: "utf8",
+        cwd: tmp,
+        env: { ...process.env, PATH: shims + ";" + process.env.PATH },
+      });
+    };
+
+    // 正路：buildUpgradeBat 生成的裸名形态——PATH 命中 shims\npm.cmd，
+    // %~dp0 解析到 shim 自己的目录（而非 cwd）
+    const good = runBat(buildUpgradeBat(claude, null));
+    expect(good.status).toBe(0);
+    expect(fs.existsSync(marker)).toBe(true);
+    expect(good.stdout).toContain(shims);
+
+    // 反例（文档化，buildUpgradeBat 永不生成这种形态）：引号包裸名——
+    // cmd 找到的是同一个 shim，但 %0 按原样传入、%~dp0 退化成 cwd；
+    // 真实 nvm4w npm.cmd 正是因此去找 <cwd>\node_modules\npm\bin\npm-*.js 而崩
+    const bad = runBat(
+      `@echo off\r\n` +
+        `call "${claude}" update\r\n` +
+        `if errorlevel 1 call "npm.cmd" i -g @anthropic-ai/claude-code@latest\r\n` +
+        `if errorlevel 1 exit /b %errorlevel%\r\n`,
+    );
+    expect(bad.stdout).not.toContain(shims); // %~dp0 ≠ shim 目录（= cwd），错位实锤
   });
 });

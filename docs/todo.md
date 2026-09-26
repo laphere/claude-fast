@@ -87,7 +87,7 @@
 
 **与升级的差异，开工要处理的**：
 
-1. **npm 定位**：`siblingOrPathNpm`（`claude-update.ts:431`）靠 claude 所在目录找同级 npm——没装 claude 就没有锚点，得自己探测（`where npm` / `command -v npm`）。注意现有注释的警告：**GUI 启动的进程 PATH 可能不全**。npm 也没有时给明确指引（先装 Node），不是笼统报错。
+1. **npm 定位**：升级链 2026-09-26 起已是两路——`siblingOrPathNpm`（claude 同目录兄弟）+ `locateNpm`（`where npm` / `command -v npm` 择优，Windows 走 `pickWindowsNpmHit`，现为 `claude-update.ts` 内部函数、落地时导出即可复用）。安装场景没有 claude 锚点，直接用第二路。注意现有注释的警告：**GUI 启动的进程 PATH 可能不全**。npm 也没有时给明确指引（先装 Node），不是笼统报错。
 2. **按钮挂载条件**：升级按钮挂 `verStatus?.updateAvailable`（`HealthDialog.tsx:197`），claude 缺失时恒不出现。安装按钮挂**确属「未安装」**——判据用 `currentError === "未找到 claude 命令"`；「装了但 `--version` 执行超时 / 解析失败」是另一类问题，照旧展示错误、不给安装按钮。
 3. **成功后刷新两处**：弹窗内重查（复用升级完成后的逻辑），顶栏健康检查胶囊也从「claude 未找到」翻成可用——两处数据源都要接。
 4. **Windows 铁律照搬**：npm.cmd 必须经 `cmd /D /S /C call`（与 `claude --version` / `claude update` 同款）；全新安装与升级同样给足超时（沿用 npm 全局安装 10 分钟的先例）。
