@@ -25,8 +25,9 @@ export default function ConfirmDialog({ title, message, okText = "确定", dange
   };
   return (
     // Esc / 遮罩关闭同样受 busy 拦截：操作进行中关掉确认框，
-    // 用户会误以为已取消而操作仍在后台完成
-    <Modal title={title} width={460} onClose={() => !busy && onCancel()}>
+    // 用户会误以为已取消而操作仍在后台完成。
+    // canClose 在**出场动画起播前**判定（onClose 里再拦就晚了——界面已淡走）
+    <Modal title={title} width={460} onClose={onCancel} canClose={() => !busy}>
       <div className="confirm">
         <div className="confirm-message">{message}</div>
         <div className="form-actions">

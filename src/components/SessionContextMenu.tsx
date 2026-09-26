@@ -2,6 +2,8 @@
 import type { SessionInfo } from "../types";
 
 interface Props {
+  /** 菜单是否打开（组件常驻挂载，data-open 驱动 CSS 进出场，见 ContextMenu 注释） */
+  open: boolean;
   x: number;
   y: number;
   session: SessionInfo;
@@ -20,6 +22,7 @@ interface Props {
 /** 会话行右键菜单：点行 = 只读查看（不起进程），起会话的两条路收在这里
  *  （内嵌终端 / 系统终端），另有重命名 / 置顶 / 删除 */
 export default function SessionContextMenu({
+  open,
   x,
   y,
   session,
@@ -31,13 +34,17 @@ export default function SessionContextMenu({
   onDelete,
 }: Props) {
   const ref = useRef<HTMLDivElement>(null);
+  // onClose 走 ref（宿主传内联箭头）：监听只随 open 挂卸，不随渲染重挂
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   useEffect(() => {
+    if (!open) return;
     const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+      if (ref.current && !ref.current.contains(e.target as Node)) onCloseRef.current();
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") onCloseRef.current();
     };
     window.addEventListener("mousedown", onDown);
     window.addEventListener("keydown", onKey);
@@ -45,7 +52,7 @@ export default function SessionContextMenu({
       window.removeEventListener("mousedown", onDown);
       window.removeEventListener("keydown", onKey);
     };
-  }, [onClose]);
+  }, [open]);
 
   // 防止菜单超出窗口右/下边缘
   const style: React.CSSProperties = {
@@ -54,7 +61,7 @@ export default function SessionContextMenu({
   };
 
   return (
-    <div className="context-menu" ref={ref} style={style}>
+    <div className="context-menu" data-open={open} ref={ref} style={style}>
       <div className="context-title">
         <span className="context-title-text">{session.title}</span>
       </div>

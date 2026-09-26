@@ -2,6 +2,10 @@
 import type { Project } from "../types";
 
 interface Props {
+  /** 菜单是否打开。⚠️ 组件**常驻挂载**（App 不再 {menu && …}），靠 data-open 让
+   *  CSS 播进出场（display:none ↔ block + allow-discrete）——关掉那 100ms 里
+   *  还要渲染旧内容淡出，这是条件渲染给不了的 */
+  open: boolean;
   x: number;
   y: number;
   project: Project | null;
@@ -16,6 +20,7 @@ interface Props {
 }
 
 export default function ContextMenu({
+  open,
   x,
   y,
   project,
@@ -32,6 +37,7 @@ export default function ContextMenu({
   onCloseRef.current = onClose;
 
   useEffect(() => {
+    if (!open) return;
     const onDown = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) onCloseRef.current();
     };
@@ -44,7 +50,7 @@ export default function ContextMenu({
       window.removeEventListener("mousedown", onDown);
       window.removeEventListener("keydown", onKey);
     };
-  }, []);
+  }, [open]);
 
   // 防止菜单超出窗口右/下边缘（预留高度要盖住实际菜单：标题 + 5 项 + 2 条分隔）
   const style: React.CSSProperties = {
@@ -53,7 +59,7 @@ export default function ContextMenu({
   };
 
   return (
-    <div className="context-menu" ref={ref} style={style}>
+    <div className="context-menu" data-open={open} ref={ref} style={style}>
       {project && (
         <>
           <div className="context-title">

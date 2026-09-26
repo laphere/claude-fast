@@ -82,6 +82,57 @@
   /* 「其他」折叠项与「未归属」段：中性色，取 --dim 一带的明度 */
   --chart-other: #a8a29e;
   --chart-unattributed: #d4cfc6;
+
+  /* ============ 动效 token（2026-09-26 过渡动画 P0） ============
+   * 三档时长 + 三条曲线，全 app 动效统一从这里取值，别再散写 0.12s/0.15s/0.18s。
+   *  - fast：菜单/出场——快进快出，等它的人会觉得卡
+   *  - med  ：弹窗/面板进场
+   *  - slow ：布局级位移（左栏抽屉）——大块东西动得慢一点才稳
+   * 出场一律比进场快（accelerate out），进场用减速曲线（decelerate in） */
+  --dur-fast: 100ms;
+  --dur-med: 160ms;
+  --dur-slow: 240ms;
+  --ease-out-soft: cubic-bezier(0.25, 1, 0.5, 1);
+  --ease-in-soft: cubic-bezier(0.5, 0, 0.75, 1);
+  --ease-emph: cubic-bezier(0.2, 0, 0, 1);
+
+  /* 让 height:auto ↔ 0 可过渡（Chromium 129+，继承属性）：details 折叠动画的前提。
+   * 全局开启只影响「写进 transition 的关键字值」，不会让没写 transition 的东西动起来 */
+  interpolate-size: allow-keywords;
+}
+
+/* <details> 折叠动画（2026-09-26 P2）：会话流里的思考块/工具行/diff 卡/发现卡全是
+ * details，展开收起原来 0 帧跳变。::details-content 伪元素（Chromium 131+）包裹
+ * 折叠内容，高度 0↔auto 过渡；content-visibility 配 allow-discrete 让**收起方向**
+ * 先跑完高度过渡、结束才真正隐藏（展开方向 UA 本就先显示）。
+ * 流式新挂载的 details 不受影响（挂载即终态、无过渡可跑）。
+ * ⚠️ overflow 用 clip：hidden 会建滚动容器，工具结果里的宽代码块横向滚动归它自己管，
+ * 外层只需竖向裁切 */
+details::details-content {
+  height: 0;
+  overflow: clip;
+  transition:
+    height var(--dur-med) var(--ease-out-soft),
+    content-visibility var(--dur-med) allow-discrete;
+}
+
+details[open]::details-content {
+  height: auto;
+}
+
+/* 「减少动态效果」一刀切：状态指示类（忙点脉冲/骨架屏）一并静止——
+   静止后落在自然样式上，信息仍在（dot 常亮、骨架变纯色块）。
+   JS 侧的延迟卸载计时器（MODAL_EXIT_MS 等）不随之缩短：动画瞬间播完、
+   元素已 opacity:0（forwards），多挂的 ~100ms 不可见、无副作用 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    transition-delay: 0ms !important;
+  }
 }
 
 [data-theme="dark"] {
@@ -253,7 +304,7 @@ code {
   color: var(--muted);
   font-size: 12px;
   cursor: pointer;
-  transition: border-color 0.15s;
+  transition: border-color var(--dur-med);
 }
 
 .pill:hover {
@@ -302,7 +353,7 @@ code {
   color: var(--text);
   font-size: 15px;
   cursor: pointer;
-  transition: background 0.15s;
+  transition: background var(--dur-med);
 }
 
 .icon-btn:hover {
@@ -350,7 +401,7 @@ code {
   color: var(--text);
   font-size: 13px;
   outline: none;
-  transition: border-color 0.15s, box-shadow 0.15s;
+  transition: border-color var(--dur-med), box-shadow var(--dur-med);
 }
 
 .search-input:focus {
@@ -400,7 +451,7 @@ code {
   font-size: 12.5px;
   cursor: pointer;
   white-space: nowrap;
-  transition: background 0.15s, border-color 0.15s, opacity 0.15s;
+  transition: background var(--dur-med), border-color var(--dur-med), opacity var(--dur-med);
 }
 
 .btn:hover:not(:disabled) {
@@ -455,6 +506,23 @@ code {
   gap: 4px;
 }
 
+/* ============ 行/tab 进场（2026-09-26 P1） ============
+ * 挂载即播（remount 才重播；key 稳定的重排不重播——那种位移归 lib/flip.ts 的 FLIP 管）。
+ * ⚠️ 只动 opacity/transform、不动 height：进场期间高度必须稳定，否则把下方行顶得跳一下。
+ * .session-row 为项目内会话行与置顶区（SessionRow）共用；窗口聚焦刷新按 sessionId
+ * 复用 DOM 不重播，只有真新增（加载完成/置顶插入/搜索恢复）才播 */
+.row-wrap,
+.session-row {
+  animation: row-in var(--dur-med) var(--ease-out-soft);
+}
+
+@keyframes row-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
 .row {
   display: flex;
   align-items: center;
@@ -464,7 +532,7 @@ code {
   border: 1px solid transparent;
   cursor: pointer;
   position: relative; /* 拖拽指示条（.drop-above/below 伪元素）的定位基准 */
-  transition: background 0.12s, border-color 0.12s;
+  transition: background var(--dur-fast), border-color var(--dur-fast);
 }
 
 .row:hover {
@@ -555,7 +623,7 @@ code {
   color: var(--muted);
   font-size: 15px;
   cursor: pointer;
-  transition: background 0.12s, color 0.12s, border-color 0.12s;
+  transition: background var(--dur-fast), color var(--dur-fast), border-color var(--dur-fast);
 }
 
 .row-icon:hover {
@@ -617,7 +685,7 @@ code {
   border-radius: 7px;
   border: 1px solid transparent;
   cursor: default;
-  transition: background 0.12s, border-color 0.12s;
+  transition: background var(--dur-fast), border-color var(--dur-fast);
 }
 
 .session-row:hover {
@@ -647,7 +715,7 @@ code {
   cursor: pointer;
   padding: 3px 4px;
   border-radius: 5px;
-  transition: color 0.12s, background 0.12s;
+  transition: color var(--dur-fast), background var(--dur-fast);
 }
 
 .session-pin:hover {
@@ -751,15 +819,33 @@ code {
   padding: 0;
 }
 
+/* 左栏 = 抽屉：外层只做「宽度 → 0 + 裁切」，布局（padding/gap）全在内层
+ * .main-left-inner 上、且内层**定宽 360**——收放动画期间项目行文字不换行、
+ * 图标不跳，只是被裁掉（宽度动画若直接压内容，每帧 reflow 会把列表抖成毛边）。
+ * ⚠️ min-width:0 必须有：flex 子项默认 min-width:auto 会把 basis 卡在内容宽，收不到 0。
+ * visibility 而非 display 收尾：它离散可过渡（全程可见、结束才藏），收起后从
+ * Tab 焦点序/a11y 树移除——0 宽裁切态里留着可聚焦控件比 display:none 危险得多 */
 .main-left {
   flex: 0 0 360px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--border);
+  min-height: 0;
+  overflow: hidden;
+  transition: flex-basis var(--dur-slow) var(--ease-emph),
+    border-color var(--dur-slow) var(--ease-emph),
+    visibility var(--dur-slow);
+}
+
+.main-left-inner {
+  width: 360px;
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 10px;
   padding: 10px 14px;
-  border-right: 1px solid var(--border);
-  min-height: 0;
-  overflow: hidden;
 }
 
 /* 搜索框常驻左栏顶部，列表区独立滚动（搜索框不被滚走） */
@@ -774,9 +860,11 @@ code {
   overflow-y: auto;
 }
 
-/* 顶栏「收起项目列表」后的状态：整栏隐藏，内容区占满全宽 */
+/* 顶栏「收起项目列表」后的状态：收成 0 宽（border 同步淡没），内容区占满全宽 */
 .main-left-collapsed {
-  display: none;
+  flex-basis: 0;
+  border-right-color: transparent;
+  visibility: hidden;
 }
 
 .viewer {
@@ -881,7 +969,7 @@ code {
   /* 墨迹补偿，勿改对称（不设 line-height 即 normal，墨迹偏下 1px，上减下加） */
   padding: 4px 14px 6px;
   cursor: pointer;
-  transition: border-color 0.12s, color 0.12s;
+  transition: border-color var(--dur-fast), color var(--dur-fast);
 }
 
 .viewer-load-more:hover:not(:disabled) {
@@ -970,7 +1058,10 @@ code {
   border-top: 3px solid var(--dim);
   border-radius: 2px;
   opacity: 0.55;
-  transition: width 0.15s ease, opacity 0.15s ease, border-color 0.15s ease;
+  transition:
+    width var(--dur-med) var(--ease-out-soft),
+    opacity var(--dur-med) var(--ease-out-soft),
+    border-color var(--dur-med) var(--ease-out-soft);
 }
 
 /* 波浪动效：悬停条最长，相邻条按距离递减——鼠标划过时宽度依次过渡，
@@ -1078,7 +1169,7 @@ mark {
   color: var(--text);
   font-size: 13px;
   outline: none;
-  transition: border-color 0.12s;
+  transition: border-color var(--dur-fast);
 }
 
 .viewer-search .search-input:focus {
@@ -1172,13 +1263,36 @@ mark {
 
 /* ---- 变更文件面板 ---- */
 
+/* 变更文件面板 = 抽屉（与左栏 .main-left 同款）：外层只做「basis 220→0 + 裁切 +
+   visibility 收尾」，布局在内层定宽 220（动画期间列表不重排）。
+   min-width:0 必须——flex 子项默认 min-width:auto 会把 basis 卡在内容宽 */
 .viewer-files {
   flex: 0 0 220px;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   min-height: 0;
   border-left: 1px solid var(--border);
   background: var(--panel);
+  overflow: hidden;
+  transition:
+    flex-basis var(--dur-slow) var(--ease-emph),
+    border-color var(--dur-slow) var(--ease-emph),
+    visibility var(--dur-slow);
+}
+
+.viewer-files-inner {
+  width: 220px;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.viewer-files-collapsed {
+  flex-basis: 0;
+  border-left-color: transparent;
+  visibility: hidden;
 }
 
 .files-head {
@@ -1292,12 +1406,21 @@ mark {
   position: relative;
 }
 
+/* 导出下拉的点外关闭层：常驻挂载 + data-open（透明层，无需动画） */
 .menu-overlay {
   position: fixed;
   inset: 0;
   z-index: 40;
+  display: none;
 }
 
+.menu-overlay[data-open="true"] {
+  display: block;
+}
+
+/* 导出下拉面板：常驻挂载 + data-open 开合（同 .context-menu/.mode-panel 那套：
+   进场 keyframes、出场 transition 反向 + display allow-discrete）。
+   它**向下弹**（按钮在头部），from 方向与向上弹的 panel-in 相反 */
 .export-menu {
   position: absolute;
   top: calc(100% + 6px);
@@ -1308,9 +1431,32 @@ mark {
   border-radius: 8px;
   box-shadow: var(--shadow);
   padding: 4px;
-  display: flex;
   flex-direction: column;
   min-width: 150px;
+  display: none;
+  opacity: 0;
+  transform: translateY(-4px) scale(0.98);
+  transform-origin: top right;
+  pointer-events: none;
+  transition:
+    opacity var(--dur-fast) var(--ease-in-soft),
+    transform var(--dur-fast) var(--ease-in-soft),
+    display var(--dur-fast) allow-discrete;
+}
+
+.export-menu[data-open="true"] {
+  display: flex;
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+  animation: panel-in-down var(--dur-med) var(--ease-out-soft);
+}
+
+@keyframes panel-in-down {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.98);
+  }
 }
 
 .export-menu button {
@@ -1521,7 +1667,7 @@ mark {
   align-items: flex-end;
   padding: 0 1px;
   border-radius: 3px 3px 0 0;
-  transition: background 0.12s;
+  transition: background var(--dur-fast);
 }
 
 .stat-col:hover {
@@ -1544,7 +1690,7 @@ mark {
 .stat-seg {
   width: 100%;
   min-height: 1px;
-  transition: opacity 0.12s;
+  transition: opacity var(--dur-fast);
   opacity: 0.85;
 }
 
@@ -2361,6 +2507,14 @@ mark {
 }
 
 /* ============ 右键菜单 ============ */
+/* 右键菜单（三套共用）：**常驻挂载 + data-open 开合**，不是 {open && …} 条件渲染——
+ * 那样只有「闪现」没有出场（React 卸载是即时的）。机制：
+ *  - 进场：keyframes menu-in（自带起始帧，不需要 @starting-style）
+ *  - 出场：transition 反向跑 opacity/transform，`display … allow-discrete` 让
+ *    display:none **等到过渡结束才生效**（display 在转出时天然后翻、转入时先翻）
+ *  - pointer-events 不进 transition 列表 → 关闭瞬间立即翻 none（淡出的残影不挡点击）
+ * ⚠️ ChatView 的全局 Esc 守卫查的是 `.context-menu[data-open="true"]`——常驻挂载后
+ * 裸查类名永远命中，Esc「打断本轮」会被废掉，改选择器时必须带 data-open */
 .context-menu {
   position: fixed;
   z-index: 1000;
@@ -2370,6 +2524,30 @@ mark {
   border: 1px solid var(--border);
   border-radius: 10px;
   box-shadow: var(--shadow);
+  display: none;
+  opacity: 0;
+  transform: scale(0.97);
+  transform-origin: top left;
+  pointer-events: none;
+  transition:
+    opacity var(--dur-fast) var(--ease-in-soft),
+    transform var(--dur-fast) var(--ease-in-soft),
+    display var(--dur-fast) allow-discrete;
+}
+
+.context-menu[data-open="true"] {
+  display: block;
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+  animation: menu-in var(--dur-fast) var(--ease-out-soft);
+}
+
+@keyframes menu-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
 }
 
 .context-title {
@@ -2417,6 +2595,9 @@ mark {
 }
 
 /* ============ 模态框 ============ */
+/* 弹层过渡：进场挂在元素自身（挂载即播），出场靠 Modal.tsx 的延迟卸载（先切
+ * .closing 播完 MODAL_EXIT_MS 才让宿主清 state 真卸载）——出场比进场快，
+ * 关闭是「确认感」、开启是「呈现感」。lightbox / JSON 整窗编辑器同用 .overlay */
 .overlay {
   position: fixed;
   inset: 0;
@@ -2425,6 +2606,23 @@ mark {
   display: flex;
   align-items: center;
   justify-content: center;
+  animation: overlay-in var(--dur-fast) var(--ease-out-soft);
+}
+
+.overlay.closing {
+  animation: overlay-out var(--dur-fast) var(--ease-in-soft) forwards;
+}
+
+@keyframes overlay-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes overlay-out {
+  to {
+    opacity: 0;
+  }
 }
 
 .modal {
@@ -2436,6 +2634,26 @@ mark {
   max-height: calc(100vh - 80px);
   display: flex;
   flex-direction: column;
+  animation: modal-in var(--dur-med) var(--ease-out-soft);
+}
+
+.overlay.closing .modal,
+.overlay.closing .json-editor-panel {
+  animation: modal-out var(--dur-fast) var(--ease-in-soft) forwards;
+}
+
+@keyframes modal-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+}
+
+@keyframes modal-out {
+  to {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+  }
 }
 
 .modal-header {
@@ -2769,6 +2987,9 @@ mark {
 }
 
 /* ============ Toast ============ */
+/* 出场：App 的 showToast 到点先切 .closing（下沉淡出），MODAL_EXIT_MS 后才真卸载。
+ * ⚠️ transform 里必须带着 translateX(-50%)——水平居中靠它，keyframes 覆盖 transform
+ * 时丢了它 toast 会瞬移到偏离中心 50% 处再滑回 */
 .toast {
   position: fixed;
   bottom: 46px;
@@ -2781,7 +3002,11 @@ mark {
   padding: 8px 18px;
   border-radius: 999px;
   box-shadow: var(--shadow);
-  animation: toast-in 0.18s ease-out;
+  animation: toast-in var(--dur-med) var(--ease-out-soft);
+}
+
+.toast.closing {
+  animation: toast-out var(--dur-fast) var(--ease-in-soft) forwards;
 }
 
 @keyframes toast-in {
@@ -2792,6 +3017,13 @@ mark {
   to {
     opacity: 1;
     transform: translateX(-50%) translateY(0);
+  }
+}
+
+@keyframes toast-out {
+  to {
+    opacity: 0;
+    transform: translateX(-50%) translateY(8px);
   }
 }
 
@@ -3065,6 +3297,25 @@ mark {
   object-fit: contain;
   border-radius: 6px;
   cursor: zoom-in;
+  animation: lightbox-img-in var(--dur-med) var(--ease-out-soft);
+}
+
+.overlay.closing .lightbox-img {
+  animation: lightbox-img-out var(--dur-fast) var(--ease-in-soft) forwards;
+}
+
+@keyframes lightbox-img-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+
+@keyframes lightbox-img-out {
+  to {
+    opacity: 0;
+    transform: scale(0.96);
+  }
 }
 
 /* 切到原始尺寸（点图切换）：取消上限 + 遮罩可滚动查看细节 */
@@ -3361,7 +3612,7 @@ mark {
   border: 1px solid var(--border);
   border-radius: 14px;
   padding: 10px 12px 8px;
-  transition: border-color 0.12s;
+  transition: border-color var(--dur-fast);
 }
 
 .chat:has(.msg-rail) .composer-card {
@@ -3564,7 +3815,7 @@ mark {
   /* SVG 图标：flex 居中；rotate(90deg) 作用在本元素，展开动画不变 */
   display: flex;
   align-items: center;
-  transition: transform 0.12s;
+  transition: transform var(--dur-fast);
 }
 
 .activity[open] > .activity-summary .activity-caret {
@@ -3658,7 +3909,9 @@ mark {
 }
 
 /* 面板**向上弹**：输入卡片贴着窗口底部，往下弹会出屏。
-   z-index 压过消息区（.chat-body 没有定位，靠 DOM 顺序本来也在上层，这里只是兜底） */
+   z-index 压过消息区（.chat-body 没有定位，靠 DOM 顺序本来也在上层，这里只是兜底）。
+   开合同右键菜单：常驻挂载 + data-open（ModePicker / ModelPicker 共用本类），
+   从下方 4px 浮上来、transform-origin 落在底部（贴合「向上弹」的方向语言） */
 .mode-panel {
   position: absolute;
   left: 0;
@@ -3670,6 +3923,30 @@ mark {
   border: 1px solid var(--border);
   border-radius: 10px;
   box-shadow: var(--shadow);
+  display: none;
+  opacity: 0;
+  transform: translateY(4px) scale(0.98);
+  transform-origin: bottom left;
+  pointer-events: none;
+  transition:
+    opacity var(--dur-fast) var(--ease-in-soft),
+    transform var(--dur-fast) var(--ease-in-soft),
+    display var(--dur-fast) allow-discrete;
+}
+
+.mode-panel[data-open="true"] {
+  display: block;
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+  animation: panel-in var(--dur-med) var(--ease-out-soft);
+}
+
+@keyframes panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.98);
+  }
 }
 
 .mode-item {
@@ -3820,6 +4097,7 @@ mark {
 /* 挂在 .composer-card 里、向上弹（与 .mode-panel 同一方向语言）；
    .composer-card 的 position:relative 加在文件上方它自己的块里 */
 
+/* `/` 命令补全面板：常驻挂载 + data-open 开合（同 .mode-panel，方向语言一致） */
 .cmd-panel {
   position: absolute;
   bottom: calc(100% + 6px);
@@ -3833,6 +4111,23 @@ mark {
   border-radius: 10px;
   box-shadow: var(--shadow);
   padding: 4px;
+  display: none;
+  opacity: 0;
+  transform: translateY(4px) scale(0.98);
+  transform-origin: bottom left;
+  pointer-events: none;
+  transition:
+    opacity var(--dur-fast) var(--ease-in-soft),
+    transform var(--dur-fast) var(--ease-in-soft),
+    display var(--dur-fast) allow-discrete;
+}
+
+.cmd-panel[data-open="true"] {
+  display: block;
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+  animation: panel-in var(--dur-med) var(--ease-out-soft);
 }
 
 .cmd-item {
@@ -3896,6 +4191,15 @@ mark {
 
 .chat-page-active {
   display: flex;
+  /* 切 tab / 首次打开时淡入：display:none→flex 重新显示时 animation 自然从头播，
+   * 一行 CSS 即得「切页 fade」。非激活页保活（进程/流不断），只淡入不滑入 */
+  animation: page-in var(--dur-fast) var(--ease-out-soft);
+}
+
+@keyframes page-in {
+  from {
+    opacity: 0;
+  }
 }
 
 .chat-tabs {
@@ -3923,6 +4227,9 @@ mark {
   align-items: center;
   gap: 6px;
   padding: 5px 8px 5px 10px;
+  /* 新 tab 进场（mount 即播；相邻 tab 的让位归 FLIP）。class 增减（active/dragging）
+   * 不改 animation 计算值，不会误重播 */
+  animation: tab-in var(--dur-med) var(--ease-out-soft);
   font-size: 12px;
   border: 1px solid var(--border);
   border-bottom: none;
@@ -3937,6 +4244,13 @@ mark {
 
 .chat-tab:hover {
   color: var(--text);
+}
+
+@keyframes tab-in {
+  from {
+    opacity: 0;
+    transform: translateX(-6px);
+  }
 }
 
 .chat-tab.active {
@@ -4080,7 +4394,9 @@ mark {
   border-top: 3px solid var(--dim);
   border-radius: 2px;
   opacity: 0.55;
-  transition: opacity 0.15s ease, border-color 0.15s ease;
+  transition:
+    opacity var(--dur-med) var(--ease-out-soft),
+    border-color var(--dur-med) var(--ease-out-soft);
 }
 
 /* 悬停/选中只变颜色，粗细长短与常态一致 */
@@ -4469,12 +4785,35 @@ mark {
   align-items: center;
 }
 
-.preset-panel {
+/* 预设面板 = 表单内流式展开块（非浮层）：grid 0fr↔1fr 折叠，常驻挂载（组件只切
+   class）。margin-top 挪到 wrap 上一起过渡——留在 panel 上会撑出收起态的 6px 残高 */
+.preset-panel-wrap {
+  display: grid;
+  grid-template-rows: 0fr;
+  margin-top: 0;
+  transition:
+    grid-template-rows var(--dur-med) var(--ease-out-soft),
+    margin-top var(--dur-med) var(--ease-out-soft);
+}
+
+.preset-panel-wrap.open {
+  grid-template-rows: 1fr;
   margin-top: 6px;
+}
+
+.preset-panel {
+  min-height: 0;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--panel);
   overflow: hidden;
+  /* 收起时移出焦点序（离散过渡：展开即刻可见、收起结束才藏），搜索框不可 Tab 进 */
+  visibility: hidden;
+  transition: visibility var(--dur-med);
+}
+
+.preset-panel-wrap.open .preset-panel {
+  visibility: visible;
 }
 
 .preset-search {
@@ -4957,14 +5296,38 @@ mark {
 /* 收起态（**app 侧新增，TUI 没有**）：只留卡头，把高度让回消息区，好让用户在作答前
    重读会话（模型为什么要问这些）——展开态那张卡有 480~500px 高，720px 的窗口里
    消息区只剩三四行（2026-09-24 用户反馈）。
-   ⚠️ 必须用 display:none **藏而不卸**：卡内 picks/idx/focus 全在组件 state 里、
-   父组件又是按 requestId 挂载的，改成条件渲染就会重挂载、逐题答案全丢。
+   ⚠️ 必须**藏而不卸**：卡内 picks/idx/focus 全在组件 state 里、父组件又按 requestId
+   挂载，改成条件渲染就会重挂载、逐题答案全丢。原先用 display:none 藏，2026-09-26 P2
+   起改 grid 0fr↔1fr 折叠（高度可过渡），收起让位变成动画；visibility 离散过渡在
+   收起**结束**才把内容移出焦点序（展开方向即刻可见）。
    收起后卡体 ≈ 46px，.card-slot 是 flex:none（按内容走，70% 只是上限），
    空出的高度自动归 .chat-main（flex:1）——这就是「消息区立刻变高」的依据 */
-.ask-card-collapsed .ask-tabs,
-.ask-card-collapsed .ask-body,
-.ask-card-collapsed .plan-approve-actions {
-  display: none;
+.ask-collapse {
+  /* 卡体的可伸缩区也接管过来：.ask-body 的 flex:1 链路经它传导 */
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: 1fr;
+  transition: grid-template-rows var(--dur-med) var(--ease-out-soft);
+}
+
+.ask-collapse-inner {
+  /* grid 0fr 技巧的要求：轨道内唯一子项 min-height:0 + 裁切；
+     gap 复刻 .plan-approve 的 8px（三段原是卡的直接子项、吃卡的 gap） */
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: visibility var(--dur-med);
+}
+
+.ask-card-collapsed .ask-collapse {
+  grid-template-rows: 0fr;
+}
+
+.ask-card-collapsed .ask-collapse-inner {
+  visibility: hidden;
 }
 
 /* 卡头左半：标题 +（收起时）进度摘要 */

@@ -17,6 +17,7 @@ import ProjectList from "./components/ProjectList";
 import PinnedSessions from "./components/PinnedSessions";
 import StatusBar from "./components/StatusBar";
 import ContextMenu from "./components/ContextMenu";
+import { animateModalClose, MODAL_EXIT_MS } from "./components/Modal";
 import NewLauncherDialog from "./components/NewLauncherDialog";
 import BatchAddDialog from "./components/BatchAddDialog";
 import HealthDialog from "./components/HealthDialog";
@@ -34,6 +35,8 @@ import SessionContextMenu from "./components/SessionContextMenu";
 import TabContextMenu from "./components/TabContextMenu";
 import { sessionIdFromFile } from "./lib/session-file";
 import { reorderItems } from "./lib/tab-order";
+import { useFlip } from "./lib/flip";
+import { viewTransition } from "./lib/view-transition";
 
 export type DialogKind = "new" | "batch" | "health" | null;
 
@@ -78,6 +81,15 @@ interface TabPinTarget {
  *  表现为「tab 上点着忙点、菜单却肯关它」。 */
 export function isBusyPhase(phase: string | undefined): boolean {
   return phase === "thinking" || phase === "starting";
+}
+
+/** 出场动画期间冻结「最后一次非空值」：三套右键菜单改为常驻挂载 + data-open 开合后，
+ *  App 清掉菜单 state 的那一刻组件还要渲染 ~100ms 旧内容淡出——x/y/载荷都得用
+ *  冻结值，否则淡出的会是「跳到 (0,0) 的空菜单」。只在渲染期写 ref（幂等），安全。 */
+function useLast<T>(v: T | null): T | null {
+  const ref = useRef<T | null>(v);
+  if (v) ref.current = v;
+  return v ?? ref.current;
 }
 
 /** 窗口过窄自动收起左栏的阈值（40px 迟滞带防边界抖动）：
@@ -139,6 +151,17 @@ export default function App() {
   const [pinnedSessions, setPinnedSessions] = useState<PinnedSession[]>([]);
   /** 置顶区展示数据：后端按清单实时解析的元数据（文件缺失的条目会被后端跳过） */
   const [pinnedMeta, setPinnedMeta] = useState<PinnedSessionInfo[]>([]);
+  /** 左栏列表容器：置顶区整块出现/消失会把下面的项目列表顶下去/收回来——这一层
+   *  位移在 .list（ProjectList 自己的 FLIP）之外，由这里补一道。selector 连
+   *  .pinned-block 一起量；签名认置顶文件清单，搜索期间只记基线（与 ProjectList
+   *  的 enabled 同口径） */
+  const leftScrollRef = useRef<HTMLDivElement>(null);
+  useFlip(
+    leftScrollRef,
+    ".pinned-block, .list",
+    pinnedMeta.map((p) => p.file).join("\u0000"),
+    search.trim() === "",
+  );
   const [renameTarget, setRenameTarget] = useState<{
     session: SessionInfo;
     key: string;
@@ -343,13 +366,21 @@ export default function App() {
   // ---------- Toast ----------
 
   const toastTimerRef = useRef<number | null>(null);
+  /** 出场相位：到点先切 .closing 播下沉淡出，MODAL_EXIT_MS 后才真卸载。
+   *  期间来新 toast 则整个复位重播进场（className 一换 animation 自然重起） */
+  const [toastClosing, setToastClosing] = useState(false);
   const showToast = useCallback((msg: string, duration = 2500) => {
     // 清掉上一个计时器：否则连续 toast 时，前一条的定时器会提前清掉后一条
     if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current);
+    setToastClosing(false);
     setToast(msg);
     toastTimerRef.current = window.setTimeout(() => {
-      toastTimerRef.current = null;
-      setToast(null);
+      setToastClosing(true);
+      toastTimerRef.current = window.setTimeout(() => {
+        toastTimerRef.current = null;
+        setToast(null);
+        setToastClosing(false);
+      }, MODAL_EXIT_MS);
     }, duration);
   }, []);
 
@@ -464,7 +495,9 @@ export default function App() {
 
   const toggleTheme = useCallback(async () => {
     const next = !dark;
-    setDark(next);
+    // 主题全页换色走 View Transition 快照 crossfade（lib/view-transition.ts）——
+    // CSS 逐属性过渡要给全页面几万个节点挂 transition，必卡
+    viewTransition(() => setDark(next));
     await persistConfig(order, pinnedSessions, next);
   }, [dark, order, pinnedSessions, persistConfig]);
 
@@ -758,7 +791,8 @@ export default function App() {
       if (!renameTarget) return;
       const { session, key } = renameTarget;
       await api.renameSession(session.file, newTitle); // 失败时向上抛给对话框显示
-      setRenameTarget(null);
+      // 重命名成功 → 关闭对话框：走出场动画（renameTarget 的清态不只在 onClose 一处）
+      animateModalClose(() => setRenameTarget(null));
       // 该会话已开着对话 tab 时同步 tab 标题与其 session，否则标签/头部停留在旧标题。
       // 终端 tab 不用同步：claude 的 /rename 会改写 OSC 终端标题，onTitle 那条路自动跟上
       updateTabs((prev) =>
@@ -1365,6 +1399,12 @@ export default function App() {
     why: string[];
   } | null>(null);
 
+  // 三套右键菜单的渲染视图：常驻挂载 + data-open 开合，出场那 ~100ms 里用冻结值
+  // 渲染旧内容淡出（见 useLast 注释）
+  const menuView = useLast(menu);
+  const sessionMenuView = useLast(sessionMenu);
+  const tabMenuView = useLast(tabMenu);
+
   /** 打开 tab 右键菜单：此刻对每个终端 tab 现算一次忙/闲，连同 tab 清单冻成快照 */
   const openTabMenu = useCallback(
     (e: React.MouseEvent, tabId: string | null) => {
@@ -1467,7 +1507,10 @@ export default function App() {
           // 打开时重新拉取：live 可能已被外部工具（CC Switch 等）改写，
           // 后端 provider_list 顺带做标记重锚定，保证「当前」徽标是磁盘实况
           api.providerList().then(setProviderState).catch((e) => {
-            // 从未加载成功过时弹窗无内容可渲染，收回打开态并提示
+            // 从未加载成功过时弹窗无内容可渲染，收回打开态并提示。
+            // ⚠️ 直接清、不走 animateModalClose：它按**栈顶**定标，此刻供应商弹窗
+            // 因 providerState 为空根本没挂载，若用户已开着别的弹窗（统计/回收站…），
+            // 会被错打淡出到透明还等不到自己的 onClose（2026-09-26 code review）
             if (!providerState) setProviderOpen(false);
             showToast("供应商清单加载失败：" + String(e));
           });
@@ -1477,6 +1520,8 @@ export default function App() {
 
       <main className="main main-split">
         <div className={`main-left ${sidebarCollapsed ? "main-left-collapsed" : ""}`}>
+          {/* 抽屉内层：定宽 360（布局全在这层），外层只做「宽度→0 + 裁切」的动画 */}
+          <div className="main-left-inner">
           {searchOpen && (
             <div className="search-box left-search">
               <span className="search-icon">
@@ -1500,7 +1545,7 @@ export default function App() {
               )}
             </div>
           )}
-          <div className="left-scroll">
+          <div className="left-scroll" ref={leftScrollRef}>
             <PinnedSessions
             items={pinnedMeta}
             search={search}
@@ -1531,6 +1576,7 @@ export default function App() {
             onChatSession={continueSessionTab}
             onContextMenu={(x, y, key) => setMenu({ x, y, key })}
           />
+          </div>
           </div>
         </div>
         <div className="chat-col">
@@ -1602,11 +1648,14 @@ export default function App() {
         claudeOk={claudeOk}
       />
 
-      {menu && (
+      {/* 三套右键菜单：**首次打开后常驻挂载**，open/data-open 驱动 CSS 进出场；
+          冻结视图（*View）保证出场那 ~100ms 里渲染的是旧内容而不是空菜单 */}
+      {menuView && (
         <ContextMenu
-          x={menu.x}
-          y={menu.y}
-          project={items.find((l) => l.key === menu.key) ?? null}
+          open={menu !== null}
+          x={menuView.x}
+          y={menuView.y}
+          project={items.find((l) => l.key === menuView.key) ?? null}
           onClose={() => setMenu(null)}
           onMoveTop={moveTop}
           onLaunch={(l) => launch(l.key)}
@@ -1616,45 +1665,49 @@ export default function App() {
         />
       )}
 
-      {sessionMenu && (
+      {sessionMenuView && (
         <SessionContextMenu
-          x={sessionMenu.x}
-          y={sessionMenu.y}
-          session={sessionMenu.session}
-          sessionPinned={pinnedFiles.has(sessionMenu.session.file)}
+          open={sessionMenu !== null}
+          x={sessionMenuView.x}
+          y={sessionMenuView.y}
+          session={sessionMenuView.session}
+          sessionPinned={pinnedFiles.has(sessionMenuView.session.file)}
           onClose={() => setSessionMenu(null)}
-          onResumeSystem={() => resumeSession(sessionMenu.key, sessionMenu.session)}
-          onRename={() => setRenameTarget({ session: sessionMenu.session, key: sessionMenu.key })}
-          onTogglePin={() => togglePin(sessionMenu.key, sessionMenu.session.file)}
-          onDelete={() => confirmDeleteSession(sessionMenu.key, sessionMenu.session)}
+          onResumeSystem={() => resumeSession(sessionMenuView.key, sessionMenuView.session)}
+          onRename={() =>
+            setRenameTarget({ session: sessionMenuView.session, key: sessionMenuView.key })
+          }
+          onTogglePin={() => togglePin(sessionMenuView.key, sessionMenuView.session.file)}
+          onDelete={() => confirmDeleteSession(sessionMenuView.key, sessionMenuView.session)}
         />
       )}
 
-      {tabMenu && (
+      {tabMenuView && (
         <TabContextMenu
-          x={tabMenu.x}
-          y={tabMenu.y}
-          tabId={tabMenu.tabId}
-          title={tabMenu.title}
-          pinned={tabMenu.pin ? tabMenu.pin.pinned : null}
-          otherCount={tabMenu.otherCount}
-          allCount={tabMenu.allCount}
-          skippedCount={tabMenu.skippedCount}
-          why={tabMenu.why}
+          open={tabMenu !== null}
+          x={tabMenuView.x}
+          y={tabMenuView.y}
+          tabId={tabMenuView.tabId}
+          title={tabMenuView.title}
+          pinned={tabMenuView.pin ? tabMenuView.pin.pinned : null}
+          otherCount={tabMenuView.otherCount}
+          allCount={tabMenuView.allCount}
+          skippedCount={tabMenuView.skippedCount}
+          why={tabMenuView.why}
           onClose={() => setTabMenu(null)}
           onTogglePin={() => {
-            if (tabMenu.pin) void toggleTabPin(tabMenu.pin);
+            if (tabMenuView.pin) void toggleTabPin(tabMenuView.pin);
           }}
-          onCloseOthers={(id) => closeTabsSafely(id, tabMenu.activity)}
-          onCloseAll={() => closeTabsSafely(null, tabMenu.activity)}
+          onCloseOthers={(id) => closeTabsSafely(id, tabMenuView.activity)}
+          onCloseAll={() => closeTabsSafely(null, tabMenuView.activity)}
         />
       )}
 
       {dialog === "new" && (
         <NewLauncherDialog
-          onClose={() => setDialog(null)}
+          onClose={() => animateModalClose(() => setDialog(null))}
           onCreated={async () => {
-            setDialog(null);
+            animateModalClose(() => setDialog(null));
             await load();
           }}
         />
@@ -1662,9 +1715,9 @@ export default function App() {
 
       {dialog === "batch" && (
         <BatchAddDialog
-          onClose={() => setDialog(null)}
+          onClose={() => animateModalClose(() => setDialog(null))}
           onDone={async (count) => {
-            setDialog(null);
+            animateModalClose(() => setDialog(null));
             await load();
             showToast(`批量添加完成：新增 ${count} 个项目`);
           }}
@@ -1676,7 +1729,7 @@ export default function App() {
         <HealthDialog
           items={items}
           claudeOk={claudeOk}
-          onClose={() => setDialog(null)}
+          onClose={() => animateModalClose(() => setDialog(null))}
           onDelete={(targets) => {
             setConfirm({
               title: "清除失效项目",
@@ -1694,6 +1747,9 @@ export default function App() {
                 } catch (e) {
                   showToast("清除会话数据失败：" + String(e));
                 }
+                // 不包 animateModalClose：此刻栈顶是确认框自己，要动画的是它的
+                // setConfirm(null)（下方 ConfirmDialog 处）；这里硬清被压在遮罩
+                // 下面的健康弹窗，淡出的确认框会自然盖住这一瞬
                 setDialog(null);
               },
             });
@@ -1707,10 +1763,13 @@ export default function App() {
           message={confirm.message}
           okText={confirm.okText}
           danger={confirm.danger}
-          onCancel={() => setConfirm(null)}
+          onCancel={() => animateModalClose(() => setConfirm(null))}
           onOk={async () => {
             await confirm.onOk();
-            setConfirm(null);
+            // force：动作已成功、必须关——此刻 ConfirmDialog 的 busy 还是 true
+            // （handleOk 的 finally 未跑），不 force 会被 canClose 拦成
+            // 「按了不关、再按重跑一遍破坏性操作」（2026-09-26 code review）
+            animateModalClose(() => setConfirm(null), true);
           }}
         />
       )}
@@ -1719,13 +1778,13 @@ export default function App() {
         <SettingsDialog
           closeAction={closeAction}
           defaultInteraction={defaultInteraction}
-          onClose={() => setSettingsOpen(false)}
+          onClose={() => animateModalClose(() => setSettingsOpen(false))}
           onSave={async (action, interaction) => {
             setCloseAction(action);
             // 两种 tab 共存：改默认只影响之后新开的 tab，已开的不动（简报 §5）
             setDefaultInteraction(interaction);
             await persistConfig(order, pinnedSessions, dark, action, interaction);
-            setSettingsOpen(false);
+            animateModalClose(() => setSettingsOpen(false));
             showToast("设置已保存");
           }}
         />
@@ -1734,7 +1793,7 @@ export default function App() {
       {providerOpen && providerState && (
         <ProviderDialog
           state={providerState}
-          onClose={() => setProviderOpen(false)}
+          onClose={() => animateModalClose(() => setProviderOpen(false))}
           onChanged={setProviderState}
           toast={showToast}
         />
@@ -1743,14 +1802,14 @@ export default function App() {
       {renameTarget && (
         <RenameDialog
           sessionTitle={renameTarget.session.title}
-          onClose={() => setRenameTarget(null)}
+          onClose={() => animateModalClose(() => setRenameTarget(null))}
           onRenamed={renameSession}
         />
       )}
 
       {trashOpen && (
         <TrashDialog
-          onClose={() => setTrashOpen(false)}
+          onClose={() => animateModalClose(() => setTrashOpen(false))}
           // 恢复与彻底删除都要走这里：前者让被保留的置顶条目复活，后者要
           // 重新读盘同步被后端 prune 掉的死条目（详见 refreshAfterTrashChange）
           onChanged={refreshAfterTrashChange}
@@ -1758,16 +1817,18 @@ export default function App() {
         />
       )}
 
-      {statsOpen && <StatsDialog onClose={() => setStatsOpen(false)} />}
+      {statsOpen && <StatsDialog onClose={() => animateModalClose(() => setStatsOpen(false))} />}
 
       {closeChoiceOpen && (
         <CloseChoiceDialog
-          onClose={() => setCloseChoiceOpen(false)}
+          onClose={() => animateModalClose(() => setCloseChoiceOpen(false))}
           onChoose={handleCloseChoice}
         />
       )}
 
-      {toast && <div className="toast">{toast}</div>}
+      {toast && (
+        <div className={`toast${toastClosing ? " closing" : ""}`}>{toast}</div>
+      )}
     </div>
   );
 }

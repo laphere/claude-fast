@@ -76,27 +76,26 @@ export default function ModePicker({ value, options, extra, onChange }: Props) {
         </span>
       </button>
 
-      {open && (
-        <div className="mode-panel" role="listbox">
-          {items.map((o) => (
-            <button
-              key={o.value}
-              type="button"
-              role="option"
-              aria-selected={o.value === value}
-              className={`mode-item${o.value === value ? " active" : ""}`}
-              title={o.title}
-              disabled={value === null}
-              onClick={() => {
-                setOpen(false);
-                if (o.value !== value) onChange(o.value);
-              }}
-            >
-              {o.label}
-            </button>
-          ))}
-        </div>
-      )}
+      {/* 常驻挂载 + data-open 开合（CSS 播进出场）：关掉那 100ms 里仍渲染旧内容淡出 */}
+      <div className="mode-panel" data-open={open} role="listbox">
+        {items.map((o) => (
+          <button
+            key={o.value}
+            type="button"
+            role="option"
+            aria-selected={o.value === value}
+            className={`mode-item${o.value === value ? " active" : ""}`}
+            title={o.title}
+            disabled={value === null}
+            onClick={() => {
+              setOpen(false);
+              if (o.value !== value) onChange(o.value);
+            }}
+          >
+            {o.label}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }

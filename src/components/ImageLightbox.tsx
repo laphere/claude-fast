@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { useModalLayer } from "./Modal";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useModalLayer, MODAL_EXIT_MS } from "./Modal";
 import { ChevronLeftIcon, ChevronRightIcon, XIcon } from "./Icons";
 import type { ChatImage } from "../types";
 
@@ -30,6 +30,13 @@ export default function ImageLightbox({
 }) {
   const [idx, setIdx] = useState(startIndex);
   const [actual, setActual] = useState(false);
+  // 出场动画态：三条关闭路径先切 .closing（CSS 出场），MODAL_EXIT_MS 后才调
+  // onClose 让宿主清 preview 真卸载——条件渲染下没有「卸载后再播一段」的机会
+  const [closing, setClosing] = useState(false);
+  const closingRef = useRef(false);
+  const closeTimerRef = useRef<number | null>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
   // 列表在预览期间可能被清空/换掉（实时区刷新 → 重新读盘），索引按当前长度夹一次
   const i = Math.min(idx, images.length - 1);
   const hasPrev = i > 0;
@@ -40,7 +47,37 @@ export default function ImageLightbox({
     setActual(false); // 换图回到「适应窗口」，别把上一张的缩放态带过来
   };
 
-  useModalLayer(onClose, (e) => {
+  const close = useCallback(() => {
+    if (closingRef.current) return;
+    closingRef.current = true;
+    setClosing(true);
+    closeTimerRef.current = window.setTimeout(() => {
+      closeTimerRef.current = null;
+      onCloseRef.current();
+    }, MODAL_EXIT_MS);
+  }, []);
+
+  // 宿主在出场那 ~110ms 里换了预览目标（点开另一张图）→ 组件不卸载只换 props，
+  // 出场态必须复位，且**已排定的卸载定时器要清掉**——不清的话它照样触发 onClose，
+  // 把用户刚打开的新预览关掉（只翻 closing 标志是假保护，2026-09-26 code review）
+  useEffect(() => {
+    if (closeTimerRef.current !== null) {
+      window.clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+    }
+    closingRef.current = false;
+    setClosing(false);
+  }, [images, startIndex]);
+
+  // 卸载兜底：父级直接清 preview 时别让飞行中的定时器再回调
+  useEffect(
+    () => () => {
+      if (closeTimerRef.current !== null) window.clearTimeout(closeTimerRef.current);
+    },
+    [],
+  );
+
+  useModalLayer(close, (e) => {
     if (e.isComposing) return;
     if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
       const step = e.key === "ArrowLeft" ? -1 : 1;
@@ -56,11 +93,11 @@ export default function ImageLightbox({
 
   return (
     <div
-      className="overlay lightbox"
+      className={closing ? "overlay lightbox closing" : "overlay lightbox"}
       // 只在点遮罩本身时关（图片、按钮都不是遮罩）；用 target 判定而不是让子元素
       // 各自 stopPropagation —— 少一处忘了写就变成「点上一张/下一张顺手把预览关了」
       onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
+        if (e.target === e.currentTarget) close();
       }}
     >
       <img
@@ -95,7 +132,7 @@ export default function ImageLightbox({
           </span>
         </>
       )}
-      <button className="lightbox-close" title="关闭（Esc）" onClick={onClose}>
+      <button className="lightbox-close" title="关闭（Esc）" onClick={close}>
         <XIcon size={16} />
       </button>
     </div>

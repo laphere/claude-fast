@@ -21,6 +21,7 @@ import {
 } from "react";
 import { Channel } from "../lib/channel";
 import { api } from "../lib/api";
+import { viewTransition } from "../lib/view-transition";
 import AskQuestionCard, {
   parseAskQuestions,
   type AskQuestionItem,
@@ -458,6 +459,11 @@ export default function ChatView({
   /** 首次发送前的启动 promise（懒启动：第一条消息才 spawn 进程） */
   const startPromiseRef = useRef<Promise<string> | null>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
+  /** 本 ChatView 根节点：Esc 守卫查 picker// 面板时**限定在本页**——其他保活 tab
+   *  （display:none）里残留的 data-open 面板不该拦住本页的 Esc（2026-09-26 code review：
+   *  .cmd-panel 没有 outside-click 关闭，切 tab 后会残留；App 级右键菜单挂在本组件外，
+   *  仍走全局查） */
+  const rootRef = useRef<HTMLDivElement>(null);
   /** 初始加载完成后滚动到底部 */
   const scrollToBottomRef = useRef(true);
   /** 是否跟随底部（sticky-bottom）：内容更新后要不要把视图拽到末尾。
@@ -1338,9 +1344,17 @@ export default function ChatView({
       if (!isBusy(status) || plan?.source === "native") return;
       if (isModalOpen()) return;
       if (permissions.length > 0 || question) return;
-      // 右键菜单（三个组件各自管）、权限档位下拉（ModePicker/ModelPicker）、/ 命令补全
-      // 面板都没有共享状态可查，只能问 DOM
-      if (document.querySelector(".context-menu, .mode-panel, .cmd-panel")) return;
+      // 右键菜单（App 级渲染、挂在本组件外）只能全局查；权限档位下拉与 / 补全面板
+      // 查**本 ChatView 根**——其他保活 tab（display:none）里残留的 data-open 面板
+      // 不该拦本页的 Esc（.cmd-panel 无 outside-click 关闭，切 tab 后会残留）。
+      // ⚠️ 两类弹层都是常驻挂载 + data-open 开合，裸查类名永远命中
+      if (document.querySelector('.context-menu[data-open="true"]')) return;
+      if (
+        rootRef.current?.querySelector(
+          '.mode-panel[data-open="true"], .cmd-panel[data-open="true"]',
+        )
+      )
+        return;
       const t = e.target as HTMLElement | null;
       const tag = t?.tagName;
       if (
@@ -2224,7 +2238,7 @@ export default function ChatView({
   };
 
   return (
-    <div className={`chat${plan && planExpanded ? " plan-expanded" : ""}`}>
+    <div ref={rootRef} className={`chat${plan && planExpanded ? " plan-expanded" : ""}`}>
       <div className="chat-head">
         <div className="chat-head-body">
           <div className="viewer-title">{title}</div>
@@ -2275,15 +2289,17 @@ export default function ChatView({
                 >
                   <DownloadIcon size={15} />
                 </button>
-                {exportMenuOpen && (
-                  <>
-                    <div className="menu-overlay" onClick={() => setExportMenuOpen(false)} />
-                    <div className="export-menu">
-                      <button onClick={() => void doExport("markdown")}>Markdown 文档</button>
-                      <button onClick={() => void doExport("jsonl")}>JSONL（原文）</button>
-                    </div>
-                  </>
-                )}
+                {/* 导出下拉：常驻挂载 + data-open 开合（同三套右键菜单，见 styles.css
+                    .export-menu）；.menu-overlay 只管点外关闭，无需动画 */}
+                <div
+                  className="menu-overlay"
+                  data-open={exportMenuOpen}
+                  onClick={() => setExportMenuOpen(false)}
+                />
+                <div className="export-menu" data-open={exportMenuOpen}>
+                  <button onClick={() => void doExport("markdown")}>Markdown 文档</button>
+                  <button onClick={() => void doExport("jsonl")}>JSONL（原文）</button>
+                </div>
               </div>
               <button
                 className="icon-btn"
@@ -2440,8 +2456,10 @@ export default function ChatView({
           </div>
         )}
 
-        {filesOpen && (
-          <div className="viewer-files">
+        {/* 变更文件面板 = 抽屉（常驻挂载 + class 开合，见 styles.css .viewer-files）：
+            开关是 220px 宽度过渡，内层定宽不重排 */}
+        <div className={`viewer-files${filesOpen ? "" : " viewer-files-collapsed"}`}>
+          <div className="viewer-files-inner">
             <div className="files-head">
               <span>
                 变更文件 <span className="files-count">{changedFiles.length}</span>
@@ -2497,7 +2515,7 @@ export default function ChatView({
               )}
             </div>
           </div>
-        )}
+          </div>
       </div>
 
       {(permissions.length > 0 || question || plan) && (
@@ -2556,7 +2574,9 @@ export default function ChatView({
                 <button
                   type="button"
                   className="icon-btn icon-btn-sm"
-                  onClick={() => setPlanExpanded((v) => !v)}
+                  /* 阅读模式 = 大块区域 display 翻转，走 View Transition 快照 crossfade
+                     （lib/view-transition.ts）——CSS 高度动画会让几百条消息每帧 reflow */
+                  onClick={() => viewTransition(() => setPlanExpanded((v) => !v))}
                   aria-label={planExpanded ? "收起方案" : "展开方案"}
                   title={
                     planExpanded
@@ -2653,40 +2673,39 @@ export default function ChatView({
         {/* 卡片：输入框在上、控件在下（高度与宽度由 .composer-card / .chat-input 给） */}
         <div className="composer-card">
           {/* `/` 命令补全面板（supportedCommands() 的数据源，进程起来后可用）。
-              挂在卡片里、向上弹——与 ModePicker 的 .mode-panel 同一方向语言 */}
-          {cmdOpen && (
-            <div className="cmd-panel" role="listbox">
-              {cmdList.map((c, i) => {
-                const sel = i === Math.min(cmdIdx, cmdList.length - 1);
-                return (
-                  <button
-                    key={`${i}-${c.name}`}
-                    ref={sel ? cmdActiveRef : null}
-                    type="button"
-                    role="option"
-                    aria-selected={sel}
-                    className={`cmd-item${sel ? " active" : ""}`}
-                    title={c.description}
-                    // mousedown 先于 blur：拦掉默认行为，点选项不丢输入框焦点
-                    onMouseDown={(e) => e.preventDefault()}
-                    onClick={() => {
-                      // ⚠️ 采纳**不补尾随空格**（旧写法 `/${name} `）：实测 `/code-review `
-                      // 带空格时 CLI 根本不认它是命令，模型会把它当「一个路径」去瞎探索、
-                      // 技能一次都不调（2026-09-25 探针）。改用 cmdDismissed 关面板，
-                      // 语义与 Esc 收起一致，发出的就是裸命令
-                      setInput(`/${c.name}`);
-                      setCmdDismissed(true);
-                      inputRef.current?.focus();
-                    }}
-                  >
-                    <span className="cmd-name">/{c.name}</span>
-                    {c.argumentHint && <span className="cmd-arg">{c.argumentHint}</span>}
-                    <span className="cmd-desc">{c.description}</span>
-                  </button>
-                );
-              })}
-            </div>
-          )}
+              挂在卡片里、向上弹——与 ModePicker 的 .mode-panel 同一方向语言。
+              常驻挂载 + data-open 开合（CSS 播进出场），Esc 守卫查的也是 data-open */}
+          <div className="cmd-panel" data-open={cmdOpen} role="listbox">
+            {cmdList.map((c, i) => {
+              const sel = i === Math.min(cmdIdx, cmdList.length - 1);
+              return (
+                <button
+                  key={`${i}-${c.name}`}
+                  ref={sel ? cmdActiveRef : null}
+                  type="button"
+                  role="option"
+                  aria-selected={sel}
+                  className={`cmd-item${sel ? " active" : ""}`}
+                  title={c.description}
+                  // mousedown 先于 blur：拦掉默认行为，点选项不丢输入框焦点
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => {
+                    // ⚠️ 采纳**不补尾随空格**（旧写法 `/${name} `）：实测 `/code-review `
+                    // 带空格时 CLI 根本不认它是命令，模型会把它当「一个路径」去瞎探索、
+                    // 技能一次都不调（2026-09-25 探针）。改用 cmdDismissed 关面板，
+                    // 语义与 Esc 收起一致，发出的就是裸命令
+                    setInput(`/${c.name}`);
+                    setCmdDismissed(true);
+                    inputRef.current?.focus();
+                  }}
+                >
+                  <span className="cmd-name">/{c.name}</span>
+                  {c.argumentHint && <span className="cmd-arg">{c.argumentHint}</span>}
+                  <span className="cmd-desc">{c.description}</span>
+                </button>
+              );
+            })}
+          </div>
           <textarea
             ref={inputRef}
             className="chat-input"

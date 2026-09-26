@@ -137,47 +137,46 @@ export default function ModelPicker({ sessionId, modelName }: Props) {
         </span>
       </button>
 
-      {open && (
-        <div className="mode-panel" role="listbox">
-          {loading && <div className="mode-hint">拉取模型表…</div>}
-          {!loading && error && <div className="mode-hint mode-hint-error">切换失败：{error}</div>}
-          {!loading && !error && models === null && (
-            <div className="mode-hint">发送首条消息后可选模型</div>
-          )}
-          {!loading && models !== null && models.length === 0 && (
-            <div className="mode-hint">CLI 未返回可选模型</div>
-          )}
-          {models?.map((m) => {
-            const isCustom = !ALIAS_SLOTS.has(m.value) && m.value !== "default";
-            return (
-              <button
-                key={m.value}
-                type="button"
-                role="option"
-                aria-selected={active(m)}
-                className={`mode-item${active(m) ? " active" : ""}`}
-                title={isCustom ? `自定义模型：${m.value}` : m.description || m.value}
-                onClick={() => pick(m)}
-              >
-                {/* 槽位名打头：供应商把多个槽位映射到同一模型时（本机 opus/fable/sonnet
-                    都是 deepseek-v4.1-flash[1M]，`*_MODEL_NAME` 又写成同一个名字），
-                    只按 displayName + resolvedModel 渲染会出现三行**逐字相同**、
-                    根本分不清点的是哪个（2026-09-24 用户实测反馈） */}
-                <span className="model-slot">{slotLabel(m.value)}</span>
-                <span className="mode-item-main">
-                  {/* 自定义行：value 就是模型 id，拿它当主标签（CLI 给的 displayName 是
-                      `deepseek-v4.1-flash`、description 是英文 Custom model，照原样显示
-                      既有英文又和解析值重复 → 一行里三个近似串） */}
-                  <span className="model-name">{isCustom ? m.value : m.displayName}</span>
-                  {!isCustom && m.resolvedModel != null && m.resolvedModel !== m.displayName && (
-                    <span className="model-resolved">{m.resolvedModel}</span>
-                  )}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-      )}
+      {/* 常驻挂载 + data-open 开合（CSS 播进出场）：关掉那 100ms 里仍渲染旧内容淡出 */}
+      <div className="mode-panel" data-open={open} role="listbox">
+        {loading && <div className="mode-hint">拉取模型表…</div>}
+        {!loading && error && <div className="mode-hint mode-hint-error">切换失败：{error}</div>}
+        {!loading && !error && models === null && (
+          <div className="mode-hint">发送首条消息后可选模型</div>
+        )}
+        {!loading && models !== null && models.length === 0 && (
+          <div className="mode-hint">CLI 未返回可选模型</div>
+        )}
+        {models?.map((m) => {
+          const isCustom = !ALIAS_SLOTS.has(m.value) && m.value !== "default";
+          return (
+            <button
+              key={m.value}
+              type="button"
+              role="option"
+              aria-selected={active(m)}
+              className={`mode-item${active(m) ? " active" : ""}`}
+              title={isCustom ? `自定义模型：${m.value}` : m.description || m.value}
+              onClick={() => pick(m)}
+            >
+              {/* 槽位名打头：供应商把多个槽位映射到同一模型时（本机 opus/fable/sonnet
+                  都是 deepseek-v4.1-flash[1M]，`*_MODEL_NAME` 又写成同一个名字），
+                  只按 displayName + resolvedModel 渲染会出现三行**逐字相同**、
+                  根本分不清点的是哪个（2026-09-24 用户实测反馈） */}
+              <span className="model-slot">{slotLabel(m.value)}</span>
+              <span className="mode-item-main">
+                {/* 自定义行：value 就是模型 id，拿它当主标签（CLI 给的 displayName 是
+                    `deepseek-v4.1-flash`、description 是英文 Custom model，照原样显示
+                    既有英文又和解析值重复 → 一行里三个近似串） */}
+                <span className="model-name">{isCustom ? m.value : m.displayName}</span>
+                {!isCustom && m.resolvedModel != null && m.resolvedModel !== m.displayName && (
+                  <span className="model-resolved">{m.resolvedModel}</span>
+                )}
+              </span>
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }

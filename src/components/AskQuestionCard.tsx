@@ -374,6 +374,10 @@ export default function AskQuestionCard({ items, busy, onSubmit, onCancel, onDis
         </button>
       </div>
 
+      {/* 折叠区（P2）：grid 0fr↔1fr 高度过渡，「藏而不卸」铁律不变（见 styles.css
+          .ask-collapse）——收起动画期间逐题答案仍挂载在组件 state 里 */}
+      <div className="ask-collapse">
+        <div className="ask-collapse-inner">
       <div className="ask-tabs">
         {items.map((it, i) => {
           const answered = answerOf(it) !== "";
@@ -569,6 +573,8 @@ export default function AskQuestionCard({ items, busy, onSubmit, onCancel, onDis
               ? "Enter 选中即提交 · ↑↓ 选择 · Esc 取消"
               : "Enter 选中 · ↑↓ 选择 · Tab/←→ 切题 · Esc 取消"}
         </span>
+        </div>
+        </div>
       </div>
     </div>
   );

@@ -11,6 +11,8 @@
 import { useEffect, useRef } from "react";
 
 interface Props {
+  /** 菜单是否打开（组件常驻挂载，data-open 驱动 CSS 进出场，见 ContextMenu 注释） */
+  open: boolean;
   x: number;
   y: number;
   /** 右键命中的 tab（null = 点在 tab 栏背景上，「关闭其他会话」只是不渲染）；
@@ -39,6 +41,7 @@ interface Props {
 }
 
 export default function TabContextMenu({
+  open,
   x,
   y,
   tabId,
@@ -54,13 +57,17 @@ export default function TabContextMenu({
   onCloseAll,
 }: Props) {
   const ref = useRef<HTMLDivElement>(null);
+  // onClose 走 ref（宿主传内联箭头）：监听只随 open 挂卸，不随渲染重挂
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   useEffect(() => {
+    if (!open) return;
     const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+      if (ref.current && !ref.current.contains(e.target as Node)) onCloseRef.current();
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") onCloseRef.current();
     };
     window.addEventListener("mousedown", onDown);
     window.addEventListener("keydown", onKey);
@@ -68,13 +75,14 @@ export default function TabContextMenu({
       window.removeEventListener("mousedown", onDown);
       window.removeEventListener("keydown", onKey);
     };
-  }, [onClose]);
+  }, [open]);
 
   const skipTip = skippedCount > 0 ? "进行中的会话不会关闭" : undefined;
 
   return (
     <div
       className="context-menu"
+      data-open={open}
       ref={ref}
       style={{
         left: Math.min(x, window.innerWidth - 230),

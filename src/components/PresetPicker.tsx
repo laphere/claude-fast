@@ -77,7 +77,9 @@ export default function PresetPicker({ value, onChange }: Props) {
         </span>
       </button>
 
-      {open && (
+      {/* 常驻挂载 + class 开合（grid 0fr↔1fr 高度过渡，见 styles.css .preset-panel-wrap）：
+          表单内的流式展开块，不是浮层 */}
+      <div className={`preset-panel-wrap${open ? " open" : ""}`}>
         <div className="preset-panel">
           <input
             ref={searchRef}
@@ -114,7 +116,7 @@ export default function PresetPicker({ value, onChange }: Props) {
             )}
           </div>
         </div>
-      )}
+      </div>
     </div>
   );
 }

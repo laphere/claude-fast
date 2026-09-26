@@ -1,5 +1,5 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import Modal, { useModalLayer } from "./Modal";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import Modal, { useModalLayer, animateModalClose, MODAL_EXIT_MS } from "./Modal";
 import ConfirmDialog from "./ConfirmDialog";
 import PresetPicker, { CATEGORY_LABEL } from "./PresetPicker";
 import {
@@ -280,13 +280,25 @@ function JsonExpandOverlay({
   onChange: (v: string) => void;
   onClose: () => void;
 }) {
-  useModalLayer(onClose);
+  // 出场动画：先切 .closing 播 CSS 出场，MODAL_EXIT_MS 后才调 onClose 真卸载
+  const [closing, setClosing] = useState(false);
+  const closingRef = useRef(false);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  const close = useCallback(() => {
+    if (closingRef.current) return;
+    closingRef.current = true;
+    setClosing(true);
+    window.setTimeout(() => onCloseRef.current(), MODAL_EXIT_MS);
+  }, []);
+
+  useModalLayer(close);
   return (
     <div
-      className="overlay json-editor-overlay"
+      className={closing ? "overlay json-editor-overlay closing" : "overlay json-editor-overlay"}
       // 只在点遮罩本身时关（与图片预览同款 target 判定）
       onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
+        if (e.target === e.currentTarget) close();
       }}
     >
       <div className="json-editor-panel">
@@ -296,7 +308,7 @@ function JsonExpandOverlay({
             <span className="json-editor-hint">
               Esc 返回，改动实时同步
             </span>
-            <button className="btn btn-primary" onClick={onClose}>
+            <button className="btn btn-primary" onClick={close}>
               完成
             </button>
           </span>
@@ -392,7 +404,8 @@ export default function ProviderDialog({ state, onClose, onChanged, toast }: Pro
   const doDelete = async () => {
     if (!confirmDelete) return;
     const p = confirmDelete;
-    setConfirmDelete(null);
+    // force：此刻确认框的 busy 为 true（动作路径），不 force 会被 canClose 拦下
+    animateModalClose(() => setConfirmDelete(null), true);
     setBusy(true);
     try {
       const list = await api.providerDelete(p.id);
@@ -1244,7 +1257,7 @@ export default function ProviderDialog({ state, onClose, onChanged, toast }: Pro
           message={`确定删除「${confirmDelete.name}」吗？其配置（含 API Key）将从清单中移除。`}
           okText="删除"
           danger
-          onCancel={() => setConfirmDelete(null)}
+          onCancel={() => animateModalClose(() => setConfirmDelete(null))}
           onOk={doDelete}
         />
       )}

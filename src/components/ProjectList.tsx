@@ -1,7 +1,8 @@
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import type { DragEvent } from "react";
 import type { Project, SessionInfo } from "../types";
 import { FolderIcon, MoreIcon, PinIcon, PlusIcon } from "./Icons";
+import { useFlip } from "../lib/flip";
 
 interface Props {
   items: Project[];
@@ -61,6 +62,17 @@ export default function ProjectList({
   onContextMenu,
 }: Props) {
   // ---------- 全局拖拽排序（仅临时视觉状态，顺序真源在 App 的 order 数组）----------
+
+  const listRef = useRef<HTMLDivElement>(null);
+  // FLIP 让位：拖拽落位 / 移到最前 / 删除项目后，其余行平滑滑到新位；展开/收起把
+  // 下方行推下去收上来（所以签名里带 expandedKey——它改行高、同样产生位移）。
+  // 搜索过滤期间 enabled=false：逐键重排，播了反而抖，只记基线
+  useFlip(
+    listRef,
+    ".row-wrap",
+    items.map((l) => l.key).join("\u0000") + "\u0000" + (expandedKey ?? ""),
+    dragEnabled,
+  );
 
   /** 正在拖拽的项目 key */
   const [dragKey, setDragKey] = useState<string | null>(null);
@@ -128,7 +140,7 @@ export default function ProjectList({
   }
 
   return (
-    <div className="list">
+    <div className="list" ref={listRef}>
       {items.map((l) => {
         const showDrop = overKey === l.key && l.key !== dragKey;
         const isSelected = l.key === selectedKey;

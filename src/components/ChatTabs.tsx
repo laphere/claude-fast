@@ -14,6 +14,7 @@ import type { DragEvent, WheelEvent } from "react";
 import { TerminalIcon, XIcon } from "./Icons";
 import { isBusyPhase } from "../App";
 import type { ContentTab } from "../App";
+import { useFlip } from "../lib/flip";
 
 interface Props {
   tabs: ContentTab[];
@@ -35,6 +36,10 @@ export default function ChatTabs({
   onReorder,
 }: Props) {
   const barRef = useRef<HTMLDivElement>(null);
+
+  // FLIP 让位：拖拽调序落位 / 关 tab 后，其余 tab 平滑滑到新位。
+  // 签名只认 id 顺序（phase/标题变宽不经签名，但基线每轮都刷新，见 lib/flip.ts）
+  useFlip(barRef, ".chat-tab", tabs.map((t) => t.id).join("\u0000"), true);
 
   /** 垂直滚轮转为 tab 栏横向滚动（VS Code 式；无需 preventDefault——
    *  容器 overflow-y hidden，原生竖向滚动本就无路可走） */
