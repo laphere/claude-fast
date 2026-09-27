@@ -22,6 +22,10 @@ function formatDeletedAt(ts: string): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+/** 确认态 4s 无人点自动收回（对齐「撤销本轮改动」的行内二次确认语义）：
+ *  红色确认态若一直挂着，用户隔一阵回来误点一下就直接执行了 */
+const CONFIRM_REVERT_MS = 4000;
+
 /** 回收站：删除的会话备份在这里，可恢复或永久删除（永久删除需行内二次确认） */
 export default function TrashDialog({ onClose, onChanged, onToast }: Props) {
   const [items, setItems] = useState<TrashedSession[] | null>(null);
@@ -45,6 +49,20 @@ export default function TrashDialog({ onClose, onChanged, onToast }: Props) {
   useEffect(() => {
     load();
   }, [load]);
+
+  // 确认态 4s 无人点自动收回（行内与底部同语义）；该行忙时不收，
+  // 操作失败回来（confirmPurgeAll 仍为 true）会重新计时
+  useEffect(() => {
+    if (!confirmPurge || busy === confirmPurge) return;
+    const t = setTimeout(() => setConfirmPurge(null), CONFIRM_REVERT_MS);
+    return () => clearTimeout(t);
+  }, [confirmPurge, busy]);
+
+  useEffect(() => {
+    if (!confirmPurgeAll || busyAll) return;
+    const t = setTimeout(() => setConfirmPurgeAll(false), CONFIRM_REVERT_MS);
+    return () => clearTimeout(t);
+  }, [confirmPurgeAll, busyAll]);
 
   const restore = async (item: TrashedSession) => {
     setBusy(item.file);
@@ -122,23 +140,17 @@ export default function TrashDialog({ onClose, onChanged, onToast }: Props) {
                   >
                     {busy === item.file ? "处理中…" : "恢复"}
                   </button>
-                  {confirmPurge === item.file ? (
-                    <button
-                      className="btn btn-danger"
-                      disabled={busy === item.file}
-                      onClick={() => purge(item)}
-                    >
-                      确认永久删除？
-                    </button>
-                  ) : (
-                    <button
-                      className="btn trash-purge"
-                      disabled={busy === item.file}
-                      onClick={() => setConfirmPurge(item.file)}
-                    >
-                      永久删除
-                    </button>
-                  )}
+                  {/* 确认态与闲置态共用 trash-purge（等宽，见 CSS min-width 注释），
+                      只叠 btn-danger 换色——按钮不变大，防误触靠两步分离+红色 */}
+                  <button
+                    className={`btn trash-purge ${confirmPurge === item.file ? "btn-danger" : ""}`}
+                    disabled={busy === item.file}
+                    onClick={() =>
+                      confirmPurge === item.file ? purge(item) : setConfirmPurge(item.file)
+                    }
+                  >
+                    {confirmPurge === item.file ? "确认永久删除？" : "永久删除"}
+                  </button>
                 </div>
               </div>
             ))}
@@ -146,23 +158,16 @@ export default function TrashDialog({ onClose, onChanged, onToast }: Props) {
         )}
         {items !== null && items.length > 0 && (
           <div className="trash-toolbar">
-            {confirmPurgeAll ? (
-              <button
-                className="btn btn-danger"
-                disabled={busyAll}
-                onClick={() => purgeAll()}
-              >
-                {busyAll ? "清空中…" : `确认清空？${items.length} 个会话将不可恢复`}
-              </button>
-            ) : (
-              <button
-                className="btn trash-purge"
-                disabled={busyAll}
-                onClick={() => setConfirmPurgeAll(true)}
-              >
-                清空回收站
-              </button>
+            {confirmPurgeAll && (
+              <span className="trash-toolbar-warn">{items.length} 个会话将不可恢复</span>
             )}
+            <button
+              className={`btn trash-purge ${confirmPurgeAll ? "btn-danger" : ""}`}
+              disabled={busyAll}
+              onClick={() => (confirmPurgeAll ? purgeAll() : setConfirmPurgeAll(true))}
+            >
+              {busyAll ? "清空中…" : confirmPurgeAll ? "确认清空？" : "清空回收站"}
+            </button>
           </div>
         )}
         <div className="trash-hint">

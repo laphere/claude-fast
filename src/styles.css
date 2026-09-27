@@ -2448,7 +2448,8 @@ mark {
 
 .trash-restore {
   flex-shrink: 0;
-  /* 同 .btn-sm 那一档（11.5px + line-height:1）：上少下多抵消字形墨迹偏低 */
+  /* 11.5px + line-height:1 档（原与 .btn-sm 同款，那边已改定高 26px）：
+     上少下多抵消字形墨迹偏低 */
   padding: 4.5px 12px 5.5px;
   font-size: 11.5px;
 }
@@ -2458,12 +2459,24 @@ mark {
   /* 同 .trash-restore */
   padding: 4.5px 12px 5.5px;
   font-size: 11.5px;
+  /* 确认态与闲置态共用本类（btn-danger 只管配色），按更长的确认态文案定宽
+     （「确认永久删除？」8 全角 × 11.5px + 24px padding + 2px border ≈ 118px）：
+     两态等宽等高，切换不变大、不挤压同行标题 */
+  min-width: 118px;
 }
 
 .trash-toolbar {
   display: flex;
   justify-content: flex-end;
+  align-items: center;
   margin-top: 10px;
+}
+
+/* 清空确认态的后果提示：放按钮旁固定位置，替代把长文案塞进按钮使其变宽 */
+.trash-toolbar-warn {
+  margin-right: 10px;
+  color: var(--danger);
+  font-size: 11.5px;
 }
 
 .trash-empty {
@@ -5100,11 +5113,15 @@ mark {
 
 /* ============ 小号按钮（卡片操作行） ============ */
 .btn-sm {
-  /* 同 .btn 改对称，但这一档要多让半像素：11.5px 的字形墨迹本身比行盒中心低
-     约 1 物理 px（字体在 17.25ppem 下的栅格化，跨 dpr 实测 1.25/1.5/2 三档一致），
-     故上 4.5 / 下 5.5 抵消（原来是反方向的 6/4，合起来偏下 2~2.5 物理 px，
-     就是用户看到的那颗「启用」按钮字偏下的根因）。 */
-  padding: 4.5px 10px 5.5px;
+  /* 与卡片操作行的 .icon-btn-sm 同高（26px）：**定高 + flex 居中**。11.5px 的字在
+     ~23px 高的按钮里 raster 像素行太少，靠 padding 半像素凑中心肉眼仍见偏
+     （2026-09-26 用户实测「启用」不居中）——加高到 26px 并把行盒交给 flex 摆正，
+     同时消掉与右侧复制/编辑/删除三颗图标钮的高度差。
+     padding 底部那 1.5px 是微调：11.5px 墨迹在行盒内略偏低，flex 居中后留一点
+     下 padding 抬回（1.25 与 1.5 各档渲染逐像素相同，光栅吸附；跨 dpr
+     1/1.25/1.5/2 实测 dy 全档 ±0.5 物理 px = 非整数 dpr 的物理下限） */
+  height: 26px;
+  padding: 0 10px 1.5px;
   font-size: 11.5px;
 }
 
