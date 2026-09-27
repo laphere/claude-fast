@@ -798,7 +798,11 @@ export default function App() {
       updateTabs((prev) =>
         prev.map((c) => {
           if (c.kind !== "chat" || !c.session || c.session.file !== session.file) return c;
-          return { ...c, session: { ...c.session, title: newTitle }, title: newTitle };
+          return {
+            ...c,
+            session: { ...c.session, title: newTitle, titleFromPrompt: false },
+            title: newTitle,
+          };
         }),
       );
       // 重命名后刷新该项目会话列表（若仍处于展开状态）
@@ -863,6 +867,8 @@ export default function App() {
                 session: {
                   sessionId,
                   title: meta.title,
+                  /** 兜底档标记：真标题到位前由下方的标题补挂轮询盯着会话文件 */
+                  titleFromPrompt: meta.titleFromPrompt,
                   summary: "",
                   lastModified: Date.now(),
                   file: meta.file,
@@ -879,16 +885,23 @@ export default function App() {
   /** 新会话的 AI 标题到位（后端向 CLI 要来的，已落进 jsonl）：tab 名与左栏那条一起换。
    *  · 未收编（`tab.session` 为 null）时什么都不做：此刻它还没有会话文件，收编轮询下一次
    *    tick 读到的就是刚落盘的 ai-title，收编带的标题本来就是它——两条时序都收敛。
-   *  · 标题没变就不 setState（与 setTabTitle 同口径：避免无谓重渲染 + 列表重读）。 */
+   *  · 标题没变就不 setState（与 setTabTitle 同口径：避免无谓重渲染 + 列表重读）。
+   *    ⚠️ 但「没变」里要排掉「还挂着兜底档标记」那种：名字恰好相同也得进去把
+   *    `titleFromPrompt` 清掉，否则下方补挂轮询会一直盯着这个 tab（永远消不掉）。
+   *  · 真标题到位即清 `titleFromPrompt`：此后补挂轮询不再管这个 tab。 */
   const applyChatTitle = useCallback(
     (tabId: string, title: string) => {
       const tab = tabsRef.current.find((t) => t.id === tabId);
       if (!tab || tab.kind !== "chat" || !tab.session) return;
-      if (tab.title === title && tab.session.title === title) return;
+      if (tab.title === title && tab.session.title === title && !tab.session.titleFromPrompt) return;
       updateTabs((prev) =>
         prev.map((t) =>
           t.id === tabId && t.kind === "chat" && t.session
-            ? { ...t, title, session: { ...t.session, title } }
+            ? {
+                ...t,
+                title,
+                session: { ...t.session, title, titleFromPrompt: false },
+              }
             : t,
         ),
       );
@@ -896,6 +909,60 @@ export default function App() {
     },
     [updateTabs, refreshSessionsForPath],
   );
+
+  /** 待补真标题的对话 tab：已收编（有会话文件）但标题还停在「首条用户消息」那档兜底
+   *  （`session.titleFromPrompt`），CLI 起的名字还在路上——可能是 CLI 自己落的 ai-title
+   *  （2.1.283 起 SDK 会话也会自动落，时点在第二轮），也可能永远不来（老 CLI 单轮会话）。
+   *  收编时存的标记就是「此刻 jsonl 里只有兜底档」。
+   *  ⚠️ 排除只读 tab：它没有进程、不会有起名事件，jsonl 侧也基本不会再变——留着它
+   *  只是一个每 3s 白读一次文件的常驻定时器（真要变了，左栏聚焦刷新会治好列表，
+   *  只读页本就「保持过期优于打扰阅读」）。转成可发言（readOnly 摘掉）自然回到待办。 */
+  const pendingChatTitleTabs = tabs
+    .filter(
+      (t): t is ContentTab & { kind: "chat"; session: SessionInfo } =>
+        t.kind === "chat" && !t.readOnly && !!t.session && t.session.titleFromPrompt === true,
+    )
+    .map((t) => ({
+      id: t.id,
+      projectPath: t.projectPath,
+      sessionId: t.session.sessionId,
+    }));
+  const pendingChatTitleKey = pendingChatTitleTabs.map((t) => t.id).join(",");
+  // 轮询里取最新待办：清单随每次渲染重算，但 effect 不该跟着重订阅（那样每 3s 重建定时器）
+  const pendingChatTitleRef = useRef(pendingChatTitleTabs);
+  pendingChatTitleRef.current = pendingChatTitleTabs;
+
+  /** 标题补挂（与内嵌终端那条同策略）：每 3s 回来读一次会话文件，拿到真标题就换 tab 名
+   *  并定稿（`titleFromPrompt` 一清，这个 tab 就退出待办清单、轮询随之停）。
+   *  ⚠️ 判据是**会话文件本身**、不是左栏列表：列表只在本项目展开时刷新（窗口聚焦只刷
+   *  展开项），拿它当数据源的话，在别的项目里开的新对话（本项目已折叠）永远等不到换名
+   *  ——「无事件的标题变化」正是这条轮询唯一要兜的场景（2026-09-27 code review 发现）。
+   *  `titleFromPrompt` 为真时不采纳：那时文件里还只有首条用户消息，亮到 tab 上就是一整条
+   *  长文本先露脸再被替换（2026-09-22 用户实测反馈）。代价：后端读 jsonl 首尾各 64KB
+   *  （同一份文件反复读，OS 页缓存里几乎免费；与内嵌终端那条补挂同量级）；**不设次数
+   *  上限**——放弃了就再没有第二次机会（与收编轮询同一口径）。 */
+  useEffect(() => {
+    if (pendingChatTitleKey === "") return;
+    let disposed = false;
+    const tick = async () => {
+      for (const t of pendingChatTitleRef.current) {
+        if (disposed) continue;
+        try {
+          const meta = await api.chatSessionMeta(t.projectPath, t.sessionId);
+          if (disposed || !meta || meta.titleFromPrompt) continue;
+          applyChatTitle(t.id, meta.title);
+        } catch {
+          /* 读失败（瞬态）：下一轮再试 */
+        }
+      }
+    };
+    const timer = window.setInterval(() => void tick(), 3000);
+    void tick();
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [pendingChatTitleKey, applyChatTitle]);
 
   // ---------- 窗口过窄自动收起左栏 ----------
 

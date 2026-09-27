@@ -376,6 +376,12 @@ export function titleDescriptionFor(
   return t.length > TITLE_DESCRIPTION_MAX ? t.slice(0, TITLE_DESCRIPTION_MAX) : t;
 }
 
+/** 标题最多问几次（见 ChatSession.titleAskCount）：第一次在首轮 init，null 则下轮 init 补问一次。
+ *  封顶是为了兜住「CLI 永远回 null」的会话（如纯命令轮）——null 本身不花模型调用，
+ *  但第二次起就是真实调用了，不能再往上加。补问的**档位**按轮发放（见 roundIndex）：
+ *  同一轮内的多帧 init（切模型会补发）不重复问、也不占预算。 */
+export const TITLE_MAX_ASKS = 2;
+
 // ---------------- 翻译层（SdkMessageTranslator，纯逻辑可测） ----------------
 
 /** 流式期间正在组装的内容块 */
@@ -917,11 +923,33 @@ class ChatSession {
   private resumeId?: string;
   /** 本 sitting 第一条非空用户文本（新建会话的 AI 标题拿它当描述；续聊不记） */
   private firstPromptText: string | null = null;
-  /** 标题只问一次：init 每轮开头都发（session_ready 每轮都会有），不问一次就每轮起一次名 */
-  private titleAsked = false;
+  /** 已问过几次标题（≤ TITLE_MAX_ASKS）。第一次在首轮 init；若 CLI 回 null
+   *  （2026-09-27 实测 2.1.283：会话还没有可起名的内容时**秒回 null**——resolve 而非
+   *  reject、不落盘、不花模型调用），下一轮 init 再补问一次；那也是 CLI 放行起名的
+   *  首个时点（轮末问同样 null）。老 CLI（2.1.278）init 时点直接成功，只走第一次。 */
+  private titleAskCount = 0;
+  /** 已完成的轮数（每次 turn_end 自增）。
+   *  ⚠️ 补问的档位按**轮**发放、不按 init 帧数：同一轮内可能收到多帧 init——切模型
+   *  （`setModel` 成功后 CLI 立即补发一帧 init，见 ChatSession.setModel）与 `setModel(undefined)`
+   *  都会发（docs/agent-sdk-capabilities.md §6.13 实测）。按帧计数时，2.1.283 下
+   *  「首轮必回 null」+ 用户在首轮内换一次模型 = 两次预算在**同一轮内**烧光，
+   *  第二轮的补问永不发生、标题永远停在兜底档（2026-09-27 code review 发现）。 */
+  private roundIndex = 0;
+  /** 上一次发起起名时处于第几轮（-1 = 还没问过）：`>= roundIndex` 即「本轮已问过」 */
+  private titleAskRound = -1;
+  /** 起名请求在飞（发出到返回之间）：补问窗口撞上第二帧/第二轮 init 时若再问一次，
+   *  就白花一次模型调用、还可能落两条 `ai-title`——两条不同名时列表取最后一条、
+   *  tab 取最后到达的事件，而那时 `titleFromPrompt` 已被清掉、对账也不再纠正，
+   *  tab 与左栏就永久对不上（2026-09-27 code review 发现）。 */
+  private titleAsking = false;
+  /** 起名终态（拿到真名 / 真失败）：到了就不再问——已有标题时 CLI 虽幂等秒回，
+   *  也是白跑一趟控制往返。 */
+  private titleDone = false;
   /** 正在起名（发出去到结果回来之间为真）。`list_sessions` 据此把这条会话从列表里滤掉：
    *  它此刻的标题还只是「首条用户消息」那档兜底，显示了会先闪一下完整首条消息、再被
-   *  CLI 起的名字替换（2026-09-22 用户实测反馈）。 */
+   *  CLI 起的名字替换（2026-09-22 用户实测反馈）。⚠️ 只挂**第一次**问：null 秒回后
+   *  兜底标题多半已被收编刷新亮出来，第二次问（真实模型调用，~8s）若再摘，列表会
+   *  「先显示又消失」闪一条。 */
   private titlePending = false;
   private explicitMode: ChatPermissionMode | null;
   private emit: (e: ChatEvent) => void;
@@ -1062,11 +1090,12 @@ class ChatSession {
     try {
       for await (const msg of q) {
         const events = this.translator.translate(msg);
-        // 首帧 init（session_ready）= 首条用户消息已被处理、进程与 jsonl 都齐了：此刻去要
-        // 一次 AI 标题（终端里这一步由 CLI 自己完成，SDK 宿主得自己问，见 generateTitle）。
-        // 放在开头、先把 titleAsked 置上：起名是异步的，不挡住事件下发，也避免重复问。
-        if (!this.titleAsked && events.some((e) => e.type === "session_ready")) {
-          this.titleAsked = true;
+        // init（session_ready）= 首条用户消息已被处理、进程与 jsonl 都齐了：此刻去要一次
+        // AI 标题（终端里这一步由 CLI 自己完成，SDK 宿主得自己问，见 generateTitle）。
+        // 放在开头、先把账记上：起名是异步的，不挡住事件下发，也避免重复问。
+        // null 不算终态：2.1.283 起首轮此刻会秒回 null，下一轮 init（CLI 放行起名的首个
+        // 时点）再补问一次，封顶 TITLE_MAX_ASKS——档位与去重判据见 claimTitleAsk。
+        if (events.some((e) => e.type === "session_ready") && this.claimTitleAsk()) {
           void this.generateTitle();
         }
         for (const e of events) this.emit(e);
@@ -1085,7 +1114,10 @@ class ChatSession {
         // 每轮结束刷一次上下文占用（起进程那次由 start() 里的 pullContextUsageSoon 负责，
         // 因为 init 要等第一条消息才到 —— 光靠这里会漏掉"一启动就显示"）。
         // 放在这里而不是 translator 里：那层是纯翻译，而 getContextUsage 要 this.query。
-        if (events.some((e) => e.type === "turn_end")) void this.emitContextUsage();
+        if (events.some((e) => e.type === "turn_end")) {
+          this.roundIndex++; // 轮次边界：起名的补问档位按它发放（见 titleAskRound）
+          void this.emitContextUsage();
+        }
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -1094,6 +1126,24 @@ class ChatSession {
       // 生成器结束（进程退出 / stdin EOF）兜底补 exited
       this.emitExited(this.child?.exitCode ?? null);
     }
+  }
+
+  /** 来了一帧 init：判断此刻该不该去要一次标题，该问就**当场记账**并返回 true。
+   *  判据（缺一条都会重复问或永不补问）：
+   *  · 没到终态（已拿到名字 / 已真失败）、没有在飞的请求（见 titleAsking）；
+   *  · 预算未用尽（TITLE_MAX_ASKS）、**本轮还没问过**（见 roundIndex/titleAskRound）；
+   *  · 这个会话确实有可起名的描述（续聊 / 纯图首条消息没有，CLI 那条路也跳过）。
+   *  记账必须在发起前同步完成（调用方紧接着 `void generateTitle()`，中间不能 await），
+   *  否则同一批到达的两帧 init 会各问一次。 */
+  private claimTitleAsk(): boolean {
+    if (this.titleDone || this.titleAsking) return false;
+    if (this.titleAskCount >= TITLE_MAX_ASKS) return false;
+    if (this.titleAskRound >= this.roundIndex) return false;
+    if (titleDescriptionFor(this.resumeId, this.firstPromptText) === null) return false;
+    this.titleAskCount++;
+    this.titleAskRound = this.roundIndex;
+    this.titleAsking = true;
+    return true;
   }
 
   /** 拉一次上下文占用并推给前端。
@@ -1157,41 +1207,55 @@ class ChatSession {
   /**
    * 向 CLI 要一个 AI 标题（新建会话专属）。
    *
-   * ⚠️ 为什么必须显式要：CLI 的自动起名**只发生在交互式 TUI 里**（TUI 提交消息时调它的
-   * 内部起名函数）。SDK/stream-json 这条路不触发——2026-09-22 实测 2.1.278：一整轮跑完
-   * 不写 `ai-title`；给用户消息加 `origin:{kind:"human"}` 也不写。于是 app 内对话建出来的
-   * 会话在左栏只有「首条用户消息」那一档兜底标题。宿主能做的就是自己发这条控制请求。
+   * ⚠️ 为什么必须显式要：老 CLI（2.1.278 时代）的自动起名**只发生在交互式 TUI 里**，
+   * SDK/stream-json 这条路跑完一轮也不写 `ai-title`（2026-09-22 实测）。**2026-09-27
+   * 订正（CLI 2.1.283）**：SDK 会话 CLI 也会自动落 `ai-title` 了——但时点在**第二轮**，
+   * 且首轮任何时点问都**秒回 null**（resolve、不落盘、不花模型调用；init 时点与首轮
+   * result 之后都一样），只有第二轮 init 之后问才正常返回并落盘。所以宿主仍要自己问：
+   * 第一次在首轮 init（老 CLI 此时直接成功），回 null 就在下一轮 init 补问一次
+   * （`titleAskCount` / `TITLE_MAX_ASKS`）；不问的话单轮会话、老 CLI 都拿不到 AI 标题。
+   * 探针：`%TEMP%\title-probe\probe.mjs`（A=init 问 / B=零请求对照 / C=轮末问）。
    *
    * `generateSessionTitle` 在 `sdk.d.ts` 里**没有声明**（运行时方法，与 `resolvePermissionModeInCli`
-   * 同一类，见 start() 里的注释与 docs/agent-sdk-capabilities.md）。`persist: true` 让它把
+   * 同一类，见 start() 里的注释与 docs/agent-sdk-capabilities.md §6.12）。`persist: true` 让它把
    * `{"type":"ai-title","aiTitle":…}` 追进 jsonl——与 TUI 生成的逐字同形，于是左栏列表
    * （回退链 customTitle > aiTitle > 首条用户消息，见 sessions.ts）与新对话收编轮询
-   * 都自然读到 AI 标题。探针实测：本轮还在跑时调用同样成功（返回标题、同时落盘）。
+   * 都自然读到 AI 标题。
    *
    * 静默降级（与 emitContextUsage 同一口径）：起名失败不致命——标题就停在首条消息那档，
-   * 只留一行 warn 供排查。只问一次，失败不重试（重试要再花一次模型调用）。
+   * 只留一行 warn 供排查。失败不重试（重试要再花一次模型调用）；**null 不算失败**，见上。
    */
   private async generateTitle(): Promise<void> {
-    const desc = titleDescriptionFor(this.resumeId, this.firstPromptText);
-    const q = this.query;
-    if (desc === null || !q || this.exited) return;
-    this.titlePending = true; // 起名期间把自己从 list_sessions 里摘掉（见字段注释）
+    // 整个函数体包在 try/finally 里：`titleAsking`（在飞标记）由 claimTitleAsk 置上，
+    // 任何一条路径退出都必须摘掉——早退漏摘就再也补问不了了（判据卡在 titleAsking 上）。
     try {
+      // desc 为 null（续聊 / 纯图首条消息）时调用方 claimTitleAsk 已经挡掉，这里只是防御
+      const desc = titleDescriptionFor(this.resumeId, this.firstPromptText);
+      const q = this.query;
+      if (desc === null || !q || this.exited) return;
+      // 只在第一次问期间从 list_sessions 里摘掉（见字段注释：第二次问时兜底标题多半已亮出）
+      this.titlePending = this.titleAskCount === 1;
       const raw = await (
         q as unknown as {
-          generateSessionTitle(d: string, o?: { persist?: boolean }): Promise<string>;
+          generateSessionTitle(d: string, o?: { persist?: boolean }): Promise<string | null>;
         }
       ).generateSessionTitle(desc, { persist: true });
       const title = typeof raw === "string" ? raw.trim() : "";
-      if (title !== "" && !this.exited) this.emit({ type: "session_title", title });
+      if (title !== "") {
+        this.titleDone = true;
+        if (!this.exited) this.emit({ type: "session_title", title });
+      }
+      // 空标题（含 CLI 回 null）＝「此刻没得可起」：不算终态，下一轮 init 补问（次数封顶）
     } catch (e) {
       // ASCII 输出：中文在这台机器的控制台里会被按 GBK 解成乱码
       console.warn("[chat] generateSessionTitle failed:", e);
+      this.titleDone = true; // 失败是终态：不重试
       // 起名失败：退回「首条用户消息」那档兜底（与列表回退链同一口径）——不推的话 tab 会
       // 一直挂着项目名，跟左栏那条的名字对不上
       const fallback = cleanSummary(this.firstPromptText ?? "");
       if (fallback !== "" && !this.exited) this.emit({ type: "session_title", title: fallback });
     } finally {
+      this.titleAsking = false;
       this.titlePending = false;
     }
   }

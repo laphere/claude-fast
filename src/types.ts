@@ -75,6 +75,10 @@ export interface SessionInfo {
   sessionId: string;
   /** 显示标题：customTitle > aiTitle > 首条用户消息 */
   title: string;
+  /** title 是否只是兜底档（jsonl 里既无 customTitle 也无 aiTitle）。后端一直在回、
+   *  类型此前没声明。tab 收编时存它：真标题到位前由 App 的补挂轮询每 3s 回读会话文件，
+   *  拿到真名即换上（AI 标题事件 / 重命名 / 补挂换名都会清掉这个标记） */
+  titleFromPrompt?: boolean;
   /** 副行摘要：customTitle > lastPrompt > summary > 首条用户消息 */
   summary: string;
   /** 最后修改时间（epoch ms） */
