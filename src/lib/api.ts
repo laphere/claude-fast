@@ -28,6 +28,7 @@ import type {
   ProviderSwitchOutcome,
   SessionInfo,
   SessionMessages,
+  SessionUsageStats,
   SessionSearchHit,
   SessionUserPrompt,
   TrashedSession,
@@ -113,6 +114,8 @@ export const api = {
   /** 读取会话内容（向上分页：offset 省略时返回最后 limit 条） */
   getSessionMessages: (file: string, offset?: number) =>
     invoke<SessionMessages>("get_session_messages", { file, offset }),
+  /** 只读会话级 token 统计（不带消息体；对话轮末刷新头部统计用） */
+  sessionStats: (file: string) => invoke<SessionUsageStats>("session_stats", { file }),
   /** 会话内全文搜索（返回命中消息序号与上下文片段） */
   searchSessionMessages: (file: string, keyword: string) =>
     invoke<SessionSearchHit[]>("search_session_messages", { file, keyword }),

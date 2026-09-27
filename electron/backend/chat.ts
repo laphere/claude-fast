@@ -155,6 +155,15 @@ export type ChatEvent =
   | { type: "tool_use_complete"; toolUseId: string; name: string; input: unknown }
   | { type: "tool_result"; toolUseId: string; isError: boolean; text: string }
   | { type: "message_complete"; usage: ChatUsage }
+  /** 轮内实时用量：stream_event 的 message_delta 上带的 usage（当前消息的累计值，
+   *  由翻译器按消息折叠成「本轮至今」，2.1.283 起 assistant 帧恒 0、真值在这条上——
+   *  探针 %TEMP%\usage-probe\probe2 实测与 result 一致）。⚠️ 只作展示层活值：轮末
+   *  结算由前端 turn_end 完成（live ?? result 二选一——两者本是同一个数），绝不并算 */
+  | { type: "turn_usage"; usage: ChatUsage }
+  /** 思考 token 滚动估算（system:thinking_tokens，CLI 自己估的、非供应商回执）：
+   *  只喂状态胶囊「思考中 · ~N tok」的活数字，不进任何累计——供应商从不确认这份
+   *  估算，进了总数轮末会「先涨后缩」 */
+  | { type: "thinking_tokens"; estimated: number }
   | { type: "permission_request"; requestId: string; toolName: string; input: unknown }
   | { type: "permission_cancelled"; requestId: string }
   /** ExitPlanMode 方案审批：plan 为方案正文；应答 = allow（退出计划模式继续执行）/ deny（留在计划模式） */
@@ -252,6 +261,17 @@ export function parseUsage(u: unknown): ChatUsage | null {
     outputTokens: num("output_tokens") || num("outputTokens"),
     cacheReadInputTokens: num("cache_read_input_tokens") || num("cacheReadInputTokens"),
     cacheCreationInputTokens: num("cache_creation_input_tokens") || num("cacheCreationInputTokens"),
+  };
+}
+
+/** 两笔用量相加（turn_usage 的按消息折叠用；null 视为零） */
+function mergeUsage(a: ChatUsage | null, b: ChatUsage): ChatUsage {
+  if (!a) return { ...b };
+  return {
+    inputTokens: a.inputTokens + b.inputTokens,
+    outputTokens: a.outputTokens + b.outputTokens,
+    cacheReadInputTokens: a.cacheReadInputTokens + b.cacheReadInputTokens,
+    cacheCreationInputTokens: a.cacheCreationInputTokens + b.cacheCreationInputTokens,
   };
 }
 
@@ -401,11 +421,29 @@ interface PendingBlock {
 export class SdkMessageTranslator {
   /** 已被流式渲染过的 assistant message.id——完整消息到达时只补 usage，不重复产内容 */
   private streamedMsgIds = new Set<string>();
+  /** 已发过 message_complete 的 message.id（同 id 多帧去重，见 translateAssistant）。
+   *  ⚠️ 与 streamedMsgIds 不是一回事：那个管「内容别画两遍」，这个管「计数别加两次」，
+   *  message_start 会进前者、非流式路径不进——两张表各自独立，别合并 */
+  private completedMsgIds = new Set<string>();
   /** 当前消息流式中的内容块（key = content block index） */
   private blocks = new Map<number, PendingBlock>();
   /** 最近一次下发给前端的权限模式（去重用）：CLI 每轮开头都会发 init、每次状态翻转
    *  都可能发 status，只有真变了才值得推一条事件给前端 setState */
   private lastMode: string | null = null;
+  /** 轮内用量折叠（turn_usage 用）：done = 本轮**已完成**消息的 delta 值之和，
+   *  cur = 当前消息 message_delta 上的累计值（官方流同一条消息会来多条 delta、
+   *  output 为该消息累计语义——覆盖，不叠加；message_start 折 cur 入 done）。
+   *  ⚠️ assistant 帧（message_complete）的 usage **不**折进来：它带 message_start
+   *  的 input/cache 且先于该消息的 delta 到达（probe3 实测），折了就双计——轮末结算
+   *  只有 live ?? result 两个候选（见 ChatView 的 turn_end 分支） */
+  private turnUsageDone: ChatUsage | null = null;
+  private turnUsageCur: ChatUsage | null = null;
+  /** turn_usage 的下发节流（防官方流每 chunk 一帧把 IPC 打成 delta 噪声同级）：
+   *  input/cache 侧一变必发（一消息一次）；output 走 64 token 台阶 + 200ms 下限，
+   *  另加 500ms 兜底让消息收尾的零头也能落地 */
+  private turnUsageLastOut = -1;
+  private turnUsageLastInput = -1;
+  private turnUsageLastAt = 0;
 
   translate(msg: SDKMessage): ChatEvent[] {
     const m = msg as unknown as Rec;
@@ -419,6 +457,15 @@ export class SdkMessageTranslator {
       case "stream_event":
         return this.translateStreamEvent(m);
       case "result":
+        // 轮次边界：轮内用量折叠整体清零（结算由前端 turn_end 的 live ?? result 完成）。
+        // ⚠️ 这里**依赖 result 必到**：唯一的例外是 Esc 撤回（模型没开口 → 既无
+        // message_delta 也无消息，折算值为空），残留是空值、不会串到下一轮；
+        // 若将来出现「有 delta 却没有 result」的路径，得在中断处手动清这两个字段
+        this.turnUsageDone = null;
+        this.turnUsageCur = null;
+        this.turnUsageLastOut = -1;
+        this.turnUsageLastInput = -1;
+        this.turnUsageLastAt = 0;
         return translateResult(m);
       case "command_lifecycle":
         // `/xxx` 命令的生命周期（queued → started，无终态）。见 ChatEvent 里那段注释：
@@ -463,6 +510,12 @@ export class SdkMessageTranslator {
       const body = extractXmlTag(raw, "local-command-stdout");
       return body !== null && body.trim() !== "" ? [{ type: "command_output", text: body }] : [];
     }
+    // 思考 token 滚动估算（2.1.283 新帧，思考期间几十毫秒一跳）。只喂状态胶囊的
+    // 活数字——CLI 自己估的，供应商从不回执，进累计轮末会「先涨后缩」（见事件注释）
+    if (m.subtype === "thinking_tokens") {
+      const n = Number(m.estimated_tokens ?? 0);
+      return Number.isFinite(n) && n > 0 ? [{ type: "thinking_tokens", estimated: n }] : [];
+    }
     // status 帧：CLI 把「模式变了」压在它上面（permissionMode 字段）。进计划模式、
     // 批准 ExitPlanMode 退出计划模式时，这帧与工具结果同刻到达——底部模式选择器
     // 就靠它跟手。status:'requesting' 那类帧不带该字段，故有才认。
@@ -492,6 +545,20 @@ export class SdkMessageTranslator {
     ];
   }
 
+  /** message_complete 的唯一发出口（同 id 去重）。⚠️ 去重只拦**这条事件**、不拦内容：
+   *  同一条消息会来多帧 assistant（2.1.283 实测：带 message_start 的那帧先到、完整消息
+   *  那帧后到，两帧同 id），若不拦，前端的 liveMsgs（新会话「N 条消息」的来源）每个助手
+   *  消息虚高一倍。放在**出口**而不是 translateAssistant 开头，是为了不改内容产出行为
+   *  ——非流式路径（无 message_start 的宿主）下两帧的内容是否等价无从保证，整个丢弃
+   *  第二帧有丢内容的风险，而内容去重本来就有 streamedMsgIds 管着 */
+  private completeEvent(msgId: string, usage: ChatUsage | null): ChatEvent[] {
+    if (msgId) {
+      if (this.completedMsgIds.has(msgId)) return [];
+      this.completedMsgIds.add(msgId);
+    }
+    return [{ type: "message_complete", usage: usage ?? ZERO_USAGE }];
+  }
+
   private translateAssistant(m: Rec): ChatEvent[] {
     const message = m.message;
     if (!message || typeof message !== "object") return [];
@@ -499,7 +566,7 @@ export class SdkMessageTranslator {
     const usage = parseUsage(message.usage);
     // 已流式渲染过 → 只补 usage，不重复产出内容
     if (msgId && this.streamedMsgIds.has(msgId)) {
-      return [{ type: "message_complete", usage: usage ?? ZERO_USAGE }];
+      return this.completeEvent(msgId, usage);
     }
     const events: ChatEvent[] = [];
     for (const b of blockList(message.content)) {
@@ -530,8 +597,7 @@ export class SdkMessageTranslator {
         });
       }
     }
-    events.push({ type: "message_complete", usage: usage ?? ZERO_USAGE });
-    return events;
+    return [...events, ...this.completeEvent(msgId, usage)];
   }
 
   private static translateUser(m: Rec): ChatEvent[] {
@@ -558,7 +624,40 @@ export class SdkMessageTranslator {
         // 记录本条 assistant 消息 id：完整消息到达时据此去重
         const id = event?.message?.id;
         if (typeof id === "string" && id) this.streamedMsgIds.add(id);
+        // 新消息开始 = 上一条 message_delta 的累计值定稿折入（turn_usage 的按消息折叠点）
+        if (this.turnUsageCur) {
+          this.turnUsageDone = mergeUsage(this.turnUsageDone, this.turnUsageCur);
+          this.turnUsageCur = null;
+        }
         return [{ type: "status", state: "thinking" }];
+      }
+      case "message_delta": {
+        // CLI 2.1.283 起 assistant 帧 usage 恒 0，stream 的 message_delta 带真值
+        // （探针 %TEMP%\usage-probe\probe2：input/output/cache_read 与 result 一致）。
+        // 官方流这帧每 chunk 一条、output 为该消息的累计值——覆盖 cur，不叠加
+        const u = parseUsage(event.usage ?? null);
+        if (!u) return [];
+        if (
+          u.inputTokens + u.outputTokens + u.cacheReadInputTokens + u.cacheCreationInputTokens ===
+          0
+        ) {
+          return []; // 全零只是这帧没捎 usage，别清 cur（不代表消息用量归零）
+        }
+        this.turnUsageCur = u;
+        const total = mergeUsage(this.turnUsageDone, u);
+        const inputSide =
+          total.inputTokens + total.cacheReadInputTokens + total.cacheCreationInputTokens;
+        const now = Date.now();
+        const out = total.outputTokens;
+        const shouldEmit =
+          inputSide !== this.turnUsageLastInput ||
+          (out - this.turnUsageLastOut >= 64 && now - this.turnUsageLastAt >= 200) ||
+          (out !== this.turnUsageLastOut && now - this.turnUsageLastAt >= 500);
+        if (!shouldEmit) return [];
+        this.turnUsageLastInput = inputSide;
+        this.turnUsageLastOut = out;
+        this.turnUsageLastAt = now;
+        return [{ type: "turn_usage", usage: total }];
       }
       case "content_block_start": {
         const index = Number(event.index ?? 0);

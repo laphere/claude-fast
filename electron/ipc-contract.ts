@@ -54,6 +54,7 @@ export interface IpcContract {
   purge_session: { file: string };
   purge_trash: void;
   get_session_messages: { file: string; offset?: number };
+  session_stats: { file: string };
   search_session_messages: { file: string; keyword: string };
   get_session_user_prompts: { file: string };
   export_session: { file: string; destPath: string; format: string };
@@ -188,6 +189,7 @@ export const IPC_CHANNELS = [
   "purge_session",
   "purge_trash",
   "get_session_messages",
+  "session_stats",
   "search_session_messages",
   "get_session_user_prompts",
   "export_session",

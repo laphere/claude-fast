@@ -313,6 +313,11 @@ export type ChatEvent =
   | { type: "tool_use_complete"; toolUseId: string; name: string; input: unknown }
   | { type: "tool_result"; toolUseId: string; isError: boolean; text: string }
   | { type: "message_complete"; usage: ChatUsage }
+  /** 轮内实时用量（stream message_delta 折叠成「本轮至今」，后端已按消息去重节流）：
+   *  只作展示层活值，轮末由 turn_end 结算（live ?? result 二选一，两者本是同一个数），绝不并算 */
+  | { type: "turn_usage"; usage: ChatUsage }
+  /** 思考 token 滚动估算（system:thinking_tokens，CLI 自己估的）：只喂状态胶囊活数字 */
+  | { type: "thinking_tokens"; estimated: number }
   | { type: "permission_request"; requestId: string; toolName: string; input: unknown }
   | { type: "permission_cancelled"; requestId: string }
   /** ExitPlanMode 方案审批：plan 为方案正文；应答 = allow（退出计划模式继续执行）

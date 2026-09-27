@@ -57,6 +57,7 @@ import {
 } from "./backend/paths";
 import {
   getSessionMessages,
+  sessionStats,
   listSessions,
   renameSession,
   sessionFileAndTitle,
@@ -418,6 +419,7 @@ function registerIpc(): void {
   });
   handle("get_session_messages", (p) =>
     getSessionMessages(String(p.file), projectsDir(), toInt(p.offset)));
+  handle("session_stats", (p) => sessionStats(String(p.file), projectsDir()));
   handle("search_session_messages", (p) =>
     searchSessionMessages(String(p.file), String(p.keyword), projectsDir()));
   handle("get_session_user_prompts", (p) => getSessionUserPrompts(String(p.file), projectsDir()));

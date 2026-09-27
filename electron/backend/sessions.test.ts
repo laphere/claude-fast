@@ -9,6 +9,7 @@ import {
   appendCustomTitle,
   extractFirstPrompt,
   getSessionMessages,
+  sessionStats,
   listSessions,
   parseContentBlocks,
   parseJsonLines,
@@ -576,6 +577,33 @@ describe("sliceMessages / getSessionMessages", () => {
     const earlier = getSessionMessages(file, projects, 0);
     expect(earlier.messages.length).toBe(500);
     expect(earlier.hasMore).toBe(false);
+  });
+
+  it("sessionStats：只回统计、口径与 getSessionMessages().stats 同源", () => {
+    const file = path.join(projects, "D--demo", UUID + ".jsonl");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(
+      file,
+      [
+        `{"type":"user","message":{"role":"user","content":"问一句"}}`,
+        `{"type":"assistant","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"答一句"}],` +
+          `"usage":{"input_tokens":100,"output_tokens":20,"cache_read_input_tokens":30}}}`,
+      ].join("\n") + "\n",
+    );
+    const stats = sessionStats(file, projects);
+    // 与头部历史加载同一口径（同源断言）——改实现时这条会把口径漂移钉出来
+    expect(stats).toEqual(getSessionMessages(file, projects).stats);
+    expect(stats.messageCount).toBe(2);
+    expect(stats.inputTokens).toBe(100);
+    expect(stats.outputTokens).toBe(20);
+    expect(stats.cacheReadTokens).toBe(30);
+    expect(stats.totalTokens).toBe(150);
+  });
+
+  it("sessionStats：文件不在 projects 目录下 → 抛（与 getSessionMessages 同一道校验）", () => {
+    const outside = path.join(tmp, UUID + ".jsonl");
+    fs.writeFileSync(outside, "");
+    expect(() => sessionStats(outside, projects)).toThrow();
   });
 });
 

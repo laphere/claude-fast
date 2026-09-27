@@ -3,7 +3,7 @@
 // ExitPlanMode 分流 / result 收尾 / 错误消息 / 图片消息拼装 / 权限模式映射 /
 // >4.5MB 图片被拒 / system init / 默认权限档解析。
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -71,6 +71,93 @@ describe("思考块（stream_event）", () => {
       { type: "content_start", kind: "thinking" },
       { type: "delta", kind: "thinking", text: "让我想想" },
     ]);
+  });
+});
+
+describe("轮内用量（turn_usage / thinking_tokens）", () => {
+  it("message_delta 带真值 → turn_usage；同一消息多条 delta 为累计语义（覆盖不叠加）", () => {
+    vi.useFakeTimers();
+    try {
+      const t = new SdkMessageTranslator();
+      const e1 = t.translate(
+        msg({
+          type: "stream_event",
+          event: { type: "message_delta", usage: { input_tokens: 100, output_tokens: 5, cache_read_input_tokens: 50 } },
+        }),
+      );
+      expect(e1).toEqual([
+        { type: "turn_usage", usage: { inputTokens: 100, outputTokens: 5, cacheReadInputTokens: 50, cacheCreationInputTokens: 0 } },
+      ]);
+      // 推进时钟越过 200ms 节流闸（真实流里几十个 token 的产出自然超过它）
+      vi.advanceTimersByTime(300);
+      // 同一消息第二条 delta：output 累计到 80（官方流语义），覆盖而非相加
+      const e2 = t.translate(
+        msg({
+          type: "stream_event",
+          event: { type: "message_delta", usage: { input_tokens: 100, output_tokens: 80, cache_read_input_tokens: 50 } },
+        }),
+      );
+      expect(e2).toEqual([
+        { type: "turn_usage", usage: { inputTokens: 100, outputTokens: 80, cacheReadInputTokens: 50, cacheCreationInputTokens: 0 } },
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("message_start 折叠上一条、多消息求和；result 清零", () => {
+    const t = new SdkMessageTranslator();
+    t.translate(
+      msg({
+        type: "stream_event",
+        event: { type: "message_delta", usage: { input_tokens: 100, output_tokens: 80 } },
+      }),
+    );
+    // 上一条结束（新消息开始）→ 折入 done；新消息 delta 在其上叠加
+    t.translate(msg({ type: "stream_event", event: { type: "message_start", message: { id: "m2" } } }));
+    const out = t.translate(
+      msg({
+        type: "stream_event",
+        event: { type: "message_delta", usage: { input_tokens: 300, output_tokens: 40 } },
+      }),
+    );
+    expect(out).toEqual([
+      { type: "turn_usage", usage: { inputTokens: 400, outputTokens: 120, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 } },
+    ]);
+    // result（轮末）→ 折叠清零，下轮从零开始
+    t.translate(msg({ type: "result", subtype: "success", usage: { input_tokens: 400, output_tokens: 120 } }));
+    const next = t.translate(
+      msg({
+        type: "stream_event",
+        event: { type: "message_delta", usage: { input_tokens: 7, output_tokens: 3 } },
+      }),
+    );
+    expect(next).toEqual([
+      { type: "turn_usage", usage: { inputTokens: 7, outputTokens: 3, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 } },
+    ]);
+  });
+
+  it("message_delta 全零 usage → 不发事件、不清当前值", () => {
+    const t = new SdkMessageTranslator();
+    t.translate(
+      msg({
+        type: "stream_event",
+        event: { type: "message_delta", usage: { input_tokens: 100, output_tokens: 80 } },
+      }),
+    );
+    const out = t.translate(
+      msg({ type: "stream_event", event: { type: "message_delta", usage: { input_tokens: 0, output_tokens: 0 } } }),
+    );
+    expect(out).toEqual([]);
+  });
+
+  it("thinking_tokens 系统帧 → 估算事件；非正数不发", () => {
+    const t = new SdkMessageTranslator();
+    const out = t.translate(
+      msg({ type: "system", subtype: "thinking_tokens", estimated_tokens: 42, estimated_tokens_delta: 2 }),
+    );
+    expect(out).toEqual([{ type: "thinking_tokens", estimated: 42 }]);
+    expect(t.translate(msg({ type: "system", subtype: "thinking_tokens", estimated_tokens: 0 }))).toEqual([]);
   });
 });
 
@@ -288,6 +375,21 @@ describe("完整流去重（streamed_msg_ids）", () => {
     expect(out).toEqual([
       { type: "message_complete", usage: { inputTokens: 3, outputTokens: 2, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 } },
     ]);
+  });
+
+  it("同 id 的 assistant 帧来多帧 → message_complete 只发一次（liveMsgs 不虚高）", () => {
+    const t = new SdkMessageTranslator();
+    t.translate(msg({ type: "stream_event", event: { type: "message_start", message: { id: "m1" } } }));
+    const frame = () =>
+      msg({
+        type: "assistant",
+        message: { id: "m1", role: "assistant", content: [{ type: "text", text: "Hi" }], usage: { input_tokens: 22990, output_tokens: 0 } },
+      });
+    // 2.1.283 实测帧序：带 message_start 用量的一帧先到、完整消息那帧后到，两帧同 id
+    expect(t.translate(frame())).toEqual([
+      { type: "message_complete", usage: { inputTokens: 22990, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 } },
+    ]);
+    expect(t.translate(frame())).toEqual([]);
   });
 });
 

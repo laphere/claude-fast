@@ -331,10 +331,19 @@ export default function ChatView({
    *  贴在底部时不渲染——那一刻按钮没有任何用处，白占一条消息 */
   const [atBottom, setAtBottom] = useState(true);
   const [usage, setUsage] = useState<ChatUsage | null>(null);
-  /** 本轮是否已从 assistant 帧（message_complete）累到过非零用量：有则轮末跳过 result，
-   *  避免「两条来源同计」。CLI 2.1.283 起 assistant 帧恒 0（探针实测），这个标记永远
-   *  不亮，累计全走 result——两条版本的语义由此各归其位（见那两个分支的注释）。 */
-  const roundUsageFromFramesRef = useRef(false);
+  /** 轮内实时用量（turn_usage 事件，后端按消息折叠成「本轮至今」）：**只作展示层活值**
+   *  ——头部统计在轮内把它叠在已结算 usage 上显示，轮末由 turn_end 结算（live ?? result）
+   *  后清零，两边绝不并算。ref 与 state 并存：结算在 turn_end 回调里读，state 只管触发渲染。
+   *  ⚠️ **不再设「assistant 帧」这条来源**（2026-09-27 二审订正）：app 恒开
+   *  includePartialMessages，assistant 帧会带 message_start 的 input/cache 且**先于**该
+   *  消息的 message_delta 到达（probe3 实测帧序）——任何「帧先到就认帧」的闸门都会在第一
+   *  条消息上失效，把同一条消息算两遍、轮末再叠 live，得到 2~3 倍。而 result ≡ Σ message_delta
+   *  （probe3：22990+185=23175 ✓ / 60+12=72 ✓），两条来源本就是同一个数，第三条纯属多余 */
+  const [turnLive, setTurnLive] = useState<ChatUsage | null>(null);
+  const turnLiveRef = useRef<ChatUsage | null>(null);
+  /** 思考 token 滚动估算（thinking_tokens 帧）：状态胶囊「思考中 · ~N tok」的活数字。
+   *  不进任何累计——CLI 自己估的，供应商从不确认，进了总数轮末会「先涨后缩」 */
+  const [thinkingTokens, setThinkingTokens] = useState<number | null>(null);
   /** 卡片中部那三样：模型名（init 上报）、思考强度（init.effort，可能拿不到）、
    *  已用上下文（turn_end 的 per-turn usage ÷ 该轮的 contextWindow） */
   const [modelName, setModelName] = useState<string | null>(null);
@@ -504,6 +513,35 @@ export default function ChatView({
 
   // ---------- 事件处理 ----------
 
+  /** 轮末重读 jsonl 统计（turn_end 调）。stats 是历史加载时的**快照**，LLM 回完内容
+   *  不会自己变——不重读的话头部「N 条消息 · 总计…」要等关掉重开才更新（2026-09-27
+   *  用户实测）。只读统计、不动渲染数据源（历史区/实时区都不碰），与收编的
+   *  skipNextHistoryLoadRef 不冲突。延迟 400ms 给 CLI 落盘让路：result 帧与 jsonl
+   *  尾部行几乎同时写，抢跑会读到旧一拍（落后一拍无害，下一轮自愈）。 */
+  const statsPullTimerRef = useRef<number | undefined>(undefined);
+  const scheduleStatsRefresh = useCallback(() => {
+    const file = sessionFileRef.current;
+    if (!file) return;
+    if (statsPullTimerRef.current !== undefined) window.clearTimeout(statsPullTimerRef.current);
+    statsPullTimerRef.current = window.setTimeout(() => {
+      statsPullTimerRef.current = undefined;
+      void api
+        .sessionStats(file)
+        .then((s) => {
+          if (sessionFileRef.current === file) setStats(s);
+        })
+        .catch(() => {
+          /* 瞬态读失败就算了：下一轮轮末再试 */
+        });
+    }, 400);
+  }, []);
+  useEffect(
+    () => () => {
+      if (statsPullTimerRef.current !== undefined) window.clearTimeout(statsPullTimerRef.current);
+    },
+    [],
+  );
+
   const handleEvent = useCallback((ev: ChatEvent) => {
     // 模型一开口，「按停止把刚发的消息退回输入框」的窗口就关了（见 recallSent）
     if (REPLY_EVENTS.has(ev.type)) replyStartedRef.current = true;
@@ -615,6 +653,8 @@ export default function ChatView({
         setLiveMsgs((n) => n + 1);
         break;
       case "content_start":
+        // 模型开始产出内容块，思考估算就到此为止（胶囊换文案，别挂着旧数字）
+        setThinkingTokens(null);
         setItems((prev) => {
           const id = nextItemId++;
           return ev.kind === "text"
@@ -703,20 +743,21 @@ export default function ChatView({
           ];
         });
         break;
-      case "message_complete": {
-        const u = ev.usage;
+      case "message_complete":
+        // **只做消息计数**，不碰用量（后端已按 message.id 去重，见 translateAssistant）：
+        // assistant 帧的 usage 在 app 的配置下带 message_start 的 input/cache、且先于
+        // 该消息的 message_delta，拿它累计必然双计（2026-09-27 二审，见 turnLive 注释）。
+        // 用量唯一的轮内来源是下面的 turn_usage，轮末结算 live ?? result。
         setLiveMsgs((n) => n + 1);
-        // 「本次 sitting」用量累计的**第一条来源**：assistant 帧自己的 usage。
-        // ⚠️ CLI 2.1.283 起这帧恒为 {0,0}（探针 %TEMP%\usage-probe\ 实测，真值只在
-        // result 帧）——那时这条什么都不加，累计全在下面的 turn_end 分支；老 CLI
-        // （2.1.278）这帧带真值，那时头部「本次 X tok」与 statLine 兜底在**轮内**就该有数。
-        // 两条来源**择一**：本轮从 assistant 帧累到过非零量，轮末就跳过 result（否则双计）。
-        if (u.inputTokens + u.outputTokens + u.cacheReadInputTokens + u.cacheCreationInputTokens > 0) {
-          roundUsageFromFramesRef.current = true;
-          setUsage((prev) => (prev ? addUsage(prev, u) : u));
-        }
         break;
-      }
+      case "turn_usage":
+        // 轮内实时用量（message_delta 折叠）：纯展示层活值，结算在 turn_end
+        turnLiveRef.current = ev.usage;
+        setTurnLive(ev.usage);
+        break;
+      case "thinking_tokens":
+        setThinkingTokens(ev.estimated);
+        break;
       case "permission_request":
         // 提问单独成卡（选项有语义，不能当普通工具卡把 input 打成 JSON 丢给用户看）
         if (ev.toolName === "AskUserQuestion") {
@@ -759,11 +800,22 @@ export default function ChatView({
         // 口径与 jsonl 侧同构（那边也是逐消息行 input 相加，input 跨轮重复计入是两侧一致的
         // 既定口径）；中断/出错轮 CLI 同样回 result（error_during_execution 也带 usage），
         // 只有 Esc 撤回没有 result——那轮作废不计，正好。
-        const turnUsage = ev.usage;
-        if (turnUsage && !roundUsageFromFramesRef.current) {
-          setUsage((prev) => (prev ? addUsage(prev, turnUsage) : turnUsage));
+        // 结算**只认一个来源**：轮内活值（Σ message_delta）优先，没有就用 result 兜底
+        // ——两者本就是同一个数（result ≡ Σ message_delta，probe3 实测：
+        // 22990+185=23175 ✓ / 60+12=72 ✓），所以「哪个先到用哪个」不产生口径差。
+        // 活值优先是为了结算时数字不跳（轮内展示的就是它）；result 兜底覆盖
+        // 「没收到 message_delta」的路径（老 CLI / 异常流）——那时轮内本就没数。
+        const settled = turnLiveRef.current ?? ev.usage;
+        if (settled) {
+          setUsage((prev) => (prev ? addUsage(prev, settled) : settled));
         }
-        roundUsageFromFramesRef.current = false; // 轮次边界：下一条 assistant 帧重新计
+        turnLiveRef.current = null; // 轮次边界：活值清零（下一条 message_delta 重新计）
+        setTurnLive(null);
+        setThinkingTokens(null);
+        // 头部「N 条消息 · 总计…」同步到最新：轮末从 jsonl 重读一次统计（见
+        // scheduleStatsRefresh 注释）。挂 session（sessionFileRef）：新对话收编前
+        // 没有文件可读，走 statLine 的实时兜底分支，不进这条路
+        scheduleStatsRefresh();
         // 已用上下文：turn_end 的 usage 是**本轮**的（result.usage 在流式会话里 per-turn），
         // 把它三项 input 之和当成「当前上下文里有多少」；分母是该轮的 contextWindow。
         // ⚠️ 别改用累计那份 —— 它越用越大
@@ -801,7 +853,7 @@ export default function ChatView({
         onToast("对话错误：" + ev.message);
         break;
     }
-  }, [onToast]);
+  }, [onToast, scheduleStatsRefresh]);
 
   // ---------- 历史 jsonl 加载 ----------
 
@@ -974,7 +1026,11 @@ export default function ChatView({
     setItems([]);
     setUsage(null);
     setLiveMsgs(0);
-    roundUsageFromFramesRef.current = false; // 累计清零，本轮标记也得跟着清
+    // 累计清零，轮内活值也得跟着清——不然切换回 jsonl 口径后，残缺轮次的活值还叠在
+    // 头部统计上（两组状态语义对称，漏一组就是下一颗雷）
+    turnLiveRef.current = null;
+    setTurnLive(null);
+    setThinkingTokens(null);
     setReloadKey((k) => k + 1);
   }, [session, status]);
 
@@ -2051,7 +2107,11 @@ export default function ChatView({
           }
           return parts.join(" · ");
         }
-        return "思考中…";
+        // 思考 token 估算（thinking_tokens 帧，CLI 自己估的）：带上它思考期间胶囊
+        // 就是活的——CLI 状态行轮内在动的就是这份估算（2.1.283 实测几十毫秒一跳）
+        return thinkingTokens != null && thinkingTokens > 0
+          ? `思考中 · ~${fmtTokens(thinkingTokens)} tok`
+          : "思考中…";
       }
       case "exited":
         return status.code !== null && status.code !== 0
@@ -2061,7 +2121,7 @@ export default function ChatView({
         // 未开始时不显示徽标（搜索按钮旁留白即可）
         return realSessionId ? "已连接" : "";
     }
-  }, [status, realSessionId, runningCmd, subagent]);
+  }, [status, realSessionId, runningCmd, subagent, thinkingTokens]);
 
   /** `/` 补全的激活条件：输入恰是「/ 开头、还没空格的单个词」——命令带参数后就
    *  不再拦 Enter/Tab（那时 Enter 该发送）。cmdDismissed 是 Esc 收起标记（打进
@@ -2089,29 +2149,50 @@ export default function ChatView({
     if (cmdOpen) cmdActiveRef.current?.scrollIntoView({ block: "nearest" });
   }, [cmdOpen, cmdIdx]);
 
-  /** 头部统计行：jsonl 口径（stats）优先——挂载/刷新后它覆盖全量历史；新对话
-   *  收编后的整个 sitting 没有 jsonl 快照，用实时累计兜底（liveMsgs + 用量累计，
-   *  两条来源见 message_complete / turn_end 分支注释：新 CLI 只有轮末有数、
-   *  老 CLI 轮内就有），首轮回完即有数可看 */
+  /** 展示层活值 = 已结算 usage + 本轮轮内实时（turn_usage，message_delta 折叠）。
+   *  仅用于头部统计的**显示**，不写回 usage——轮末结算 live ?? result 二选一
+   *  （见 turn_end 分支），活值清零、真值落账，两边绝不并算 */
+  const liveTotal = turnLive ? (usage ? addUsage(usage, turnLive) : turnLive) : usage;
+
+  /** 头部统计行：jsonl 口径（stats）优先——挂载/轮末重读（scheduleStatsRefresh）后它
+   *  覆盖全量历史；新对话收编前的整个 sitting 没有 jsonl 快照，用实时累计兜底。
+   *  轮内两分支都把 turnLive 叠上去：历史分支**不叠** usage（stats 轮末重读会把
+   *  sitting 已落盘的消息吃进去，再叠 usage 就双计——只叠本轮尚未落盘的 turnLive）；
+   *  兜底分支叠完整 liveTotal。⚠️ 轮末那 ~400ms（turnLive 已清、stats 未回）历史分支
+   *  会先跌回旧快照再涨上来——落后一拍，量级看不出，但不是严格的「无缝」 */
   const statLine = useMemo(() => {
     if (stats && stats.messageCount > 0) {
+      const inTok = stats.inputTokens + (turnLive?.inputTokens ?? 0);
+      const outTok = stats.outputTokens + (turnLive?.outputTokens ?? 0);
+      const cacheR = stats.cacheReadTokens + (turnLive?.cacheReadInputTokens ?? 0);
+      const cacheW = stats.cacheCreationTokens + (turnLive?.cacheCreationInputTokens ?? 0);
       return {
-        count: total > 0 ? `${total} 条消息` : "",
-        detail: `总计 ${fmtTokens(stats.totalTokens)} · 输入 ${fmtTokens(stats.inputTokens)} · 输出 ${fmtTokens(stats.outputTokens)}${
-          stats.cacheReadTokens > 0 ? ` · 缓存读取 ${fmtTokens(stats.cacheReadTokens)}` : ""
+        // 消息数跟 stats 走而不是 total：轮末重读（scheduleStatsRefresh）只更新 stats，
+        // total 是分页窗口的状态（加载更早/更晚的判据），让它中途变大会把「加载更晚」
+        // 按钮亮出来、把实时区已在渲染的消息再当历史载一遍（双渲染）
+        count: `${stats.messageCount} 条消息`,
+        detail: `总计 ${fmtTokens(inTok + outTok + cacheR + cacheW)} · 输入 ${fmtTokens(inTok)} · 输出 ${fmtTokens(outTok)}${
+          cacheR > 0 ? ` · 缓存读取 ${fmtTokens(cacheR)}` : ""
         }`,
       };
     }
-    if (liveMsgs > 0 && usage && usage.inputTokens + usage.outputTokens > 0) {
+    if (
+      liveMsgs > 0 &&
+      liveTotal &&
+      liveTotal.inputTokens + liveTotal.outputTokens > 0
+    ) {
       return {
         count: `${liveMsgs} 条消息`,
         detail: `总计 ${fmtTokens(
-          usage.inputTokens + usage.outputTokens + usage.cacheReadInputTokens + usage.cacheCreationInputTokens,
-        )} · 输入 ${fmtTokens(usage.inputTokens)} · 输出 ${fmtTokens(usage.outputTokens)}`,
+          liveTotal.inputTokens +
+            liveTotal.outputTokens +
+            liveTotal.cacheReadInputTokens +
+            liveTotal.cacheCreationInputTokens,
+        )} · 输入 ${fmtTokens(liveTotal.inputTokens)} · 输出 ${fmtTokens(liveTotal.outputTokens)}`,
       };
     }
     return null;
-  }, [stats, total, liveMsgs, usage]);
+  }, [stats, liveMsgs, liveTotal, turnLive]);
 
   /**
    * 统一渲染：活动组跨消息合并——连续的思考/工具/孤儿结果条目折进同一个
@@ -2295,13 +2376,14 @@ export default function ChatView({
           )}
         </div>
         <div className="chat-head-actions">
-          {/* 「本次」= 本次 sitting 的实时累计（usage），与 jsonl 无关。⚠️ 条件里不能
-              挂 `stats &&`：stats 只在历史加载时设置，而新对话 tab 整个 sitting 按设计
-              不加载历史（收编押后历史加载），stats 恒为 null——挂上它新对话就永远看不到
-              这个徽标（2026-09-27 用户实测报的「新对话没显示 token 消耗」就是它） */}
-          {usage && usage.outputTokens + usage.inputTokens > 0 && (
+          {/* 「本次」= 本次 sitting 的实时累计（已结算 usage + 轮内活值 turnLive），与
+              jsonl 无关。⚠️ 条件里不能挂 `stats &&`：stats 只在历史加载时设置，而新对话
+              tab 整个 sitting 按设计不加载历史（收编押后历史加载），stats 恒为 null——
+              挂上它新对话就永远看不到这个徽标（2026-09-27 用户实测报的「新对话没显示
+              token 消耗」就是它） */}
+          {liveTotal && liveTotal.outputTokens + liveTotal.inputTokens > 0 && (
             <span className="chat-usage">
-              本次 {fmtTokens(usage.inputTokens + usage.outputTokens)} tok
+              本次 {fmtTokens(liveTotal.inputTokens + liveTotal.outputTokens)} tok
             </span>
           )}
           {statusLabel && (
