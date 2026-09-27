@@ -153,6 +153,16 @@ function isBusy(status: ChatStatus): boolean {
   return status.phase === "starting" || status.phase === "thinking";
 }
 
+/** 两笔用量相加（「本次 sitting」累计用；两处来源见 message_complete / turn_end 分支） */
+function addUsage(a: ChatUsage, b: ChatUsage): ChatUsage {
+  return {
+    inputTokens: a.inputTokens + b.inputTokens,
+    outputTokens: a.outputTokens + b.outputTokens,
+    cacheReadInputTokens: a.cacheReadInputTokens + b.cacheReadInputTokens,
+    cacheCreationInputTokens: a.cacheCreationInputTokens + b.cacheCreationInputTokens,
+  };
+}
+
 /** 毫秒 → 「1m20s」/「45s」。子代理心跳用（task_progress 的 usage.duration_ms）。
  *  命令型技能一跑就是几十秒到几分钟，光显示「运行中」看不出它是不是卡住了 */
 function fmtDur(ms: number): string {
@@ -321,6 +331,10 @@ export default function ChatView({
    *  贴在底部时不渲染——那一刻按钮没有任何用处，白占一条消息 */
   const [atBottom, setAtBottom] = useState(true);
   const [usage, setUsage] = useState<ChatUsage | null>(null);
+  /** 本轮是否已从 assistant 帧（message_complete）累到过非零用量：有则轮末跳过 result，
+   *  避免「两条来源同计」。CLI 2.1.283 起 assistant 帧恒 0（探针实测），这个标记永远
+   *  不亮，累计全走 result——两条版本的语义由此各归其位（见那两个分支的注释）。 */
+  const roundUsageFromFramesRef = useRef(false);
   /** 卡片中部那三样：模型名（init 上报）、思考强度（init.effort，可能拿不到）、
    *  已用上下文（turn_end 的 per-turn usage ÷ 该轮的 contextWindow） */
   const [modelName, setModelName] = useState<string | null>(null);
@@ -692,17 +706,15 @@ export default function ChatView({
       case "message_complete": {
         const u = ev.usage;
         setLiveMsgs((n) => n + 1);
-        setUsage((prev) =>
-          prev
-            ? {
-                inputTokens: prev.inputTokens + u.inputTokens,
-                outputTokens: prev.outputTokens + u.outputTokens,
-                cacheReadInputTokens: prev.cacheReadInputTokens + u.cacheReadInputTokens,
-                cacheCreationInputTokens:
-                  prev.cacheCreationInputTokens + u.cacheCreationInputTokens,
-              }
-            : u,
-        );
+        // 「本次 sitting」用量累计的**第一条来源**：assistant 帧自己的 usage。
+        // ⚠️ CLI 2.1.283 起这帧恒为 {0,0}（探针 %TEMP%\usage-probe\ 实测，真值只在
+        // result 帧）——那时这条什么都不加，累计全在下面的 turn_end 分支；老 CLI
+        // （2.1.278）这帧带真值，那时头部「本次 X tok」与 statLine 兜底在**轮内**就该有数。
+        // 两条来源**择一**：本轮从 assistant 帧累到过非零量，轮末就跳过 result（否则双计）。
+        if (u.inputTokens + u.outputTokens + u.cacheReadInputTokens + u.cacheCreationInputTokens > 0) {
+          roundUsageFromFramesRef.current = true;
+          setUsage((prev) => (prev ? addUsage(prev, u) : u));
+        }
         break;
       }
       case "permission_request":
@@ -742,9 +754,19 @@ export default function ChatView({
 
       case "turn_end":
         lastTurnErrorRef.current = !!ev.isError;
+        // 「本次 sitting」用量累计的**第二条来源**（主来源）：result 帧的 per-turn 真值
+        // ——2.1.283 起 assistant 帧恒 0，真值只有这里有（见 message_complete 分支注释）。
+        // 口径与 jsonl 侧同构（那边也是逐消息行 input 相加，input 跨轮重复计入是两侧一致的
+        // 既定口径）；中断/出错轮 CLI 同样回 result（error_during_execution 也带 usage），
+        // 只有 Esc 撤回没有 result——那轮作废不计，正好。
+        const turnUsage = ev.usage;
+        if (turnUsage && !roundUsageFromFramesRef.current) {
+          setUsage((prev) => (prev ? addUsage(prev, turnUsage) : turnUsage));
+        }
+        roundUsageFromFramesRef.current = false; // 轮次边界：下一条 assistant 帧重新计
         // 已用上下文：turn_end 的 usage 是**本轮**的（result.usage 在流式会话里 per-turn），
         // 把它三项 input 之和当成「当前上下文里有多少」；分母是该轮的 contextWindow。
-        // ⚠️ 别改用 message_complete 那条 —— 前端那份是累加的，越用越大
+        // ⚠️ 别改用累计那份 —— 它越用越大
         if (ev.usage && ev.contextWindow) {
           const u = ev.usage;
           setCtx({
@@ -952,6 +974,7 @@ export default function ChatView({
     setItems([]);
     setUsage(null);
     setLiveMsgs(0);
+    roundUsageFromFramesRef.current = false; // 累计清零，本轮标记也得跟着清
     setReloadKey((k) => k + 1);
   }, [session, status]);
 
@@ -2067,8 +2090,9 @@ export default function ChatView({
   }, [cmdOpen, cmdIdx]);
 
   /** 头部统计行：jsonl 口径（stats）优先——挂载/刷新后它覆盖全量历史；新对话
-   *  收编后的整个 sitting 没有 jsonl 快照，用实时累计兜底（liveMsgs + 每条
-   *  assistant 消息的 usage 累加，与 jsonl 代表行求和同口径），长轮次中途也有数可看 */
+   *  收编后的整个 sitting 没有 jsonl 快照，用实时累计兜底（liveMsgs + 用量累计，
+   *  两条来源见 message_complete / turn_end 分支注释：新 CLI 只有轮末有数、
+   *  老 CLI 轮内就有），首轮回完即有数可看 */
   const statLine = useMemo(() => {
     if (stats && stats.messageCount > 0) {
       return {
@@ -2271,7 +2295,11 @@ export default function ChatView({
           )}
         </div>
         <div className="chat-head-actions">
-          {stats && usage && usage.outputTokens + usage.inputTokens > 0 && (
+          {/* 「本次」= 本次 sitting 的实时累计（usage），与 jsonl 无关。⚠️ 条件里不能
+              挂 `stats &&`：stats 只在历史加载时设置，而新对话 tab 整个 sitting 按设计
+              不加载历史（收编押后历史加载），stats 恒为 null——挂上它新对话就永远看不到
+              这个徽标（2026-09-27 用户实测报的「新对话没显示 token 消耗」就是它） */}
+          {usage && usage.outputTokens + usage.inputTokens > 0 && (
             <span className="chat-usage">
               本次 {fmtTokens(usage.inputTokens + usage.outputTokens)} tok
             </span>
