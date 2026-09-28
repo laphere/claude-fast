@@ -3156,9 +3156,12 @@ mark {
 }
 
 /* 「回到底部」浮钮（脱开跟随时才渲染，见 ChatView 的 atBottom）：压在消息区下沿、
-   水平对齐消息列中线。⚠️ 中线要补进度轨的半个宽度——轨道是 .chat-main 里的 flex 实体、
-   占了左边一整条，消息列的真中线在 .chat-main 的 50% + rail/2 处（与上面 --read-width
-   那组补正同一口径）；没有轨道时不能补，否则反向偏出去 */
+   水平对齐消息列中线。⚠️ 这里**不再补偿进度轨**（2026-09-28 用户实测报「没有左右居中」时删）：
+   .chat-body > .chat-msg-assistant 那组 margin 补正已经把消息列从「.chat-body 内容盒的中线」
+   挪回了整页中线——量下来 assistant 的 centerX 正是 .chat-main 的 50%（本文件 760px 夹具下
+   380.00 对 379.98），轨道的影响被那 29px 抵消干净了。再补一次 rail/2 就等于补两遍，
+   浮钮偏右 29px（实测 409 vs 380）。夹具与量法：
+   .workbuddy/tmp/jump-bottom-measure.html（headless Chrome --dump-dom 出 getBoundingClientRect）。 */
 .chat-jump-bottom {
   position: absolute;
   left: 50%;
@@ -3166,10 +3169,6 @@ mark {
   transform: translateX(-50%);
   z-index: 5; /* 压过消息文本；悬停气泡在轨道那一侧，与它不重叠 */
   box-shadow: var(--shadow);
-}
-
-.chat-main:has(> .msg-rail) .chat-jump-bottom {
-  transform: translateX(calc(-50% + var(--rail-w) / 2));
 }
 
 .chat-msg {
