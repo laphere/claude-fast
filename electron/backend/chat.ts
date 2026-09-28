@@ -1117,6 +1117,17 @@ class ChatSession {
       // 从而让 ExitPlanMode / AskUserQuestion 经此回调下发（CLAUDE.md 第 1 条）。
       canUseTool: (toolName, input, o) => this.handleCanUseTool(toolName, input, o),
       includePartialMessages: true,
+      // 会话入口标记传 "bench"：CLI 的 /resume 选择器按黑名单 {sdk-cli, sdk-ts, sdk-py}
+      // 隐藏 headless/SDK 会话（2.1.283 exe 反编译实证；sdk.d.ts 的 includeProgrammatic
+      // 注释明说这是对齐终端的故意设计），SDK 默认注入的 sdk-ts 会让 app 内开的会话在
+      // 终端 resume 列表里消失。CLI 对预设的 CLAUDE_CODE_ENTRYPOINT 只改写两种值
+      // （"cli"+headless→"sdk-cli"、"local_agent"→"local-agent"），其余原样落盘；
+      // "bench" 只在合法入口总表里、不触发 desktop/cowork 行为开关。2026-09-29 探针
+      // （%TEMP%\entrypoint-probe\）：bench 原样落盘且 picker 可见、消息外壳逐字段同构、
+      // 标题首轮即回（比 sdk-ts 的「首轮必 null」还好）、resume/ai-title/权限档全正常；
+      // local-agent 实测首轮标题请求丢响应（THREW: Query closed），弃用。
+      // ⚠️ 未来 CLI 若把 bench 加进黑名单此法即失效，升级后需复测。
+      env: { ...process.env, CLAUDE_CODE_ENTRYPOINT: "bench" },
       // ⚠️ 不传 settingSources（更不能传 []）：传 [] 是 SDK isolation 模式，会连认证一起丢
       // （实测报 Not logged in）。不传 = CLI 用自身默认（user+project+local）。
       abortController: this.abort,
