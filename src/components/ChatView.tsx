@@ -44,6 +44,8 @@ import ModePicker from "./ModePicker";
 import {
   ArrowDownIcon,
   ArrowUpIcon,
+  ChevronDownIcon,
+  ChevronUpIcon,
   CollapseIcon,
   DownloadIcon,
   ExpandIcon,
@@ -393,9 +395,19 @@ export default function ChatView({
   /** 方案卡「展开」态：卡槽抢成整窗（消息区压到 .plan-expanded 里那个高度），
    *  好把长方案一次读完。卡没了就自动复位（见下面那个 effect） */
   const [planExpanded, setPlanExpanded] = useState(false);
-  // 卡收掉（批准/拒绝/换了一轮）即复位展开态：否则下次弹卡时消息区会莫名其妙是压扁的
+  /** 方案卡「收起正文」态：只把正文折进 .plan-collapse，卡头与三颗审批按钮留在原地
+   *  （≈110px）。收起的场景是「一边翻会话一边处理这张卡」，而处理它靠的就是那三颗
+   *  按钮——折着也能直接批准 / 点「继续修改」，不必先展开再把会话让回去。
+   *  ⚠️ 与 planExpanded **互斥**（两颗开关各自在对方那一档隐藏，见卡头注释）：
+   *  同开会得到「一条 110px 的卡浮在整窗空白里」 */
+  const [planCollapsed, setPlanCollapsed] = useState(false);
+  // 卡收掉（批准/拒绝/换了一轮）即复位两态：否则下次弹卡时消息区会莫名其妙是压扁的。
+  // 正文被**原地更新**（流式 / 兜底追加）时不复位——用户折了就一直折着
   useEffect(() => {
-    if (!plan) setPlanExpanded(false);
+    if (!plan) {
+      setPlanExpanded(false);
+      setPlanCollapsed(false);
+    }
   }, [plan]);
   /** 待作答的提问（AskUserQuestion）：模型有分歧时问用户选哪个。卡内状态（当前第几题、
    *  逐题选择与「其他」文本）由 AskQuestionCard 自己持有，卡片按 requestId 重挂载。
@@ -2696,34 +2708,74 @@ export default function ChatView({
           )}
 
           {plan && (
-            <div className="plan-approve plan-card">
+            <div className={`plan-approve plan-card${planCollapsed ? " plan-card-collapsed" : ""}`}>
               <div className="plan-card-head">
-                <div className="plan-approve-title">方案已就绪 · 计划模式</div>
-                {/* 展开/收起：长方案在固定高度的预览区里只能一行行抠（TUI 是直接铺开）。
-                    展开时由 .chat.plan-expanded 把消息区压扁、卡槽撑满整窗 */}
-                <button
-                  type="button"
-                  className="icon-btn icon-btn-sm"
-                  /* 阅读模式 = 大块区域 display 翻转，走 View Transition 快照 crossfade
-                     （lib/view-transition.ts）——CSS 高度动画会让几百条消息每帧 reflow */
-                  onClick={() => viewTransition(() => setPlanExpanded((v) => !v))}
-                  aria-label={planExpanded ? "收起方案" : "展开方案"}
-                  title={
-                    planExpanded
-                      ? "收起方案，回到对话与输入框"
-                      : "展开方案，整窗阅读全文（阅读期间临时收起对话与输入框）"
-                  }
-                >
-                  {planExpanded ? <CollapseIcon size={13} /> : <ExpandIcon size={13} />}
-                </button>
+                <div className="plan-card-head-left">
+                  <div className="plan-approve-title">方案已就绪 · 计划模式</div>
+                  {/* 收起时补一句状态：细栏上只剩标题与三颗审批按钮，不说明的话看着像
+                      「方案正文丢了」。药丸外观与提问卡收起态的进度摘要同款（各写一份类名） */}
+                  {planCollapsed && <span className="plan-card-note">正文已收起</span>}
+                </div>
+                {/* 两颗开关**互斥**（收起态/整窗态各只留一颗；正常态两颗都在），各管一档：
+                    ① 折正文（**app 侧新增，TUI 没有**）：只收正文，卡头与审批行留在原地
+                       ——提问卡那边方向相反但同机制（它收起是为**读会话**，而作答本就必须
+                       先读题，所以折到只剩卡头）；这里收起是为**腾地方处理这张卡**，三颗
+                       审批按钮得够得着。整窗态藏它：那边要收的是整窗、不是正文
+                    ② 整窗（阅读模式）：消息区与输入框一起让位、卡槽独占整个 .chat，长方案
+                       一次读完。走 View Transition 快照 crossfade（lib/view-transition.ts）
+                       ——CSS 高度动画会让几百条消息每帧 reflow。收起态藏它：否则会叠出
+                       「一条窄卡浮在整窗空白里」
+                    ⚠️ 两颗必须**套在这个成组盒里**，不能直接挂在 .plan-card-head 上：卡头是
+                    space-between，直接挂会被当成「中间那一项」摆到卡头正中——收起钮吊在
+                    标题与整窗钮之间（2026-09-28 用户实测截图） */}
+                <div className="plan-card-head-actions">
+                  {!planExpanded && (
+                    <button
+                      type="button"
+                      className="icon-btn icon-btn-sm"
+                      aria-expanded={!planCollapsed}
+                      aria-label={planCollapsed ? "展开方案正文" : "收起方案正文"}
+                      title={
+                        planCollapsed
+                          ? "展开方案正文"
+                          : "收起方案正文，把高度让回消息区（下方审批按钮照常可用）"
+                      }
+                      onClick={() => setPlanCollapsed((v) => !v)}
+                    >
+                      {planCollapsed ? <ChevronUpIcon size={13} /> : <ChevronDownIcon size={13} />}
+                    </button>
+                  )}
+                  {!planCollapsed && (
+                    <button
+                      type="button"
+                      className="icon-btn icon-btn-sm"
+                      onClick={() => viewTransition(() => setPlanExpanded((v) => !v))}
+                      aria-label={planExpanded ? "收起方案" : "展开方案"}
+                      title={
+                        planExpanded
+                          ? "收起方案，回到对话与输入框"
+                          : "展开方案，整窗阅读全文（阅读期间临时收起对话与输入框）"
+                      }
+                    >
+                      {planExpanded ? <CollapseIcon size={13} /> : <ExpandIcon size={13} />}
+                    </button>
+                  )}
+                </div>
               </div>
-              <div className="plan-approve-preview">
-                {/* 按 markdown 渲染：TUI 里方案就是铺开的正文，原样吐 `#` / `**` 读不了 */}
-                {plan.text.trim() ? (
-                  <MarkdownText text={plan.text} />
-                ) : (
-                  "（本轮未捕获到方案正文，可直接在输入框提修改意见）"
-                )}
+              {/* 折叠区（P2）：grid 0fr↔1fr 高度过渡，与提问卡那套同机制、类名各写一份。
+                  ⚠️ 这里**没有**提问卡那条「藏而不卸」约束——方案正文是 ChatView 的
+                  plan state，不在被折叠的子树里，卸了也不丢；用 grid 只为拿到高度过渡 */}
+              <div className="plan-collapse">
+                <div className="plan-collapse-inner">
+                  <div className="plan-approve-preview">
+                    {/* 按 markdown 渲染：TUI 里方案就是铺开的正文，原样吐 `#` / `**` 读不了 */}
+                    {plan.text.trim() ? (
+                      <MarkdownText text={plan.text} />
+                    ) : (
+                      "（本轮未捕获到方案正文，可直接在输入框提修改意见）"
+                    )}
+                  </div>
+                </div>
               </div>
               <div className="plan-approve-actions">
                 <button

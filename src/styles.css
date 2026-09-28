@@ -3501,8 +3501,9 @@ mark {
   padding: 10px 22px;
   /* 护栏：卡槽不许吃光消息区（原来是 .ask-card 上的 max-height:60%）。
      卡体是槽内的 flex 项且 min-height:0，超出时收缩，由卡内的滚动区收尾。
-     70% 只是**上限**（本槽 flex:none、按内容高度走）：提问卡收起时卡体只剩卡头，
-     卡槽跟着缩、空出的高度归 .chat-main（flex:1），消息区当场长回来 */
+     70% 只是**上限**（本槽 flex:none、按内容高度走）：提问卡收起时卡体只剩卡头、
+     方案卡收起时只剩卡头与审批行，卡槽都跟着缩、空出的高度归 .chat-main（flex:1），
+     消息区当场长回来 */
   max-height: 70%;
   min-height: 0;
   overflow: hidden;
@@ -3547,9 +3548,10 @@ mark {
   color: var(--accent);
 }
 
-/* 交互卡头部一行：标题在左，展开/收起按钮在右。**方案卡与提问卡共用**（与
-   .plan-approve / .plan-approve-title 同理，改一处两边都变）——但开关方向相反：
-   方案卡是「展开读卡」（.chat.plan-expanded），提问卡是「收起读会话」 */
+/* 交互卡头部一行：标题在左，开关在右。**方案卡与提问卡共用**（与 .plan-approve /
+   .plan-approve-title 同理，改一处两边都变）。开关方向两边不同：提问卡只有一颗
+   「收起读会话」（卡内 grid 折叠）；方案卡两颗且**互斥**——「折正文」（同机制，
+   读会话时腾地方，但审批行留在原地）与「整窗阅读」（.chat.plan-expanded，往更大走） */
 .plan-card-head {
   display: flex;
   align-items: center;
@@ -3557,12 +3559,46 @@ mark {
   gap: 8px;
 }
 
+/* 方案卡卡头左半：标题 +（收起时）状态药丸。与 .ask-card-head-left 同形，但类名
+   **各写一份**——提问卡那份一个字不动 */
+.plan-card-head-left {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* 卡头右端那两颗开关（折正文 + 整窗）：**必须成组**，不能直接挂在 .plan-card-head 下
+   ——卡头是 space-between，直接挂的两颗会被当成「中间那一项」摆到卡头正中，收起钮就
+   吊在标题与整窗钮之间了（2026-09-28 用户实测截图）。4px 比卡头自己的 8px 紧一档：
+   两颗读成一组「窗口按钮」，与左半边标题分开 */
+.plan-card-head-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* 方案卡收起态的状态药丸（规格照 .ask-card-summary）：细栏上得看出「正文只是折了、
+   不是没了」。取 muted——它是状态，不该跟标题抢注意力 */
+.plan-card-note {
+  flex: none;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+
 /* 方案卡「展开」= 阅读模式：消息区与输入区一起让位，卡槽独占整个 .chat（标题栏留着），
    长方案一次读完（TUI 是把方案直接铺开，而这里不给到这么大就只能一行行抠）。
    ⚠️ 别改回「只压消息区、输入框不动」：70% 的上限本来就已经把消息区压扁了，
    展开只回收那条缝，实测只多 20~30px —— 用户当场反馈「展开几乎没有增加高度」。
    ⚠️ 卡槽这时必须从 flex:none 换成可伸缩项（flex:1 + 它自己的 min-height:0），
-   否则按内容撑高会把东西顶出窗口 —— 那正是这条护栏要防的失稳 */
+   否则按内容撑高会把东西顶出窗口 —— 那正是这条护栏要防的失稳。
+   与收起态**互斥**（卡头两颗开关各自在对方那一档隐藏）：同开会得到「一条 110px 的卡
+   浮在整窗空白里」 */
 .chat.plan-expanded .chat-main,
 .chat.plan-expanded .chat-composer {
   display: none;
@@ -3577,7 +3613,10 @@ mark {
    高度策略与提问卡的 .ask-body 同款——填满卡体可用高度、超出才内部滚。
    ⚠️ 别改回固定 240px 小窗：长方案在里面只能一行行抠（2026-09-22 用户反馈
    「查看区域很小且没有渲染格式」，TUI 是把方案直接铺开）。留着的 font-size
-   只服务那一句「未捕获到方案正文」的兜底文案，.md-body 会用自己的字号盖掉。 */
+   只服务那一句「未捕获到方案正文」的兜底文案，.md-body 会用自己的字号盖掉。
+   ⚠️ 它的父级现在是 .plan-collapse-inner（不再是 .plan-approve 了）：那条「填满
+   卡体」的 flex 链在 .plan-collapse 上续（见下），这里的 flex:1 / min-height:0
+   一个都不能删——删了正文就塌成 0 高 */
 .plan-approve-preview {
   flex: 1;
   min-height: 0;
@@ -3590,6 +3629,44 @@ mark {
   border-radius: var(--radius);
   padding: 8px 10px;
   word-break: break-word;
+}
+
+/* 方案正文折叠区（收起态）：grid 0fr↔1fr 高度过渡。与提问卡的 .ask-collapse 同机制，
+   但类名**各写一份**（提问卡不动）；且那边有「藏而不卸」铁律（逐题答案在卡内
+   state 里），这边**没有**——方案正文是 ChatView 的 plan state，卸了也不丢，
+   用 grid 只为拿到高度过渡。
+   ⚠️ wrapper 是那条 flex 链的一环（.plan-approve > 本 wrapper > .plan-collapse-inner
+   > .plan-approve-preview）：包一层后正文的父级换了，链必须在 wrapper 上续上，
+   否则正文塌成 0 高（grid 的 1fr 只给「可用高度」，伸缩基准仍靠这条链传导） */
+.plan-collapse {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: 1fr;
+  transition: grid-template-rows var(--dur-med) var(--ease-out-soft);
+}
+
+.plan-collapse-inner {
+  /* grid 0fr 技巧的要求：轨道内唯一子项 min-height:0 + 裁切；子项仍是 flex 列，
+     正文的 flex:1 从这里接上 */
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  transition: visibility var(--dur-med);
+}
+
+/* 收起：正文那条轨道归 0（卡体 ≈110px = 卡头 + 审批行 + 提示 + 间距），空出的高度
+   归 .chat-main（flex:1）——与提问卡收起态同一条让位链路。
+   ⚠️ 卡体的 gap 照旧付给这条 0 高轨道（上下各一次 8px），所以收起态比理论值多出
+   16px：卡体底色里的一道空白，不值得为它引入负 margin 去骗 gap */
+.plan-card-collapsed .plan-collapse {
+  grid-template-rows: 0fr;
+}
+
+.plan-card-collapsed .plan-collapse-inner {
+  /* 收起**结束**才把正文移出焦点序（方案里的链接不再 Tab 得到）；展开方向即刻可见 */
+  visibility: hidden;
 }
 
 .plan-approve-actions {
@@ -5569,11 +5646,14 @@ mark {
   opacity: 0.6;
 }
 
-/* 键盘焦点行（↑↓ 移动 / 鼠标点过的那一行）：**只画一圈外描边**，不与选中态共用外观。
+/* 键盘光标行：**只画一圈外描边**，不与选中态共用外观。
    ⚠️ 这条从前与 .ask-option-on 逐字相同（注释写着「靠外描边区分」，外描边却始终没写出来），
    于是多选卡里点一下已选项想取消勾选时，界面看不出任何变化 —— 选中态刚消失，焦点环
    立刻顶上来，还是那圈橙边，用户只会认定「点不掉」（2026-09-25 用户反馈）。
-   现在选中态是多层（淡底 + 外框 + 内描边环），焦点只剩这圈细外描边，一眼可分 */
+   现在选中态是多层（淡底 + 外框 + 内描边环），焦点只剩这圈细外描边，一眼可分。
+   ⚠️ **它只服务键盘**（2026-09-28 起由 AskQuestionCard 的 `keyCursor` 门控）：只有用户
+   ↑↓ 挪过光标才画；默认加载、切题后重落光标、鼠标点选都不画——环与选中态是两套外观，
+   默认就画会让人以为「第一个选项已经被选中了」，点选后更会叠成两道边（用户实测） */
 .ask-option-focus {
   outline: 1px solid var(--accent);
   outline-offset: 1px;
