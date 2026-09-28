@@ -105,6 +105,12 @@ export default function AskQuestionCard({ items, busy, onSubmit, onCancel, onDis
   const [picks, setPicks] = useState<Record<string, { picked: string[]; text: string }>>({});
   /** 键盘在选项列表里的焦点行（TUI 的 cursor） */
   const [focus, setFocus] = useState(0);
+  /** 那圈键盘光标环（.ask-option-focus）要不要画：只有用户**用键盘挪过光标**（↑↓）才画。
+   *  ⚠️ 初始态、以及切题后把光标重落到「已选项 / 第 0 行」都不画——环与选中态是两套外观
+   *  （外描边 vs 内描边+淡底），默认就画会让人以为「第一个选项已经被选中了」；鼠标点选
+   *  也只移动内部光标位、不点亮，于是点中的行只有一道边（2026-09-28 用户实测：默认那颗
+   *  带一道环、点选后变两道边） */
+  const [keyCursor, setKeyCursor] = useState(false);
   /** 收起态 = 阅读模式（**app 侧新增，TUI 没有**）：只留一条卡头，把高度让回消息区，
    *  好让用户重读会话（模型为什么要问这些）再作答。
    *  ⚠️ 只能靠这份 state + CSS 隐藏，**绝不能由 ChatView 条件渲染**——父组件是按
@@ -162,12 +168,14 @@ export default function AskQuestionCard({ items, busy, onSubmit, onCancel, onDis
     return r;
   }, [cur, shortCircuit]);
 
-  // 切题时把焦点落到已选项上（没有则第 0 行）——TUI 同款
+  // 切题时把焦点落到已选项上（没有则第 0 行）——TUI 同款。落完**不点亮**键盘环：
+  // 这是一次程序性重落，不是用户挪的光标（否则每翻一题，第一个选项都自带一圈环）
   useEffect(() => {
     const st = cur ? picks[cur.question] : undefined;
     const sel = st?.picked.find((l) => l !== OTHER);
     const i = cur && sel ? cur.options.findIndex((o) => o.label === sel) : -1;
     setFocus(i >= 0 ? i : 0);
+    setKeyCursor(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [idx]);
 
@@ -311,11 +319,13 @@ export default function AskQuestionCard({ items, busy, onSubmit, onCancel, onDis
     }
     if (e.key === "ArrowDown") {
       e.preventDefault();
+      setKeyCursor(true); // 用户开始用键盘挪光标了：这圈环从这一刻起才画
       setFocus((f) => Math.min(rows.length - 1, f + 1));
       return;
     }
     if (e.key === "ArrowUp") {
       e.preventDefault();
+      setKeyCursor(true);
       setFocus((f) => Math.max(0, f - 1));
       return;
     }
@@ -327,7 +337,7 @@ export default function AskQuestionCard({ items, busy, onSubmit, onCancel, onDis
   };
 
   const rowClass = (i: number, extra = "") =>
-    `ask-option ${extra} ${focus === i ? "ask-option-focus" : ""}`.trim();
+    `ask-option ${extra} ${keyCursor && focus === i ? "ask-option-focus" : ""}`.trim();
 
   const curPick = cur ? (picks[cur.question]?.picked ?? []) : [];
   const otherOpen = curPick.includes(OTHER);
@@ -338,6 +348,9 @@ export default function AskQuestionCard({ items, busy, onSubmit, onCancel, onDis
       ref={cardRef}
       tabIndex={0}
       onKeyDown={onKeyDown}
+      /* 指针一落就退回「鼠标模式」（与平台 :focus-visible 的启发式同向）：点亮归键盘、
+         鼠标按下即熄——否则「先按 ↓ 点亮、再点某行」会把环跟着点到那行上，又成两道边 */
+      onPointerDown={() => setKeyCursor(false)}
       autoFocus
     >
       {/* 卡头与方案卡同一套（.plan-card-head + .icon-btn-sm）；但开关方向相反：
