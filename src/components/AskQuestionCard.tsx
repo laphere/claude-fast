@@ -105,11 +105,11 @@ export default function AskQuestionCard({ items, busy, onSubmit, onCancel, onDis
   const [picks, setPicks] = useState<Record<string, { picked: string[]; text: string }>>({});
   /** 键盘在选项列表里的焦点行（TUI 的 cursor） */
   const [focus, setFocus] = useState(0);
-  /** 那圈键盘光标环（.ask-option-focus）要不要画：只有用户**用键盘挪过光标**（↑↓）才画。
-   *  ⚠️ 初始态、以及切题后把光标重落到「已选项 / 第 0 行」都不画——环与选中态是两套外观
-   *  （外描边 vs 内描边+淡底），默认就画会让人以为「第一个选项已经被选中了」；鼠标点选
-   *  也只移动内部光标位、不点亮，于是点中的行只有一道边（2026-09-28 用户实测：默认那颗
-   *  带一道环、点选后变两道边） */
+  /** 「当前行」要不要点亮（`.ask-option-focus`，视觉 = 本行边框染橙、与 hover 同款）：
+   *  鼠标进某一行（hoverRow）或 ↑↓ 挪过光标都点亮。
+   *  ⚠️ 与 `focus` 分开两件事：`focus` 记「Enter/Space 打哪一行」（初始就该是第 0 行，
+   *  TUI 同款），这份只管**画不画那圈高亮**。初始态与切题后重落光标都不点亮——默认就亮
+   *  会让人以为「第一个选项已经被选中了」（2026-09-28 用户实测） */
   const [keyCursor, setKeyCursor] = useState(false);
   /** 收起态 = 阅读模式（**app 侧新增，TUI 没有**）：只留一条卡头，把高度让回消息区，
    *  好让用户重读会话（模型为什么要问这些）再作答。
@@ -168,8 +168,8 @@ export default function AskQuestionCard({ items, busy, onSubmit, onCancel, onDis
     return r;
   }, [cur, shortCircuit]);
 
-  // 切题时把焦点落到已选项上（没有则第 0 行）——TUI 同款。落完**不点亮**键盘环：
-  // 这是一次程序性重落，不是用户挪的光标（否则每翻一题，第一个选项都自带一圈环）
+  // 切题时把焦点落到已选项上（没有则第 0 行）——TUI 同款。落完**不点亮**当前行高亮：
+  // 这是程序性重落，不是用户挪的光标（否则每翻一题，第一个选项都自带一道橙边）
   useEffect(() => {
     const st = cur ? picks[cur.question] : undefined;
     const sel = st?.picked.find((l) => l !== OTHER);
@@ -181,6 +181,18 @@ export default function AskQuestionCard({ items, busy, onSubmit, onCancel, onDis
 
   /** 点完一行把焦点还给卡片：不然 DOM 焦点留在按钮上，下一次 Enter 会走浏览器默认动作 */
   const keepCardFocus = () => cardRef.current?.focus({ preventScroll: true });
+
+  /** 鼠标进到某一行 = 把「当前行」挪到它——与 ↑↓ 共用同一个 `focus`。
+   *  ⚠️ 这一条是**必须**的耦合，不是好看问题：Enter/Space 打的是 `rows[focus]`，鼠标
+   *  不参与的话「指着第 3 行按 Enter、动的是第 1 行」（单题单选还会当场把第 1 项提交掉），
+   *  所见非所动。耦合后两套输入只有一个当前行，样式也只剩一套（见 styles.css
+   *  .ask-option-focus 注释）。⚠️ busy 早退：禁用按钮在 Chrome 本就不发鼠标事件，
+   *  这只是不让状态在禁用期被改 */
+  const hoverRow = (i: number) => {
+    if (busy) return;
+    setFocus(i);
+    setKeyCursor(true);
+  };
 
   const setPick = (q: string, patch: Partial<{ picked: string[]; text: string }>) =>
     setPicks((prev) => ({
@@ -319,7 +331,7 @@ export default function AskQuestionCard({ items, busy, onSubmit, onCancel, onDis
     }
     if (e.key === "ArrowDown") {
       e.preventDefault();
-      setKeyCursor(true); // 用户开始用键盘挪光标了：这圈环从这一刻起才画
+      setKeyCursor(true); // 用户开始用键盘挪光标了：当前行高亮从这一刻起才画
       setFocus((f) => Math.min(rows.length - 1, f + 1));
       return;
     }
@@ -348,9 +360,6 @@ export default function AskQuestionCard({ items, busy, onSubmit, onCancel, onDis
       ref={cardRef}
       tabIndex={0}
       onKeyDown={onKeyDown}
-      /* 指针一落就退回「鼠标模式」（与平台 :focus-visible 的启发式同向）：点亮归键盘、
-         鼠标按下即熄——否则「先按 ↓ 点亮、再点某行」会把环跟着点到那行上，又成两道边 */
-      onPointerDown={() => setKeyCursor(false)}
       autoFocus
     >
       {/* 卡头与方案卡同一套（.plan-card-head + .icon-btn-sm）；但开关方向相反：
@@ -474,6 +483,7 @@ export default function AskQuestionCard({ items, busy, onSubmit, onCancel, onDis
                     type="button"
                     className={rowClass(i, on ? "ask-option-on" : "")}
                     disabled={busy}
+                    onMouseEnter={() => hoverRow(i)}
                     onClick={() => {
                       setFocus(i);
                       chooseOption(opt.label);
@@ -491,6 +501,7 @@ export default function AskQuestionCard({ items, busy, onSubmit, onCancel, onDis
                 type="button"
                 className={rowClass(cur.options.length, otherOpen ? "ask-option-on" : "")}
                 disabled={busy}
+                onMouseEnter={() => hoverRow(cur.options.length)}
                 onClick={() => {
                   setFocus(cur.options.length);
                   chooseOther();
@@ -515,6 +526,7 @@ export default function AskQuestionCard({ items, busy, onSubmit, onCancel, onDis
                   type="button"
                   className={rowClass(cur.options.length + 1, "ask-option-alt")}
                   disabled={busy}
+                  onMouseEnter={() => hoverRow(cur.options.length + 1)}
                   onClick={() => {
                     setFocus(cur.options.length + 1);
                     onDiscuss();
@@ -535,6 +547,7 @@ export default function AskQuestionCard({ items, busy, onSubmit, onCancel, onDis
                     isLastQ ? "ask-option-next ask-option-submit" : "ask-option-next",
                   )}
                   disabled={busy}
+                  onMouseEnter={() => hoverRow(rows.length - 1)}
                   onClick={() => {
                     setFocus(rows.length - 1);
                     activate({ kind: "next" });
