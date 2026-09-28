@@ -2107,6 +2107,17 @@ mark {
   text-decoration: underline;
 }
 
+/* Ctrl 按住：正文链接进入「可点开」态（Ctrl+点击 = 系统默认浏览器打开，接线在
+   src/lib/links.ts）。class 由那边的全局键盘监听挂到 <html> 上——**不走 React
+   state**，保活的非激活 tab 才不会整棵消息树跟着重渲染。点亮对所有 .md-body
+   生效（活会话/只读页/思考块/方案卡/行内代码里的补链），与补链范围一致 */
+html.ctrl-links .md-body a {
+  cursor: pointer;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: 3px;
+}
+
 .md-body hr {
   border: none;
   border-top: 1px solid var(--border);

@@ -8,7 +8,9 @@ import { useEffect, useRef, type MutableRefObject } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
+import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
+import { api } from "../lib/api";
 import { ptySpawnClaude, ptyWrite, ptyResize, ptyKill, clipboardImagePath } from "../lib/pty";
 import { createBoldBrightFilter } from "../lib/bold-bright";
 import { installTerminalWidthTable } from "../lib/term-unicode";
@@ -306,6 +308,17 @@ export default function TerminalPane({ tab, onStatus, onTitle, probes, killers }
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(host);
+    /* 终端里的 URL 链接检测（官方 web-links 插件：悬停划线）。激活手势与会话页
+     *  同一套：Ctrl+点击才经 open_url 用系统默认浏览器打开——普通点击保持原样
+     *  （双击选一段 URL 来复制是高频操作，plain click 就开浏览器会误触不断）。
+     *  ⚠️ 必须在 open() 之后 load：探针验证过的是「open → loadAddon」这个顺序，
+     *  open 之前 registerLinkProvider 在 xterm 6 下没验过 */
+    term.loadAddon(
+      new WebLinksAddon((event, uri) => {
+        if (!event.ctrlKey) return;
+        api.openUrl(uri).catch((err) => console.warn("open_url 失败：", err));
+      }),
+    );
     if (host.clientWidth > 0 && host.clientHeight > 0) fit.fit();
     /* IME 候选窗锚点：claude 不用真光标画输入光标（`?25l` 藏起来 + 自画一格反显空格），
      *  而 IME 只认真实光标 → 候选窗停在别处、流式输出时还跟着每帧重绘乱飘。这里把

@@ -6,6 +6,7 @@ import { useMemo, type ReactNode } from "react";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { installMarkdownHighlighting } from "../lib/highlight";
+import { installCtrlLinkOpen, linkifyHtml } from "../lib/links";
 import type { ContentBlock } from "../types";
 import {
   BrainIcon,
@@ -19,6 +20,9 @@ import {
 // 给全局 marked 装代码块高亮（幂等，见 lib/highlight.ts）。放在模块顶层而非组件内：
 // marked.use 是全局副作用，且必须在首次 marked.parse 之前生效。
 installMarkdownHighlighting();
+// 正文链接的 Ctrl+点击打开（幂等，见 lib/links.ts）：键盘/点击监听也是全局副作用，
+// 与上面同款「模块顶层装一次」。
+installCtrlLinkOpen();
 
 /** ISO 时间戳 → HH:MM */
 export function formatTime(iso: string | null | undefined): string {
@@ -29,11 +33,14 @@ export function formatTime(iso: string | null | undefined): string {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-/** Markdown 渲染（marked + DOMPurify 消毒，cc-haha 同方案） */
+/** Markdown 渲染（marked + DOMPurify 消毒 + URL 补链，cc-haha 同方案）。
+ *  补链（linkifyHtml）必须在消毒**之后**：行内代码/代码块里的 URL marked 永远
+ *  不链，而模型爱把地址包反引号；它还顺手修 marked 自动链接吞中文标点进 href
+ *  的坑。详见 lib/links.ts 头部。 */
 export function MarkdownText({ text }: { text: string }) {
   const html = useMemo(() => {
     try {
-      return DOMPurify.sanitize(marked.parse(text, { async: false }) as string);
+      return linkifyHtml(DOMPurify.sanitize(marked.parse(text, { async: false }) as string));
     } catch {
       return text;
     }

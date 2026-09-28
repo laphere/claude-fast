@@ -11,7 +11,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
-import { spawn } from "node:child_process";
 import {
   loadConfig,
   mutateConfig,
@@ -909,25 +908,20 @@ export async function providerQueryUsageFrom(
 // ---------------- openUrl ----------------
 
 /**
- * 用系统默认浏览器打开外部链接（官网 / 获取 API Key）。Windows 走 explorer.exe
- * 免 cmd 转义（避免 URL 里的 & 等被 shell 解释），macOS 走 open（Linux 走 xdg-open）。
- * ⚠️ 只放行 http/https：`spawn` 不启 shell，但 `explorer.exe`/`open` 会把参数当
- * 「要打开的路径」处理，其它 scheme（file:、自定义协议）等于把任意路径交给系统外壳。
- * v2.0.0 同样只放行这两个 scheme（lib.rs:909-927）。
+ * 外部链接的 scheme 校验：只放行 http/https（`file:`、自定义协议等于把任意
+ * 路径交给系统外壳，v2.0.0 同口径 lib.rs:909-927）。合法返回原串，否则 null；
+ * 实际打开由 main.ts 用 `shell.openExternal`（Electron 正路 API）执行。
+ * ⚠️ 别在这层手搓 explorer.exe / open / xdg-open 的 spawn（v2.0.0 Rust 时代的
+ * 移植残留）：spawn「成功」不等于浏览器打开——detached + stdio ignore 下失败
+ * 完全无声。2026-09-28 用户实测「Alt+点击不弹浏览器」，日志却只见 explorer.exe
+ * 被拉起、无任何报错；`shell.openExternal` 走系统关联打开并带真实回执
+ * （失败 reject），这才查得出问题。
  */
-export function openUrl(url: string): void {
-  let scheme = "";
+export function httpHttpsUrlOrNull(url: string): string | null {
   try {
-    scheme = new URL(url).protocol;
+    const { protocol } = new URL(url);
+    return protocol === "http:" || protocol === "https:" ? url : null;
   } catch {
-    return; // 不是合法 URL：不打开
-  }
-  if (scheme !== "http:" && scheme !== "https:") return;
-  if (process.platform === "win32") {
-    spawn("explorer.exe", [url], { detached: true, stdio: "ignore" }).unref();
-  } else if (process.platform === "darwin") {
-    spawn("open", [url], { detached: true, stdio: "ignore" }).unref();
-  } else {
-    spawn("xdg-open", [url], { detached: true, stdio: "ignore" }).unref();
+    return null; // 不是合法 URL
   }
 }

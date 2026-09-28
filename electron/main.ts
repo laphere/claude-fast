@@ -7,6 +7,7 @@ import {
   ipcMain,
   Menu,
   nativeImage,
+  shell,
   Tray,
 } from "electron";
 import * as crypto from "node:crypto";
@@ -40,7 +41,7 @@ import {
 } from "./backend/platform";
 import {
   claudeConfigDir,
-  openUrl,
+  httpHttpsUrlOrNull,
   providerDeleteFrom,
   providerImportCcswitchFrom,
   providerListFrom,
@@ -518,7 +519,19 @@ function registerIpc(): void {
   handle("provider_read_live", () => providerReadLiveFrom(claudeConfigDir()));
   handle("fetch_models_for_config", (p) => fetchModels(String(p.baseUrl), String(p.apiKey)));
   handle("provider_query_usage", (p) => providerQueryUsageFrom(rootDir(), String(p.id)));
-  handle("open_url", (p) => openUrl(String(p.url)));
+  // 外链一律走 shell.openExternal（Electron 正路 API，系统默认浏览器打开、失败
+  // reject 有回执）；scheme 白名单校验在 provider.ts 的 httpHttpsUrlOrNull。
+  // ⚠️ 别改回 spawn explorer.exe 的老实现：spawn 成功 ≠ 浏览器打开，失败无声
+  // （2026-09-28 用户实测 Alt+点击不弹浏览器、日志却只见 explorer 被拉起）。
+  handle("open_url", async (p) => {
+    const url = httpHttpsUrlOrNull(String(p.url));
+    if (url === null) return;
+    try {
+      await shell.openExternal(url);
+    } catch (e) {
+      console.warn(`[openurl] 打开失败：${e instanceof Error ? e.message : String(e)}`);
+    }
+  });
 
   // ---------- 使用统计 ----------
   handle("get_usage_stats", (p) =>
