@@ -260,4 +260,23 @@ describe("listProjects", () => {
     expect(list.length).toBe(1);
     expect(list[0].path).toBe(manual[0]);
   });
+
+  // 回归（2026-09-28 用户实测）：真实目录删掉后，同一 mangled 目录会解析出另一种
+  // 写法（回退候选首位），只比路径串的排除判定会让它原地复活——表现为「清除失效
+  // 项目后列表里还在、数据却已删掉，得再点一次」，即用户报的「要操作两次」。
+  it("排除清单里是同一数据目录的另一种写法 → 该目录不再出现在列表里", (ctx) => {
+    if (process.platform !== "win32") return ctx.skip(); // 用例基于盘符式 mangled 名
+    const realPath = path.join(base, "a", "b", "usage-probe", "wd");
+    const otherSpelling = path.join(base, "a", "b", "usage", "probe", "wd");
+    const projectsDir = path.join(base, "projects5");
+    fs.mkdirSync(projectsDir);
+    // 真实目录已被用户删除（不创建）→ 扫描回退到候选首位，即 otherSpelling
+    fs.mkdirSync(path.join(projectsDir, mangleProjectPath(realPath)));
+
+    const scan = scanClaudeProjects(projectsDir, "win32");
+    expect(scan.length).toBe(1);
+    expect(scan[0].path).toBe(otherSpelling); // 解析出的写法 ≠ 排除清单里那个
+
+    expect(listProjects(projectsDir, [], [realPath], "win32")).toEqual([]);
+  });
 });

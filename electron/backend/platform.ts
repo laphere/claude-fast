@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { SCRIPTS_DIR } from "./paths";
-import { unmangleCandidates } from "./mangle";
+import { mangleProjectPath, unmangleCandidates } from "./mangle";
 import { shQuote } from "./scriptnames";
 import { validateSessionFile } from "./sessions";
 
@@ -299,10 +299,23 @@ export function listProjects(
 ): ProjectItem[] {
   const p = platform === "win32" ? path.win32 : path.posix;
   const excluded = new Set(excludedPaths.map((x) => x.toLowerCase()));
+  // 排除清单还要按 **mangled 目录名** 比对一次：反向解析有歧义（一个 `-` 可能是
+  // `\`/`_`/`.`），同一个 Claude 数据目录会随「真实路径还在不在」解析出不同写法
+  // ——目录在时解析成真实路径、删掉后回退到候选首位。只比路径串的话，刚移出的
+  // 项目会换个写法原地复活（2026-09-28 用户实测：清除失效项目后列表里又冒出来、
+  // 而 ~/.claude/projects 下的数据已按 mangled 名删掉了，于是「数据没了、列表还在」，
+  // 得再点一次才能清掉）。mangle 与写法无关，一个数据目录只有一个名字。
+  // ⚠️ 口径与 usage-stats 的排除判定一致（那份按「任一候选命中即排除」写）。
+  const excludedMangled = new Set(
+    excludedPaths.map((x) => mangleProjectPath(x.trim()).toLowerCase()),
+  );
   const out = new Map<string, ProjectItem>();
   for (const s of scanClaudeProjects(projectsDir, platform)) {
     if (excluded.has(s.path.toLowerCase())) {
       continue; // 用户已移除：即使会话扫描重新发现也不显示
+    }
+    if (excludedMangled.has(mangleProjectPath(s.path).toLowerCase())) {
+      continue; // 同一数据目录的另一种写法（见上）
     }
     out.set(s.path.toLowerCase(), { key: s.path, name: s.name, path: s.path, missing: s.missing });
   }
