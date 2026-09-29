@@ -1949,6 +1949,48 @@ mark {
   margin-top: 0.35em;
 }
 
+/* 列表标记可选中（2026-09-29）：原生 <ol> 编号与 <ul> 圆点的 marker 在 Chromium 里
+   既不进选区也不进纯文本剪贴板（用户复制时编号/圆点全丢）。两者都改为消毒后 DOM walk
+   插入真实文本节点（lib/list-markers.ts，与 linkifyHtml 同一条后处理链），这里关掉
+   原生 marker。悬挂缩进用「列表不缩进 + li 负 text-indent + padding」复刻：标记挂在
+   列表左缘、折行对齐正文，与原生观感一致。⚠️ text-indent 会继承——li 里的嵌套块
+   （子列表/代码块/引用/标题）要归零，否则它们的首行也跟着挂出去；疏列表（li 首子元素
+   是 p）不归零——标记就插在 p 里，p 要继承负值才能把标记挂出去。 */
+.md-body :is(ol.md-ol-numbered, ul.md-ul-bulleted) {
+  list-style: none;
+  padding-left: 0;
+}
+
+.md-body :is(ol.md-ol-numbered, ul.md-ul-bulleted) > li {
+  padding-left: 1.6em;
+  text-indent: -1.6em;
+}
+
+.md-body :is(ol.md-ol-numbered, ul.md-ul-bulleted) > li > :is(ul, ol, pre, blockquote, h1, h2, h3, h4) {
+  text-indent: 0;
+}
+
+/* 标记 span：定宽对拍原生 marker 列。编号右对齐（两位数时自动撑宽，同原生 gutter
+   生长）、圆点居中。真实空格在 span 外面（DOM 文本节点），复制出去才是「1. 文本」
+   而不是「1.文本」。
+   ⚠️ text-indent 必须显式归零：span 是 inline-block（自成一个块容器），li 上那
+   个 -1.6em 会**再继承一次**、把 span 内的首行 line box 整体左移，居中文字于是
+   被画到负坐标裁掉（圆点整个消失，2026-09-29 探针里墨迹扫描抓到）。ol 右对齐
+   恰好躲过（右对齐不随 line box 左移），ul 居中会中招——两处都写死，别只留一处。 */
+.md-body .md-ol-marker {
+  display: inline-block;
+  min-width: 1.2em;
+  text-align: right;
+  text-indent: 0;
+}
+
+.md-body .md-ul-marker {
+  display: inline-block;
+  min-width: 1.2em;
+  text-align: center;
+  text-indent: 0;
+}
+
 /* 行内代码（2026-09-22 定稿）：**彩色字、无底色**。
    取色用 --code-inline（而不是代码块那个亮蓝 --code）—— 理由写在该 token 上。
    ⚠️ 别再给它加 background/padding/border-radius：底来自基础层那条全局 code 规则

@@ -7,6 +7,7 @@ import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { installMarkdownHighlighting } from "../lib/highlight";
 import { installCtrlLinkOpen, linkifyHtml } from "../lib/links";
+import { materializeListMarkers } from "../lib/list-markers";
 import type { ContentBlock } from "../types";
 import {
   BrainIcon,
@@ -33,14 +34,18 @@ export function formatTime(iso: string | null | undefined): string {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-/** Markdown 渲染（marked + DOMPurify 消毒 + URL 补链，cc-haha 同方案）。
- *  补链（linkifyHtml）必须在消毒**之后**：行内代码/代码块里的 URL marked 永远
- *  不链，而模型爱把地址包反引号；它还顺手修 marked 自动链接吞中文标点进 href
- *  的坑。详见 lib/links.ts 头部。 */
+/** Markdown 渲染（marked + DOMPurify 消毒 + 列表标记物化 + URL 补链，cc-haha 同方案）。
+ *  两步后处理都在消毒**之后**：列表标记物化（materializeListMarkers）把 `<ol>` 编号与
+ *  `<ul>` 圆点换成真实文本节点（原生 marker 在 Chromium 里选不中也复制不到，详见
+ *  lib/list-markers.ts 头部）；补链（linkifyHtml）处理行内代码/代码块里的 URL
+ *  （marked 永远不链，而模型爱把地址包反引号），并顺手修 marked 自动链接吞
+ *  中文标点进 href 的坑，详见 lib/links.ts 头部。 */
 export function MarkdownText({ text }: { text: string }) {
   const html = useMemo(() => {
     try {
-      return linkifyHtml(DOMPurify.sanitize(marked.parse(text, { async: false }) as string));
+      return linkifyHtml(
+        materializeListMarkers(DOMPurify.sanitize(marked.parse(text, { async: false }) as string)),
+      );
     } catch {
       return text;
     }
