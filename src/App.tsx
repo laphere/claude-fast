@@ -1684,6 +1684,7 @@ export default function App() {
                   }
                   onContinue={() => continueReadOnlyTab(t.id)}
                   tabId={t.id}
+                  active={t.id === activeTabId}
                   killers={tabKillersRef}
                 />
               ) : (

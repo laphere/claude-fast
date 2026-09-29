@@ -108,6 +108,10 @@ interface Props {
   continueBlocked?: string | null;
   /** 本 tab 的 id（与 killers 配套，见下） */
   tabId?: string;
+  /** 本 tab 是否激活。tab 是保活模型（非激活页 display:none、监听器都活着），而 Esc
+   *  停止这类 window 级键**只许激活页响应**——不加这道闸，在别的 tab 按 Esc 会顺着
+   *  各保活页自己的 window 监听把**后台正在跑的会话**打断（2026-09-29 用户实测） */
+  active?: boolean;
   /** 就地击杀注册表（与 TerminalPane 同一套）：宿主「删除会话」时先 await 它拿到
    *  「对话进程确实已退出」的时刻，再动会话文件。卸载路径的 chatClose 是
    *  fire-and-forget，宿主等不到；不等就会让仍在收尾的 claude 把最后一条消息写进
@@ -306,6 +310,7 @@ export default function ChatView({
   continueBlocked = null,
   tabId,
   killers,
+  active = true,
 }: Props) {
   // ---------- 实时流（本次 sitting 的消息） ----------
   const [items, setItems] = useState<ChatItem[]>([]);
@@ -1437,19 +1442,23 @@ export default function ChatView({
 
   /** Esc = 停止本轮（与卡片上那颗停止钮同语义，触发条件逐字对齐）。
    *  为什么要有键盘路径：模型跑起来之后再去够鼠标往往来不及；停止钮的 title 本来就写着
-   *  「等价 Esc」。它是全局键（焦点在哪都该生效），所以挂 window。
+   *  「等价 Esc」。它是全局键（焦点在哪都该生效），所以挂 window——但只指**本页**：
+   *  非激活 tab 保活期间同样挂着这份监听，不在 active 上让路的话，在别的 tab 按 Esc
+   *  会把后台正在跑的那个会话打断（display:none 拿不到焦点，靠焦点判定不可靠，
+   *  2026-09-29 用户实测）。
    *  停止的动作里带着「撤回」：模型还没开口时，刚发的那条消息连图一起退回输入框
    *  （interrupt → recallSent），打错字按 Esc 改完直接重发。
-   *  ⚠️ 四道让路别删：
+   *  ⚠️ 五道让路别删：
    *  ① 有弹层 —— Modal 的 Esc 是关弹层，两者同在 window 上，不让路会一次 Esc 既关弹层
    *     又把本轮打断；
    *  ② 有交互卡（权限 / 提问 / 原生方案）—— 那几张卡的 Esc 语义是「处理这张卡」，不是
    *     「中断本轮」，叠加执行会把用户想保留的那轮直接掐掉；
    *  ③ 有右键菜单 —— 同上；
    *  ④ 焦点在表单控件里（会话搜索框 / 项目搜索框 / 下拉 / 输入法候选都吃 Esc）。
-   *     **聊天输入框要放行**：一边打字一边按 Esc 停是主要用法。 */
+   *     **聊天输入框要放行**：一边打字一边按 Esc 停是主要用法；
+   *  ⑤ 非激活 tab —— 本页正被 display:none 藏着，Esc 属于用户此刻看着的那页。 */
   useEffect(() => {
-    if (readOnly) return;
+    if (readOnly || !active) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape" || e.isComposing) return;
       if (!isBusy(status) || plan?.source === "native") return;
@@ -1479,7 +1488,7 @@ export default function ChatView({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [readOnly, status, plan, permissions, question, interrupt]);
+  }, [readOnly, active, status, plan, permissions, question, interrupt]);
 
   /** 改选权限模式：立即热切换（进程已启动）；进程未启动时记住选择，
    *  spawn 时显式传 flag（覆盖配置默认） */
