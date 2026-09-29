@@ -134,7 +134,7 @@ export default function TrashDialog({ onClose, onChanged, onToast }: Props) {
                 </div>
                 <div className="row-actions">
                   <button
-                    className="btn btn-primary trash-restore"
+                    className="btn btn-sm btn-primary trash-restore"
                     disabled={busy === item.file}
                     onClick={() => restore(item)}
                   >
@@ -143,7 +143,7 @@ export default function TrashDialog({ onClose, onChanged, onToast }: Props) {
                   {/* 确认态与闲置态共用 trash-purge（等宽，见 CSS min-width 注释），
                       只叠 btn-danger 换色——按钮不变大，防误触靠两步分离+红色 */}
                   <button
-                    className={`btn trash-purge ${confirmPurge === item.file ? "btn-danger" : ""}`}
+                    className={`btn btn-sm trash-purge ${confirmPurge === item.file ? "btn-danger" : ""}`}
                     disabled={busy === item.file}
                     onClick={() =>
                       confirmPurge === item.file ? purge(item) : setConfirmPurge(item.file)
@@ -162,7 +162,7 @@ export default function TrashDialog({ onClose, onChanged, onToast }: Props) {
               <span className="trash-toolbar-warn">{items.length} 个会话将不可恢复</span>
             )}
             <button
-              className={`btn trash-purge ${confirmPurgeAll ? "btn-danger" : ""}`}
+              className={`btn btn-sm trash-purge ${confirmPurgeAll ? "btn-danger" : ""}`}
               disabled={busyAll}
               onClick={() => (confirmPurgeAll ? purgeAll() : setConfirmPurgeAll(true))}
             >

@@ -2457,22 +2457,20 @@ html.ctrl-links .md-body a {
   background: var(--panel);
 }
 
+/* 恢复 / 永久删除 / 清空回收站三颗：**尺寸不自带，直接吃 .btn-sm**
+   （= 供应商卡片「启用」那颗的 11.5px + 定高 26px + flex 居中）。
+   2026-09-29 用户报「回收站按钮比供应商卡片矮一截」：两边本是同款，.btn-sm 改定高
+   26px 后这边还留着旧的 4.5/5.5 半像素 padding（≈23.5px），故改为共用同一个类、
+   不再照抄数值——照抄正是当初漂移的成因。本类至此只剩布局职责。 */
 .trash-restore {
   flex-shrink: 0;
-  /* 11.5px + line-height:1 档（原与 .btn-sm 同款，那边已改定高 26px）：
-     上少下多抵消字形墨迹偏低 */
-  padding: 4.5px 12px 5.5px;
-  font-size: 11.5px;
 }
 
 .trash-purge {
   flex-shrink: 0;
-  /* 同 .trash-restore */
-  padding: 4.5px 12px 5.5px;
-  font-size: 11.5px;
   /* 确认态与闲置态共用本类（btn-danger 只管配色），按更长的确认态文案定宽
-     （「确认永久删除？」8 全角 × 11.5px + 24px padding + 2px border ≈ 118px）：
-     两态等宽等高，切换不变大、不挤压同行标题 */
+     （「确认永久删除？」8 全角 × 11.5px + 20px padding + 2px border ≈ 114px，
+     仍小于 118px）：两态等宽等高，切换不变大、不挤压同行标题 */
   min-width: 118px;
 }
 
