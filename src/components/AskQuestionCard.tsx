@@ -6,14 +6,15 @@
  * - **一次只显示一题**，顶部 tab 条每题一格（未答 = 空心圈、已答 = 勾，都是 `Icons.tsx`
  *   的线性图标）+ 末格「勾 + 提交」；
  *   Tab/Shift+Tab 或 ←/→ 切题，当前格高亮（TUI 的 currentQuestionIndex）
- * - **单选选中即记答案并跳到下一题，多选只勾选不跳**（TUI 的 shouldAdvance 不对称：
- *   单选默认真、多选传假）
+ * - **多题时单选选中即记答案并跳到下一题，多选只勾选不跳**（TUI 的 shouldAdvance
+ *   不对称：单选默认真、多选传假）
  * - 每题末尾两个内建行：「其他」（展开输入框，输入文本即答案）与「先在对话里说」
  *   （TUI 的 `__chat__` / "Chat about this"，只加在单选题上）
  * - 选项列表末尾一行 `下一题`／`提交`（TUI 的 submitButtonText：末题是 Submit）
  * - 提交格是**复核页**：列出已答项 + 缺答黄字警告 + 再确认一次；缺答允许提交
  *   （TUI：warning "You have not answered all questions"，未答的题不进 answers）
- * - **只有一题且是单选时没有提交格**，选中即提交（TUI 的 hideSubmitTab）
+ * - **只有一题且是单选时**没有 tab 条与复核页（TUI 的 hideSubmitTab 骨架），但选中
+ *   不即交——见下方「app 侧新增」的单题两步提交
  * - Esc = 取消（host 侧 deny）
  *
  * 刻意没复刻（都在 docs/agent-sdk-interactive-tools.md 的「未验证」清单里，
@@ -21,6 +22,11 @@
  * `annotations`/`followUp` 回传、AFK 倒计时自动提交、Ctrl+G 外部编辑器。
  *
  * app 侧新增（**TUI 没有**）：
+ * - **单题两步提交**（2026-10-03 用户反馈改）：单选单题点选项只记答案，有答案后卡底
+ *   出现「提交回答」主按钮（「其他」要等文字非空才出现）；**再点同一选项 / 再按一次
+ *   Enter = 确认提交**。TUI 的 hideSubmitTab 是选中即提交，app 不沿用——误触一下就把
+ *   答案发出去（选错只能再发消息纠正），且「其他」输入路径没有任何提交入口（提示只写
+ *   在输入框占位符里，一开始打字就看不见了，鼠标上无解）。
  * - **卡头「收起/展开」**。TUI 的提问卡印在 scrollback 里、上下文一直可滚；app 是底部固定
  *   卡槽，展开态吃 70% 视口（`.card-slot` 的 max-height），作答前想重读会话就很困难。
  *   收起 = 只留卡头（标题 + 「N 题待答 / 已答 x/y」摘要），其余三段 `display: none`：
@@ -120,7 +126,8 @@ export default function AskQuestionCard({ items, busy, onSubmit, onCancel, onDis
   const otherRef = useRef<HTMLInputElement>(null);
   const toggleRef = useRef<HTMLButtonElement>(null);
 
-  /** 只有一题且单选：没有提交格，选中即提交（TUI 的 hideSubmitTab） */
+  /** 只有一题且单选：不渲染 tab 条 / 复核页 / 「下一题」行（TUI 的 hideSubmitTab 骨架），
+   *  提交走两步（点选记答案 → 卡底「提交回答」），见文件头「app 侧新增」 */
   const shortCircuit = items.length === 1 && items[0].multiSelect !== true;
   /** tab 条格数：题目格 + 提交格（短路时没有提交格） */
   const tabCount = shortCircuit ? items.length : items.length + 1;
@@ -151,6 +158,9 @@ export default function AskQuestionCard({ items, busy, onSubmit, onCancel, onDis
 
   const missing = items.filter((it) => answerOf(it) === "").length;
   const answeredCount = items.length - missing;
+  /** 单题卡的当前题是否已有答案：footer「提交回答」主按钮的出现条件
+   *  （「其他」要文字非空才算——空文本没有可提交的答案） */
+  const curAnswered = !!cur && answerOf(cur) !== "";
 
   /** 收起 / 展开（两个方向都把焦点收到开关上）：收起时「其他」输入框会被 display:none，
    *  焦点若留在里面会掉到 body，收起态那套键盘分支就再也收不到键了 */
@@ -184,8 +194,8 @@ export default function AskQuestionCard({ items, busy, onSubmit, onCancel, onDis
 
   /** 鼠标进到某一行 = 把「当前行」挪到它——与 ↑↓ 共用同一个 `focus`。
    *  ⚠️ 这一条是**必须**的耦合，不是好看问题：Enter/Space 打的是 `rows[focus]`，鼠标
-   *  不参与的话「指着第 3 行按 Enter、动的是第 1 行」（单题单选还会当场把第 1 项提交掉），
-   *  所见非所动。耦合后两套输入只有一个当前行，样式也只剩一套（见 styles.css
+   *  不参与的话「指着第 3 行按 Enter、动的是第 1 行」（单题下还会当场把已选答案换成
+   *  第 1 项），所见非所动。耦合后两套输入只有一个当前行，样式也只剩一套（见 styles.css
    *  .ask-option-focus 注释）。⚠️ busy 早退：禁用按钮在 Chrome 本就不发鼠标事件，
    *  这只是不让状态在禁用期被改 */
   const hoverRow = (i: number) => {
@@ -215,12 +225,21 @@ export default function AskQuestionCard({ items, busy, onSubmit, onCancel, onDis
       keepCardFocus();
       return;
     }
-    setPick(cur.question, { picked: [label], text: "" });
-    if (shortCircuit) onSubmit(collected({ question: cur.question, answer: label }));
-    else {
-      advance();
+    // 单题两步提交：点选只记答案；**再点/再按同一项** = 确认提交（collected 带 override，
+    // 因为这一击的 setPick 还没落进 state）。多题保持「选中跳下一题」，由复核页统一提交
+    if (shortCircuit) {
+      const prev = picks[cur.question]?.picked ?? [];
+      if (prev.length === 1 && prev[0] === label) {
+        onSubmit(collected({ question: cur.question, answer: label }));
+        return;
+      }
+      setPick(cur.question, { picked: [label], text: "" });
       keepCardFocus();
+      return;
     }
+    setPick(cur.question, { picked: [label], text: "" });
+    advance();
+    keepCardFocus();
   };
 
   /** 「其他」：单选直接切到它，多选当复选框；随后把光标送进输入框 */
@@ -271,7 +290,7 @@ export default function AskQuestionCard({ items, busy, onSubmit, onCancel, onDis
       // 收起态 = 阅读模式：卡内只剩卡头那颗开关还看得见
       // ① **Esc 改绑成「展开」**：收起时摊在眼前的是开关而不是题目，取消不该这么容易被误触
       // ② 绝不接管 Tab——焦点要能走原生离卡（拦了就成键盘陷阱）
-      // ③ 绝不让看不见的选项行被 Enter/Space 激活（单题单选会当场凭空提交一个答案）
+      // ③ 绝不让看不见的选项行被 Enter/Space 激活（会凭空改掉已选答案）
       if (e.key === "Escape" || e.key === "Enter" || e.key === " ") {
         e.preventDefault();
         setCollapsed(false);
@@ -294,7 +313,7 @@ export default function AskQuestionCard({ items, busy, onSubmit, onCancel, onDis
     // 卡头那颗开关是**键盘孤岛**：焦点在它身上时走原生语义（Enter/Space = 点它、
     // Tab = 走原生离卡——它是卡内 DOM 序最后一个焦点项，Tab 出去正好落到输入区）。
     // ⚠️ 不早退的话，展开态下鼠标点过开关再按 Enter 会落到下面的行激活分支——
-    // 把 ↑↓ 光标那一行激活，单题单选（shortCircuit）直接 onSubmit，等于凭空提交一个答案
+    // 把 ↑↓ 光标那一行激活，单题下若那行正是已选项，等于凭空把答案提交掉
     // （2026-09-24 复核发现）。Esc 例外，留给下面那条「Esc = 取消」的主分支（按钮本来
     // 也没有 Esc 原生动作，放行不冲突）
     if (t === toggleRef.current && e.key !== "Escape") return;
@@ -313,8 +332,12 @@ export default function AskQuestionCard({ items, busy, onSubmit, onCancel, onDis
       return;
     }
     if (e.key === "Tab") {
-      e.preventDefault();
-      goTab(idx + (e.shiftKey ? -1 : 1));
+      // 单题没有可切的题（tabCount=1，goTab 永远夹回 0）：不拦 Tab，让焦点能原生走到
+      // 「其他」输入框 / 「提交回答」/「取消」——拦了等于把 Tab 困死在卡里
+      if (!shortCircuit) {
+        e.preventDefault();
+        goTab(idx + (e.shiftKey ? -1 : 1));
+      }
       return;
     }
     if (onReview) {
@@ -325,8 +348,11 @@ export default function AskQuestionCard({ items, busy, onSubmit, onCancel, onDis
       return;
     }
     if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
-      e.preventDefault();
-      goTab(idx + (e.key === "ArrowRight" ? 1 : -1));
+      // 同 Tab：单题无题可切，不拦原生行为
+      if (!shortCircuit) {
+        e.preventDefault();
+        goTab(idx + (e.key === "ArrowRight" ? 1 : -1));
+      }
       return;
     }
     if (e.key === "ArrowDown") {
@@ -400,32 +426,34 @@ export default function AskQuestionCard({ items, busy, onSubmit, onCancel, onDis
           .ask-collapse）——收起动画期间逐题答案仍挂载在组件 state 里 */}
       <div className="ask-collapse">
         <div className="ask-collapse-inner">
-      <div className="ask-tabs">
-        {items.map((it, i) => {
-          const answered = answerOf(it) !== "";
-          return (
-            <button
-              key={it.question}
-              type="button"
-              className={`ask-tab ${i === idx ? "ask-tab-on" : ""} ${answered ? "ask-tab-done" : ""}`}
-              disabled={busy}
-              title={it.question}
-              onClick={() => {
-                goTab(i);
-                keepCardFocus();
-              }}
-            >
-              {/* 已答 = 勾、未答 = 空心圈（都是 Icons.tsx 的线性图标）。
-                  ⚠️ 别退回 Unicode 的 ☐/☒/☑：方框套勾的笔画与相邻文字不是一套，
-                  用户直接反馈过「决策点选中状态不好看」（2026-09-22） */}
-              <span className="ask-tab-mark">
-                {answered ? <CheckIcon size={13} /> : <CircleIcon size={11} />}
-              </span>
-              {it.header ?? `第 ${i + 1} 题`}
-            </button>
-          );
-        })}
-        {!shortCircuit && (
+      {/* 单题不渲染 tab 条（TUI 的 hideSubmitTab 骨架）：一格孤零零的题签没有信息量，
+          提交入口是卡底那颗「提交回答」主按钮（见 plan-approve-actions） */}
+      {!shortCircuit && (
+        <div className="ask-tabs">
+          {items.map((it, i) => {
+            const answered = answerOf(it) !== "";
+            return (
+              <button
+                key={it.question}
+                type="button"
+                className={`ask-tab ${i === idx ? "ask-tab-on" : ""} ${answered ? "ask-tab-done" : ""}`}
+                disabled={busy}
+                title={it.question}
+                onClick={() => {
+                  goTab(i);
+                  keepCardFocus();
+                }}
+              >
+                {/* 已答 = 勾、未答 = 空心圈（都是 Icons.tsx 的线性图标）。
+                    ⚠️ 别退回 Unicode 的 ☐/☒/☑：方框套勾的笔画与相邻文字不是一套，
+                    用户直接反馈过「决策点选中状态不好看」（2026-09-22） */}
+                <span className="ask-tab-mark">
+                  {answered ? <CheckIcon size={13} /> : <CircleIcon size={11} />}
+                </span>
+                {it.header ?? `第 ${i + 1} 题`}
+              </button>
+            );
+          })}
           <button
             type="button"
             className={`ask-tab ask-tab-submit ${onReview ? "ask-tab-on" : ""}`}
@@ -440,8 +468,8 @@ export default function AskQuestionCard({ items, busy, onSubmit, onCancel, onDis
             </span>
             提交
           </button>
-        )}
-      </div>
+        </div>
+      )}
 
       <div className="ask-body">
         {onReview ? (
@@ -583,20 +611,35 @@ export default function AskQuestionCard({ items, busy, onSubmit, onCancel, onDis
             </button>
           </>
         ) : (
-          <button
-            className="btn"
-            disabled={busy}
-            title="拒绝这次提问：不发送任何答案，模型会收到「用户取消了这次提问」"
-            onClick={onCancel}
-          >
-            取消
-          </button>
+          <>
+            {/* 单题两步提交的第二步：有答案才出现（「其他」要等文字非空）。
+                多题的提交在复核页，不在这 */}
+            {shortCircuit && curAnswered && (
+              <button
+                className="btn btn-primary"
+                disabled={busy}
+                onClick={() => onSubmit(collected())}
+              >
+                提交回答
+              </button>
+            )}
+            <button
+              className="btn"
+              disabled={busy}
+              title="拒绝这次提问：不发送任何答案，模型会收到「用户取消了这次提问」"
+              onClick={onCancel}
+            >
+              取消
+            </button>
+          </>
         )}
         <span className="plan-approve-hint">
           {onReview
             ? "Enter 提交 · Esc 取消"
             : shortCircuit
-              ? "Enter 选中即提交 · ↑↓ 选择 · Esc 取消"
+              ? curAnswered
+                ? "Enter 提交 · Esc 取消"
+                : "Enter 选中 · ↑↓ 选择 · Esc 取消"
               : "Enter 选中 · ↑↓ 选择 · Tab/←→ 切题 · Esc 取消"}
         </span>
         </div>
