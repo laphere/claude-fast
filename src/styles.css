@@ -3274,6 +3274,16 @@ html.ctrl-links .md-body a {
   word-break: break-word;
 }
 
+/* 用户气泡右下角的发送时间：小字淡色，不进选区（拖选复制正文时不带时间） */
+.chat-user-time {
+  margin-top: 3px;
+  text-align: right;
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: var(--muted);
+  user-select: none;
+}
+
 /* 用户消息里的图片（历史 image 块 + 实时发送的附件） */
 .chat-user-images {
   display: flex;

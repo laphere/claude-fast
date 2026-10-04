@@ -34,6 +34,24 @@ export function formatTime(iso: string | null | undefined): string {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+/** ISO 时间戳 → 用户气泡的发送时间：今天只显 HH:MM，更早的消息带上日期
+ *  （跨天会话里单看时分排不出先后），跨年再带上年份。解析失败返回空串。 */
+export function formatChatTime(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const hm = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const sameDay =
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate();
+  if (sameDay) return hm;
+  const md = `${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  return d.getFullYear() === now.getFullYear() ? `${md} ${hm}` : `${d.getFullYear()}-${md} ${hm}`;
+}
+
 /** Markdown 渲染（marked + DOMPurify 消毒 + 列表标记物化 + URL 补链，cc-haha 同方案）。
  *  两步后处理都在消毒**之后**：列表标记物化（materializeListMarkers）把 `<ol>` 编号与
  *  `<ul>` 圆点换成真实文本节点（原生 marker 在 Chromium 里选不中也复制不到，详见

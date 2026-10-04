@@ -339,7 +339,14 @@ export type ChatEvent =
 
 /** 对话视图内的一条渲染条目（工具调用合并其执行结果，展开即看） */
 export type ChatItem =
-  | { id: number; kind: "user"; text: string; images?: ChatImage[] }
+  | {
+      id: number;
+      kind: "user";
+      text: string;
+      images?: ChatImage[];
+      /** 发送时刻（ISO 串）：用户气泡右下角的发送时间，发送时记下 */
+      time: string;
+    }
   | { id: number; kind: "text"; text: string; streaming: boolean }
   | { id: number; kind: "thinking"; text: string; streaming: boolean }
   | {

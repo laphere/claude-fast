@@ -35,6 +35,7 @@ import {
   ToolUseRow,
   activitySummary,
   fmtTokens,
+  formatChatTime,
   formatTime,
   parseFindings,
 } from "./MessageParts";
@@ -233,6 +234,8 @@ type StreamEntry =
       key: string;
       text: string;
       images?: ChatImage[];
+      /** 发送时刻（ISO）：历史条目来自 jsonl 的 timestamp，实时条目来自发送时记录 */
+      time?: string | null;
       msgIndex?: number;
       /** 实时区用户气泡的 item id（导航轨 data-live-user 锚点定位用） */
       liveId?: number;
@@ -1256,7 +1259,13 @@ export default function ChatView({
     replyStartedRef.current = false;
     setItems((prev) => [
       ...prev,
-      { id: itemId, kind: "user", text, images: images.length > 0 ? images : undefined },
+      {
+        id: itemId,
+        kind: "user",
+        text,
+        images: images.length > 0 ? images : undefined,
+        time: new Date().toISOString(),
+      },
     ]);
     // 发消息 = 用户明确要看这一轮的回复：把跟随开关打开（此前若在往上翻历史，
     // 视图停在原地的话，自己刚发的那条连回复都在屏幕外）。浮钮的显示态一起收掉，
@@ -1966,6 +1975,7 @@ export default function ChatView({
             key: `h${msgIndex}`,
             text: texts.map((b) => b.text ?? "").join("\n"),
             images: imgs.length > 0 ? imgs : undefined,
+            time: m.timestamp ?? null,
             msgIndex,
           });
         }
@@ -2006,6 +2016,7 @@ export default function ChatView({
             key: `l${it.id}`,
             text: it.text,
             images: it.images,
+            time: it.time,
             liveId: it.id,
           });
           break;
@@ -2303,6 +2314,8 @@ export default function ChatView({
         // 本条消息的图片提出成局部变量：map 的回调里 TS 不再收窄 e.images，
         // 直接在回调里读属性会报「possibly undefined」
         const imgs = e.images ?? [];
+        // 发送时间：历史里缺 timestamp 的行、解析失败的串都得出空串，空串不渲染
+        const timeLabel = formatChatTime(e.time);
         nodes.push(
           <div
             key={e.key}
@@ -2330,6 +2343,7 @@ export default function ChatView({
                 {e.text}
               </div>
             )}
+            {timeLabel && <div className="chat-user-time">{timeLabel}</div>}
           </div>,
         );
       } else if (e.t === "asstText") {
