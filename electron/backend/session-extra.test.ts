@@ -135,7 +135,7 @@ describe("renderSessionMarkdown", () => {
       kind: "assistant",
       model: "claude-opus-4",
       blocks: [
-        { kind: "thinking", text: "deep thought" },
+        { kind: "thinking", text: "deep thought", durationMs: 8300 },
         { kind: "tool_use", name: "Grep", input: { pattern: "foo" }, toolUseId: "t1" },
         { kind: "tool_result", text: "y".repeat(250), toolUseId: "t1" },
         { kind: "image" },
@@ -143,15 +143,24 @@ describe("renderSessionMarkdown", () => {
     },
   ];
 
-  it("四种块形态：text 原样 / thinking 引用块 / tool_use 摘要 / tool_result 截断 200 / image 占位", () => {
+  it("四种块形态：text 原样 / thinking 引用块（带时长）/ tool_use 摘要 / tool_result 截断 200 / image 占位", () => {
     const md = renderSessionMarkdown(msgs, "我的会话");
     expect(md).toContain("# 我的会话");
     expect(md).toContain("Hello world");
-    expect(md).toContain("> 💭 思考过程（省略）");
+    expect(md).toContain("> 💭 思考过程 · 8 秒（省略）");
     expect(md).toContain("🔧 Grep · foo");
     // tool_result 用 tool_use_id 反查到工具名 Grep，并截断到 200 字符 + …
     expect(md).toMatch(/📄 Grep 结果：y{200}…/);
     expect(md).toContain("🖼️ [图片]");
+  });
+
+  it("thinking 时长不足 1 秒不显示（两份手写格式化的共用守卫路径）", () => {
+    const md = renderSessionMarkdown(
+      [{ kind: "assistant", blocks: [{ kind: "thinking", text: "x", durationMs: 500 }] }],
+      "短思考",
+    );
+    expect(md).toContain("> 💭 思考过程（省略）");
+    expect(md).not.toContain("秒");
   });
 
   it("标题缺省回退「未命名会话」", () => {

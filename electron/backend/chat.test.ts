@@ -56,7 +56,7 @@ describe("文本增量（stream_event）", () => {
 });
 
 describe("思考块（stream_event）", () => {
-  it("thinking_delta → content_start(thinking)/delta(thinking)", () => {
+  it("thinking_delta → content_start(thinking)/delta(thinking)，stop 收口带实测时长", () => {
     const t = new SdkMessageTranslator();
     const out = [
       ...t.translate(
@@ -67,10 +67,35 @@ describe("思考块（stream_event）", () => {
       ),
       ...t.translate(msg({ type: "stream_event", event: { type: "content_block_stop", index: 0 } })),
     ];
-    expect(out).toEqual([
-      { type: "content_start", kind: "thinking" },
+    expect(out.slice(0, 2)).toEqual([
+      // thinking 的 content_start 捎带起始时刻（前端活秒表与 thinking_done 同钟）
+      { type: "content_start", kind: "thinking", startedAt: expect.any(Number) },
       { type: "delta", kind: "thinking", text: "让我想想" },
     ]);
+    // 时长是实测墙钟，只断言形状与量级（真值由下一个用例钉死）
+    const done = out[2] as { type: string; durationMs: number };
+    expect(done.type).toBe("thinking_done");
+    expect(done.durationMs).toBeGreaterThanOrEqual(0);
+    expect(done.durationMs).toBeLessThan(60_000);
+  });
+
+  it("thinking_done 的时长 = content_block_start 到 stop 的墙钟差", () => {
+    vi.useFakeTimers();
+    try {
+      const t = new SdkMessageTranslator();
+      const start = t.translate(
+        msg({ type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "thinking" } } }),
+      );
+      // 活秒表起点 = 后端记的开流时刻，收口时长即「同一时钟的差」——前端走字到定格无跳变
+      expect(start).toEqual([{ type: "content_start", kind: "thinking", startedAt: Date.now() }]);
+      vi.advanceTimersByTime(8_000);
+      const out = t.translate(msg({ type: "stream_event", event: { type: "content_block_stop", index: 0 } }));
+      expect(out).toEqual([{ type: "thinking_done", durationMs: 8_000 }]);
+      // 未知 index 的 stop（没有对应 start）不产出
+      expect(t.translate(msg({ type: "stream_event", event: { type: "content_block_stop", index: 7 } }))).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

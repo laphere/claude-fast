@@ -47,6 +47,10 @@ export interface ContentBlock {
   mediaType?: string | null;
   /** image 块的 base64 裸数据（无 data: 前缀） */
   data?: string | null;
+  /** thinking 块的思考时长（ms）：来自 jsonl assistant 行的行级 thinkingDurationMs
+   *  （2.1.x 起 thinking 块单独成行并带它，见 parseSessionMessages）。非 thinking 块
+   *  与拿不到时长的 thinking（如老版本 jsonl、被中断的思考）为 undefined */
+  durationMs?: number | null;
 }
 
 /** 单条 assistant 消息的 token 用量（jsonl usage 的两种格式已归一） */
@@ -510,6 +514,16 @@ export function parseSessionMessages(content: string): SessionMessage[] {
     if (role !== "user" && role !== "assistant") continue;
     const blocks = parseContentBlocks(msg.content, role);
     if (blocks.length === 0) continue;
+    // 行级 thinkingDurationMs 落到本行的 thinking 块上（2.1.x jsonl：一个 API 内容块
+    // 单独成行、apiBlockIndex 标序，thinking 行带这个字段）。必须**逐行**在此刻挂——
+    // 相邻同 id 的行随后会并块（见下），并块后行级字段就无从区分是哪段思考的了
+    {
+      const tdm = v.thinkingDurationMs;
+      if (typeof tdm === "number" && Number.isFinite(tdm) && tdm >= 0) {
+        const tb = blocks.find((b) => b.kind === "thinking");
+        if (tb) tb.durationMs = tdm;
+      }
+    }
     const msgId = asString(msg.id);
     const usage = parseUsage(msg.usage);
     // 同 id 的多行是**一次响应的流式快照**：首行 usage 恒为 0（或只有占位），真实值在

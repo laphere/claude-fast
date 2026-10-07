@@ -270,6 +270,15 @@ function toolSummaryLine(name: string, input: unknown): string {
   }
 }
 
+/** 思考时长标签（「 · 8 秒」；不足 1 秒/未知为空串）。与前端 MessageParts 的
+ *  formatThinkingDuration 同口径——主进程不引渲染层模块，两边各写一份，改格式要同步 */
+function thinkingDurationLabel(ms?: number | null): string {
+  if (ms == null || !Number.isFinite(ms) || ms < 1000) return "";
+  const s = Math.round(ms / 1000);
+  const t = s >= 60 ? `${Math.floor(s / 60)} 分 ${String(s % 60).padStart(2, "0")} 秒` : `${s} 秒`;
+  return ` · ${t}`;
+}
+
 /** 单条消息渲染为 Markdown 小节（text 原样 / thinking 引用块 / tool_use 摘要 / tool_result 截断 200 / image 占位） */
 function renderMessageMarkdown(msg: SessionMessage, toolNames: Map<string, string>): string {
   let out = "";
@@ -290,9 +299,9 @@ function renderMessageMarkdown(msg: SessionMessage, toolNames: Map<string, strin
           out += b.text + "\n";
         }
         break;
-      // thinking 压缩为引用块，不展开（避免把冗长推理灌进导出文档）
+      // thinking 压缩为引用块，不展开（避免把冗长推理灌进导出文档）；时长随块带出
       case "thinking":
-        out += "> 💭 思考过程（省略）\n";
+        out += `> 💭 思考过程${thinkingDurationLabel(b.durationMs)}（省略）\n`;
         break;
       case "tool_use": {
         const line = toolSummaryLine(b.name ?? "工具", b.input);

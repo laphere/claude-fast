@@ -2184,6 +2184,14 @@ html.ctrl-links .md-body a {
   font-size: 13px;
 }
 
+/* 思考时长（「思考过程 · 8 秒」的后半段）：数字用正体与标题的斜体区分开，
+   弱一档不抢正文；时长未知（中断的思考 / 老版 jsonl）整个不渲染 */
+.thinking-dur {
+  font-style: normal;
+  margin-left: 6px;
+  opacity: 0.75;
+}
+
 .thinking-body {
   margin-top: 4px;
 }

@@ -149,8 +149,16 @@ export type ChatEvent =
   /** 上下文占用（getContextUsage 的读数）；init 一到与每轮结束各推一次。
    *  送**原始数字**而不是 API 的 percentage —— 那个字段的单位（0-100 / 0-1）没验过 */
   | { type: "context_usage"; usedTokens: number; windowTokens: number; model?: string | null }
-  | { type: "content_start"; kind: "text" | "thinking" }
+  /** 内容块开流。thinking 块捎带 startedAt（epoch ms，与 thinking_done 的 durationMs 同钟）：
+   *  前端活秒表从它起算，收口时定格值与走字无跳变。text 块与 translateAssistant 的
+   *  非流式回放路径不带（那边没有配对的收口事件，起了秒表也永远走不到终点） */
+  | { type: "content_start"; kind: "text" | "thinking"; startedAt?: number }
   | { type: "delta"; kind: "text" | "thinking" | "tool_input"; text: string }
+  /** 思考块收口（stream_event 的 content_block_stop，仅 thinking 块发）：content_block_start
+   *  到 stop 的实测思考时长。历史/resume 侧没有这条事件——那边由 jsonl 行级
+   *  thinkingDurationMs 供数（sessions.ts 解析进 thinking 块的 durationMs），两路在前端的
+   *  thinking 条目上汇合。被中断的思考没有 stop 帧，拿不到时长属预期（界面不显示） */
+  | { type: "thinking_done"; durationMs: number }
   | { type: "tool_use_start"; toolUseId: string; name: string }
   | { type: "tool_use_complete"; toolUseId: string; name: string; input: unknown }
   | { type: "tool_result"; toolUseId: string; isError: boolean; text: string }
@@ -411,6 +419,8 @@ interface PendingBlock {
   toolName: string | null;
   /** text/thinking 累计文本，或 tool_use 的 partial_json 累计 */
   text: string;
+  /** content_block_start 的到达时刻：thinking 块收口时算思考时长（thinking_done）用 */
+  startedAt: number;
 }
 
 /**
@@ -669,12 +679,21 @@ export class SdkMessageTranslator {
             toolUseId: String(block.id ?? ""),
             toolName: String(block.name ?? ""),
             text: "",
+            startedAt: Date.now(),
           });
           return [{ type: "tool_use_start", toolUseId: String(block.id ?? ""), name: String(block.name ?? "") }];
         }
         if (kind === "text" || kind === "thinking") {
-          this.blocks.set(index, { kind, toolUseId: null, toolName: null, text: "" });
-          return [{ type: "content_start", kind }];
+          const startedAt = Date.now();
+          this.blocks.set(index, {
+            kind,
+            toolUseId: null,
+            toolName: null,
+            text: "",
+            startedAt,
+          });
+          // thinking 捎带起始时刻：前端活秒表与 thinking_done 的实测同钟（见事件声明）
+          return [{ type: "content_start", kind, ...(kind === "thinking" ? { startedAt } : {}) }];
         }
         return [];
       }
@@ -703,6 +722,13 @@ export class SdkMessageTranslator {
         const pending = this.blocks.get(index);
         if (!pending) return [];
         this.blocks.delete(index);
+        // 思考块收口：实测时长随事件下发（毫秒级，与 jsonl 侧行级 thinkingDurationMs 同为
+        // 「块首帧到块尾帧」口径）。text 块没有可展示的时长语义，照旧不产出
+        if (pending.kind === "thinking") {
+          return [
+            { type: "thinking_done", durationMs: Math.max(0, Date.now() - pending.startedAt) },
+          ];
+        }
         if (pending.kind !== "tool_use") return [];
         // 组装 input JSON（失败降级为空对象，tool_result 仍可凭 id 关联）
         let input: unknown = {};

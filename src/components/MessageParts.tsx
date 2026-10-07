@@ -488,15 +488,33 @@ export function FindingsCard({
   );
 }
 
-/** thinking 块：折叠展示 */
-export function ThinkingBlock({ text }: { text: string }) {
+/** 思考时长文案：不足 1 秒返回 null（不显示——亚秒级时长只有噪声）；
+ *  秒级取整，满 1 分钟拆「X 分 Y 秒」。活动组摘要的合计时长与块级时长共用这份 */
+export function formatThinkingDuration(ms?: number | null): string | null {
+  if (ms == null || !Number.isFinite(ms) || ms < 1000) return null;
+  const s = Math.round(ms / 1000);
+  return s >= 60
+    ? `${Math.floor(s / 60)} 分 ${String(s % 60).padStart(2, "0")} 秒`
+    : `${s} 秒`;
+}
+
+/** thinking 块：折叠展示。时长已知时在标题上带出（终端 "Thought for Xs" 的对应物）——
+ *  活动视图来自 thinking_done 实测，历史条目来自 jsonl 行级 thinkingDurationMs */
+export function ThinkingBlock({
+  text,
+  durationMs,
+}: {
+  text: string;
+  durationMs?: number | null;
+}) {
+  const dur = formatThinkingDuration(durationMs);
   return (
     <details className="thinking-block">
       <summary>
         <span className="tool-icon">
           <BrainIcon size={12} />
         </span>
-        思考过程
+        思考过程{dur ? <span className="thinking-dur">{dur}</span> : null}
       </summary>
       <div className="thinking-body">
         <MarkdownText text={text} />
@@ -541,11 +559,24 @@ function toolPhrase(name: string, count: number): string {
   }
 }
 
-/** 从一段活动内容生成摘要行（如「思考 · 读取 2 个文件 · 执行 1 条命令」） */
+/** 从一段活动内容生成摘要行（如「思考 · 8 秒 · 读取 2 个文件 · 执行 1 条命令」）。
+ *  思考时长是组内各 thinking 块已知时长的合计——组折叠时它是唯一可见的时长入口
+ *  （终端 Ctrl+O 折叠态同样显示 "Thought for Xs"）；个别块拿不到时长（被中断的
+ *  思考）就按已知值显示，不因缺一块而整个弃显 */
 export function activitySummary(
-  entries: Array<{ kind: string; name?: string | null }>,
+  entries: Array<{ kind: string; name?: string | null; durationMs?: number | null }>,
 ): string {
   const hasThinking = entries.some((e) => e.kind === "thinking");
+  let thinkMs = 0;
+  let hasDur = false;
+  for (const e of entries) {
+    if (e.kind !== "thinking") continue;
+    if (typeof e.durationMs === "number" && Number.isFinite(e.durationMs) && e.durationMs > 0) {
+      thinkMs += e.durationMs;
+      hasDur = true;
+    }
+  }
+  const dur = hasDur ? formatThinkingDuration(thinkMs) : null;
   const counts = new Map<string, number>();
   for (const e of entries) {
     if (e.kind !== "tool_use") continue;
@@ -553,7 +584,7 @@ export function activitySummary(
     counts.set(key, (counts.get(key) ?? 0) + 1);
   }
   const phrases = [...counts.entries()].map(([name, n]) => toolPhrase(name, n));
-  const parts = [...(hasThinking ? ["思考"] : []), ...phrases];
+  const parts = [...(hasThinking ? [`思考${dur ? ` · ${dur}` : ""}`] : []), ...phrases];
   return parts.length > 0 ? parts.join(" · ") : "执行操作";
 }
 

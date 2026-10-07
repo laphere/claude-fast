@@ -177,6 +177,27 @@ function fmtDur(ms: number): string {
   return s >= 60 ? `${Math.floor(s / 60)}m${String(s % 60).padStart(2, "0")}s` : `${s}s`;
 }
 
+/** 把仍在流式的 text/thinking 条目收尾（streaming → false）。终态翻转的入口有两处，
+ *  必须共用这一份：status:idle（轮次正常结束）与 exited（进程死亡——没有 result/status 帧，
+ *  不翻的话思考活秒表会在死会话上永动、interval 常驻，2026-10-07 code review F1） */
+function settleStreamingItems(prev: ChatItem[]): ChatItem[] {
+  return prev.map((it) =>
+    (it.kind === "text" || it.kind === "thinking") && it.streaming
+      ? { ...it, streaming: false }
+      : it,
+  );
+}
+
+/** thinking 条目的显示时长：已定稿用定稿值（thinking_done / jsonl），流式中从
+ *  startedAt 走活秒表（每次渲染重读 Date.now()，由下面的 tick effect 保证 ≥1Hz）。
+ *  与 thinking_done 同钟（起始时刻都是后端 content_block_start 记的），收口定格无跳变；
+ *  拿不到起点（delta 兜底建的条目 / 已中断 streaming=false）返回 undefined 不显示 */
+function liveThinkMs(e: { durationMs?: number; startedAt?: number; streaming?: boolean }): number | undefined {
+  if (e.durationMs != null) return e.durationMs;
+  if (e.streaming && e.startedAt != null) return Math.max(0, Date.now() - e.startedAt);
+  return undefined;
+}
+
 /** 「还贴着底」的容差（px）：滚动位置离内容末尾不超过它就算跟在底部，跟随开关据此翻转。
  *  ⚠️ 只在**用户滚动**时量（见 onChatScroll），不要在每次内容更新后量一次距离 ——
  *  流式输出两次更新之间就长高一截，量出来必然超容差，跟随会自己断掉 */
@@ -241,7 +262,16 @@ type StreamEntry =
       liveId?: number;
     }
   | { t: "asstText"; key: string; text: string; msgIndex?: number; streaming?: boolean }
-  | { t: "thinking"; key: string; text: string; streaming?: boolean }
+  | {
+      t: "thinking";
+      key: string;
+      text: string;
+      streaming?: boolean;
+      /** 已定稿的思考时长（thinking_done / jsonl）；流式期间为空、由 startedAt 走活秒表 */
+      durationMs?: number;
+      /** 开流时刻（epoch ms，实时条目才有）：活秒表起点 */
+      startedAt?: number;
+    }
   | {
       t: "tool";
       key: string;
@@ -641,13 +671,7 @@ export default function ChatView({
           setRunningCmd(null);
           setSubagent(null);
           pendingCmdRef.current = null;
-          setItems((prev) =>
-            prev.map((it) =>
-              (it.kind === "text" || it.kind === "thinking") && it.streaming
-                ? { ...it, streaming: false }
-                : it,
-            ),
-          );
+          setItems(settleStreamingItems);
           // 兜底触发：计划模式下本轮确曾产出（进入过思考态、无错误）→ 弹方案卡。
           // 原生 ExitPlanMode 若已下发，则 native 卡优先，这里不覆盖它
           if (
@@ -679,7 +703,10 @@ export default function ChatView({
           const id = nextItemId++;
           return ev.kind === "text"
             ? [...prev, { id, kind: "text", text: "", streaming: true }]
-            : [...prev, { id, kind: "thinking", text: "", streaming: true }];
+            : [
+                ...prev,
+                { id, kind: "thinking", text: "", streaming: true, startedAt: ev.startedAt },
+              ];
         });
         break;
       case "delta": {
@@ -698,6 +725,22 @@ export default function ChatView({
         });
         break;
       }
+      case "thinking_done":
+        // 思考块收口（后端 content_block_stop 实测时长）：落到最近一条还没有时长的
+        // thinking 条目上——块按序开合，最近一条即刚收口的这条。不进 REPLY_EVENTS：
+        // 它必然晚于同块的 content_start/delta，撤回窗口早已翻过牌
+        setItems((prev) => {
+          for (let i = prev.length - 1; i >= 0; i--) {
+            const it = prev[i];
+            if (it.kind !== "thinking") continue;
+            if (it.durationMs != null) return prev; // 已带时长说明对不上号，别覆盖旧值
+            const copy = [...prev];
+            copy[i] = { ...it, durationMs: ev.durationMs };
+            return copy;
+          }
+          return prev;
+        });
+        break;
       case "tool_use_start":
         setItems((prev) => {
           if (prev.some((it) => it.kind === "tool_use" && it.toolUseId === ev.toolUseId)) {
@@ -859,6 +902,10 @@ export default function ChatView({
         setStatus({ phase: "exited", code: ev.code, stderrTail: ev.stderrTail });
         setSessionKey(null);
         startPromiseRef.current = null;
+        // 流式条目一并收尾：进程死亡没有 result/status:idle 帧，思考中的秒表若不翻
+        // streaming 会在死会话上永动（interval 常驻 + 摘要每秒 +1，code review F1）。
+        // iterate 抛错也走这里——chat.ts 的 finally 兜底必发 exited
+        setItems(settleStreamingItems);
         // 进程没了，方案卡/提问卡再也应答不出去：收掉，别留按钮点不动的死卡
         setPlan(null);
         setPlanBusy(false);
@@ -1952,6 +1999,21 @@ export default function ChatView({
     return { resultMapPre, resultBlocksPre, toolNames };
   }, [history]);
 
+  /** 思考活秒表：存在「流式中、还没定稿时长」的 thinking 条目时每秒强制重渲染，
+   *  让组摘要与思考块标题上的实时时长走字（liveThinkMs 在渲染时读 Date.now()）。
+   *  思考期间的 delta 本来就高频触发重渲染，这个 interval 只补 delta 的间歇——
+   *  长思考几分钟不出一个字，秒表也不该停。thinking_done 落定 / streaming 翻 false
+   *  （中断）后条件自动失效，interval 随 effect 清掉 */
+  const [, setThinkTick] = useState(0);
+  const hasLiveThinking = items.some(
+    (it) => it.kind === "thinking" && it.streaming && it.startedAt != null && it.durationMs == null,
+  );
+  useEffect(() => {
+    if (!hasLiveThinking) return;
+    const id = setInterval(() => setThinkTick((t) => t + 1), 1000);
+    return () => clearInterval(id);
+  }, [hasLiveThinking]);
+
   /**
    * 统一渲染流：历史 jsonl 消息 + 实时流式消息合成一条时间线，活动组**跨消息合并**——
    * jsonl 里一轮工具循环拆成多条 assistant 消息（思考/工具调用、工具结果各一条），
@@ -1991,7 +2053,12 @@ export default function ChatView({
         if (b.kind === "text" && b.text) {
           entries.push({ t: "asstText", key: `h${msgIndex}-t${bi}`, text: b.text, msgIndex });
         } else if (b.kind === "thinking" && b.text) {
-          entries.push({ t: "thinking", key: `h${msgIndex}-k${bi}`, text: b.text });
+          entries.push({
+            t: "thinking",
+            key: `h${msgIndex}-k${bi}`,
+            text: b.text,
+            durationMs: b.durationMs ?? undefined,
+          });
         } else if (b.kind === "tool_use") {
           const id = b.toolUseId ?? "";
           entries.push({
@@ -2034,6 +2101,8 @@ export default function ChatView({
             key: `l${it.id}`,
             text: it.text,
             streaming: it.streaming,
+            durationMs: it.durationMs,
+            startedAt: it.startedAt,
           });
           break;
         case "tool_use":
@@ -2269,14 +2338,18 @@ export default function ChatView({
               entries.map((e) =>
                 e.t === "tool"
                   ? { kind: "tool_use", name: e.block.name }
-                  : { kind: e.t === "thinking" ? "thinking" : "tool_result" },
+                  : e.t === "thinking"
+                    ? { kind: "thinking", durationMs: liveThinkMs(e) }
+                    : { kind: "tool_result" },
               ),
             )}
             running={running}
           >
             {entries.map((e) => {
               if (e.t === "thinking") {
-                return <ThinkingBlock key={e.key} text={e.text} />;
+                return (
+                  <ThinkingBlock key={e.key} text={e.text} durationMs={liveThinkMs(e)} />
+                );
               }
               if (e.t === "tool") {
                 return (

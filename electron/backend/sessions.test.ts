@@ -311,6 +311,43 @@ describe("parseSessionMessages", () => {
     expect(r[2].blocks[0].toolUseId).toBe("toolu_1");
   });
 
+  it("thinkingDurationMs 落到本行的 thinking 块；相邻同 id 并块后各块保留各自时长", () => {
+    // 2.1.x jsonl：一个 API 内容块单独成行（apiBlockIndex 标序），thinking 行带行级
+    // thinkingDurationMs。同 id 多行会并块，时长必须在逐行解析时挂上
+    const jsonl = [
+      '{"type":"assistant","message":{"id":"msg_1","role":"assistant","content":[{"type":"thinking","thinking":"先想"}]},"timestamp":"2026-10-07T01:00:00.000Z","thinkingDurationMs":6842}',
+      '{"type":"assistant","message":{"id":"msg_1","role":"assistant","content":[{"type":"text","text":"想完了"}]},"timestamp":"2026-10-07T01:00:07.000Z"}',
+      '{"type":"assistant","message":{"id":"msg_2","role":"assistant","content":[{"type":"thinking","thinking":"再想"}]},"timestamp":"2026-10-07T01:01:00.000Z","thinkingDurationMs":90500}',
+      // 无 thinking 块的行带了 thinkingDurationMs 也不该炸（防御：字段被忽略）
+      '{"type":"assistant","message":{"id":"msg_3","role":"assistant","content":[{"type":"text","text":"纯文本"}]},"thinkingDurationMs":123}',
+    ].join("\n");
+    const r = parseSessionMessages(jsonl);
+    expect(r.length).toBe(3);
+    // msg_1 的两行并成一条：thinking 块带自己那行的时长
+    expect(r[0].blocks.map((b) => b.kind)).toEqual(["thinking", "text"]);
+    expect(r[0].blocks[0].durationMs).toBe(6842);
+    expect(r[0].blocks[1].durationMs).toBeUndefined();
+    expect(r[1].blocks[0].durationMs).toBe(90500);
+    expect(r[2].blocks[0].durationMs).toBeUndefined();
+  });
+
+  it("thinkingDurationMs 防御：负数/字符串/Infinity 忽略，0 接受（显示层 <1s 不显示）", () => {
+    // JSON 数字可表达非有限值（1e999 → Infinity），isFinite 守卫挡的就是它
+    const jsonl = [
+      '{"type":"assistant","message":{"id":"a","role":"assistant","content":[{"type":"thinking","thinking":"负"}]},"thinkingDurationMs":-5}',
+      '{"type":"assistant","message":{"id":"b","role":"assistant","content":[{"type":"thinking","thinking":"串"}]},"thinkingDurationMs":"6842"}',
+      '{"type":"assistant","message":{"id":"c","role":"assistant","content":[{"type":"thinking","thinking":"inf"}]},"thinkingDurationMs":1e999}',
+      '{"type":"assistant","message":{"id":"d","role":"assistant","content":[{"type":"thinking","thinking":"零"}]},"thinkingDurationMs":0}',
+    ].join("\n");
+    const r = parseSessionMessages(jsonl);
+    expect(r).toHaveLength(4);
+    expect(r[0].blocks[0].durationMs).toBeUndefined();
+    expect(r[1].blocks[0].durationMs).toBeUndefined();
+    expect(r[2].blocks[0].durationMs).toBeUndefined();
+    // 0 是合法实测值（守卫放行），「不足 1 秒不显示」由格式化层负责
+    expect(r[3].blocks[0].durationMs).toBe(0);
+  });
+
   it("isMeta / sidechain / 命令消息全部过滤", () => {
     const jsonl = [
       '{"type":"user","isMeta":true,"message":{"role":"user","content":"系统注入"}}',

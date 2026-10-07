@@ -121,6 +121,9 @@ export interface ContentBlock {
   mediaType?: string | null;
   /** image 块的 base64 裸数据（无 data: 前缀） */
   data?: string | null;
+  /** thinking 块的思考时长（ms）：历史条目来自 jsonl 行级 thinkingDurationMs；
+   *  实时条目来自 thinking_done 事件。拿不到就不显示 */
+  durationMs?: number | null;
 }
 
 /** 单条 assistant 消息的 token 用量（jsonl usage 字段的两种格式已归一） */
@@ -307,8 +310,12 @@ export type ChatEvent =
       /** 主模型名（顺带捎回来，省得依赖 session_ready 那条路径） */
       model?: string | null;
     }
-  | { type: "content_start"; kind: "text" | "thinking" }
+  | { type: "content_start"; kind: "text" | "thinking"; startedAt?: number }
   | { type: "delta"; kind: "text" | "thinking" | "tool_input"; text: string }
+  /** 思考块收口（content_block_stop 实测的思考时长）。历史侧没有这条事件——那边由
+   *  jsonl 行级 thinkingDurationMs 供数（thinking 块的 durationMs 字段），两路在
+   *  thinking 条目上汇合；拿不到时长（中断的思考）就不显示 */
+  | { type: "thinking_done"; durationMs: number }
   | { type: "tool_use_start"; toolUseId: string; name: string }
   | { type: "tool_use_complete"; toolUseId: string; name: string; input: unknown }
   | { type: "tool_result"; toolUseId: string; isError: boolean; text: string }
@@ -348,7 +355,16 @@ export type ChatItem =
       time: string;
     }
   | { id: number; kind: "text"; text: string; streaming: boolean }
-  | { id: number; kind: "thinking"; text: string; streaming: boolean }
+  | {
+      id: number;
+      kind: "thinking";
+      text: string;
+      streaming: boolean;
+      /** 思考时长（ms）：thinking_done 事件落到条目上；null/undefined = 未知（不显示） */
+      durationMs?: number;
+      /** 开流时刻（epoch ms，content_start 捎带）：durationMs 落定前的活秒表起点 */
+      startedAt?: number;
+    }
   | {
       id: number;
       kind: "tool_use";
