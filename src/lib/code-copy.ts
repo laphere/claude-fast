@@ -13,8 +13,7 @@
  * 2) installCodeCopy —— 全局装一次的点击委托（捕获阶段，同 installCtrlLinkOpen）：
  *    dangerouslySetInnerHTML 注入的 DOM 上没有 React 事件可挂，只能委托；
  *    点击命中按钮时取同块 <pre><code> 的 textContent 写剪贴板
- *    （navigator.clipboard——App 的「复制路径」同一条通道），成功后按钮短暂
- *    翻成「已复制」。
+ *    （navigator.clipboard——App 的「复制路径」同一条通道），成功后图标短暂翻成 √。
  *
  * 与 highlight.ts / links.ts 同款「模块顶层装一次」模式（由 MessageParts.tsx 调用）。
  */
@@ -25,22 +24,20 @@ const COPY_TITLE = "复制代码";
 /** Lucide 风格线性图标（copy / check，与 Icons.tsx 同一套形；stroke-width 2）。
  *  这里是字符串不是 React 组件——按钮建在 DOM walk 里，挂不了 JSX。 */
 const ICON_COPY =
-  '<svg class="ic-copy" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>';
+  '<svg class="ic-copy" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>';
 const ICON_CHECK =
-  '<svg class="ic-check" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>';
+  '<svg class="ic-check" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>';
 
 /** 建一颗复制按钮（建在 DOMParser 的 doc 里，随后随 body.innerHTML 序列化）。
- *  两套图标/文案都进标记，复制成功态只靠 .copied 一颗 class 切换（styles.css）。 */
+ *  纯图标钮：默认复制图标，悬停语义走原生 title；复制成功只靠 .copied 一颗
+ *  class 把图标翻成 √（styles.css），不放文字。 */
 function buildButton(doc: Document): HTMLButtonElement {
   const btn = doc.createElement("button");
   btn.type = "button";
   btn.className = "md-code-copy";
   btn.setAttribute("title", COPY_TITLE);
   btn.setAttribute("aria-label", COPY_TITLE);
-  btn.innerHTML =
-    ICON_COPY +
-    ICON_CHECK +
-    '<span class="t-idle">复制</span><span class="t-done">已复制</span>';
+  btn.innerHTML = ICON_COPY + ICON_CHECK;
   return btn;
 }
 

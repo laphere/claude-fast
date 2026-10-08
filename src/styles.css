@@ -2071,10 +2071,10 @@ mark {
   right: 6px;
   display: flex;
   align-items: center;
-  gap: 4px;
-  padding: 3px 7px;
-  font-size: 11px;
-  line-height: 1;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
   color: var(--muted);
   background: var(--panel);
   border: 1px solid var(--border);
@@ -2094,22 +2094,15 @@ mark {
   color: var(--text);
   background: var(--panel-2);
 }
-/* 复制成功态：图标与文案成对切换（两套都进标记，见 code-copy.ts 的 buildButton） */
-.md-code-copy .ic-check,
-.md-code-copy .t-done {
+/* 复制成功态：只把图标 copy 翻成 √，配色不动（两套图标都进标记，见 code-copy.ts） */
+.md-code-copy .ic-check {
   display: none;
 }
-.md-code-copy.copied {
-  color: var(--ok);
-  border-color: var(--ok);
-}
-.md-code-copy.copied .ic-copy,
-.md-code-copy.copied .t-idle {
+.md-code-copy.copied .ic-copy {
   display: none;
 }
-.md-code-copy.copied .ic-check,
-.md-code-copy.copied .t-done {
-  display: inline;
+.md-code-copy.copied .ic-check {
+  display: block;
 }
 
 /* ---------- 语法高亮（highlight.js 的 token 类，见 src/lib/highlight.ts） ----------
