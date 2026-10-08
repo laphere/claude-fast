@@ -21,7 +21,6 @@ import {
 } from "react";
 import { Channel } from "../lib/channel";
 import { api } from "../lib/api";
-import { pathLeafName } from "../lib/session-file";
 import { viewTransition } from "../lib/view-transition";
 import AskQuestionCard, {
   parseAskQuestions,
@@ -2190,10 +2189,6 @@ export default function ChatView({
   const planResumeMode = prePlanModeRef.current ?? "acceptEdits";
   const planAltMode = planResumeMode === "manual" ? "acceptEdits" : "manual";
   const modeLabel = (m: string) => MODE_OPTIONS.find((o) => o.value === m)?.label ?? m;
-  /** 项目名徽标：tab 标题只有会话名，看不出会话属于哪个项目（多个项目各开着
-   *  会话时尤甚）。项目名 = 路径末段（与后端 listProjects 的 name 同口径），
-   *  完整路径悬停徽标可看 */
-  const projectName = pathLeafName(projectPath);
 
   const statusLabel = useMemo(() => {
     switch (status.phase) {
@@ -2479,14 +2474,7 @@ export default function ChatView({
     <div ref={rootRef} className={`chat${plan && planExpanded ? " plan-expanded" : ""}`}>
       <div className="chat-head">
         <div className="chat-head-body">
-          <div className="chat-head-titlerow">
-            {projectName && (
-              <span className="chat-project" title={projectPath}>
-                {projectName}
-              </span>
-            )}
-            <div className="viewer-title">{title}</div>
-          </div>
+          <div className="viewer-title">{title}</div>
           {statLine && (
             <div className="viewer-stats">
               {statLine.count}

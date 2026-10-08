@@ -3210,30 +3210,6 @@ html.ctrl-links .md-body a {
   min-width: 0;
 }
 
-/* 标题行（项目徽标 + 会话标题）：徽标与左栏会话行的 .session-project 是同一概念
-   （「这条会话属于哪个项目」），用同一套视觉（同字号/边框/圆角/配色），只去掉了
-   那条 margin-right（行距由父级 gap 承担）。悬停徽标可看完整项目路径 */
-.chat-head-titlerow {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-/* flex 子项默认 min-width:auto，不归零的话长标题不收缩、省略号失效，把徽标顶出去 */
-.chat-head-titlerow .viewer-title {
-  min-width: 0;
-}
-.chat-project {
-  flex-shrink: 0;
-  padding: 1px 5px;
-  font-size: 10.5px;
-  font-weight: 500;
-  color: var(--muted);
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-}
-
 .chat-head-actions {
   display: flex;
   align-items: center;
