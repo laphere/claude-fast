@@ -6,6 +6,7 @@ import { useMemo, type ReactNode } from "react";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { installMarkdownHighlighting } from "../lib/highlight";
+import { decorateCodeBlocks, installCodeCopy } from "../lib/code-copy";
 import { installCtrlLinkOpen, linkifyHtml } from "../lib/links";
 import { materializeListMarkers } from "../lib/list-markers";
 import type { ContentBlock } from "../types";
@@ -24,6 +25,8 @@ installMarkdownHighlighting();
 // 正文链接的 Ctrl+点击打开（幂等，见 lib/links.ts）：键盘/点击监听也是全局副作用，
 // 与上面同款「模块顶层装一次」。
 installCtrlLinkOpen();
+// 代码块复制按钮的点击委托（幂等，见 lib/code-copy.ts）：同款「模块顶层装一次」。
+installCodeCopy();
 
 /** ISO 时间戳 → HH:MM */
 export function formatTime(iso: string | null | undefined): string {
@@ -52,17 +55,23 @@ export function formatChatTime(iso: string | null | undefined): string {
   return d.getFullYear() === now.getFullYear() ? `${md} ${hm}` : `${d.getFullYear()}-${md} ${hm}`;
 }
 
-/** Markdown 渲染（marked + DOMPurify 消毒 + 列表标记物化 + URL 补链，cc-haha 同方案）。
- *  两步后处理都在消毒**之后**：列表标记物化（materializeListMarkers）把 `<ol>` 编号与
- *  `<ul>` 圆点换成真实文本节点（原生 marker 在 Chromium 里选不中也复制不到，详见
- *  lib/list-markers.ts 头部）；补链（linkifyHtml）处理行内代码/代码块里的 URL
- *  （marked 永远不链，而模型爱把地址包反引号），并顺手修 marked 自动链接吞
- *  中文标点进 href 的坑，详见 lib/links.ts 头部。 */
+/** Markdown 渲染（marked + DOMPurify 消毒 + 列表标记物化 + URL 补链 + 代码块复制按钮，
+ *  cc-haha 同方案）。三步后处理都在消毒**之后**：列表标记物化（materializeListMarkers）
+ *  把 `<ol>` 编号与 `<ul>` 圆点换成真实文本节点（原生 marker 在 Chromium 里选不中也
+ *  复制不到，详见 lib/list-markers.ts 头部）；补链（linkifyHtml）处理行内代码/代码块
+ *  里的 URL（marked 永远不链，而模型爱把地址包反引号），并顺手修 marked 自动链接吞
+ *  中文标点进 href 的坑，详见 lib/links.ts 头部；代码块复制按钮（decorateCodeBlocks）
+ *  把每个 `<pre>` 包进 .md-code 并前置按钮，点击经 installCodeCopy 的委托复制代码
+ *  原文，详见 lib/code-copy.ts 头部。 */
 export function MarkdownText({ text }: { text: string }) {
   const html = useMemo(() => {
     try {
-      return linkifyHtml(
-        materializeListMarkers(DOMPurify.sanitize(marked.parse(text, { async: false }) as string)),
+      return decorateCodeBlocks(
+        linkifyHtml(
+          materializeListMarkers(
+            DOMPurify.sanitize(marked.parse(text, { async: false }) as string),
+          ),
+        ),
       );
     } catch {
       return text;

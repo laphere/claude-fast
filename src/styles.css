@@ -2035,6 +2035,64 @@ mark {
   font-size: inherit;
 }
 
+/* ---------- 代码块复制按钮（DOM 由 src/lib/code-copy.ts 建）----------
+   悬停浮现：一个会话里代码块动辄几十个，常驻按钮全是噪声；:focus-visible
+   （键盘 Tab 到）与 .copied（成功反馈在飞）时也强制可见。
+   ⚠️ 两条不能省：
+   ① 按钮挂在 .md-code 包裹层而非 pre 上——pre 横向滚动（overflow-x）时
+      绝对定位的按钮不跟着滚走，始终钉在块右上角；
+   ② 隐藏态必须 pointer-events:none——opacity:0 的元素仍吃点击，悬到块右上角
+      想选段代码会点在一颗看不见的按钮上。 */
+.md-code {
+  position: relative;
+}
+.md-code-copy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 7px;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--muted);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-fast) var(--ease-out-soft);
+}
+.md-code:hover .md-code-copy,
+.md-code-copy:focus-visible,
+.md-code-copy.copied {
+  opacity: 1;
+  pointer-events: auto;
+}
+.md-code-copy:hover {
+  color: var(--text);
+  background: var(--panel-2);
+}
+/* 复制成功态：图标与文案成对切换（两套都进标记，见 code-copy.ts 的 buildButton） */
+.md-code-copy .ic-check,
+.md-code-copy .t-done {
+  display: none;
+}
+.md-code-copy.copied {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+.md-code-copy.copied .ic-copy,
+.md-code-copy.copied .t-idle {
+  display: none;
+}
+.md-code-copy.copied .ic-check,
+.md-code-copy.copied .t-done {
+  display: inline;
+}
+
 /* ---------- 语法高亮（highlight.js 的 token 类，见 src/lib/highlight.ts） ----------
    语义沿用 CLI 主题：关键字=紫 / 函数属性=蓝 / 字符串=绿 / 数字=黄 / 注释=灰 / meta=青。
    但**取色不共用深色主题那套**（2026-09-22）：--ok/--star/--code 这三个在浅底上分别只有
