@@ -20,3 +20,10 @@ export function sessionIdFromFile(file: string): string | null {
   const id = name.replace(/\.jsonl$/i, "");
   return id === "" || id === name ? null : id;
 }
+
+/** 取路径末段作显示名（项目名徽标、tab 悬停提示用；空段全剥，剥完不剩返回原串）。
+ *  项目名就是路径末段——后端 listProjects 的 name 即 basename（platform.ts）。
+ *  与 sessionIdFromFile 同一条「双分隔符」口径：路径可能来自别的机器。 */
+export function pathLeafName(p: string): string {
+  return p.split(/[\\/]/).filter(Boolean).pop() ?? p;
+}

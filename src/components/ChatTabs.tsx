@@ -15,6 +15,7 @@ import { TerminalIcon, XIcon } from "./Icons";
 import { isBusyPhase } from "../App";
 import type { ContentTab } from "../App";
 import { useFlip } from "../lib/flip";
+import { pathLeafName } from "../lib/session-file";
 
 interface Props {
   tabs: ContentTab[];
@@ -127,6 +128,9 @@ export default function ChatTabs({
       {tabs.map((t, i) => {
         const busy = t.kind === "chat" && isBusyPhase(t.phase);
         const exited = t.kind === "term" && t.status === "exited";
+        // 悬停提示带上项目名：tab 标题只有会话名，多项目各开会话时分不清归属
+        //（会话页头部另有常驻项目徽标，这里是终端 tab 唯一的归属提示）
+        const proj = pathLeafName(t.projectPath);
         // 指示条画在哪：空隙位落在某个 tab 上 = 它的左侧；落在末尾（= 数组长度）= 最后
         // 一个 tab 的右侧。拖拽中的那个 tab 不画（拖到自己身上本来就不会换位）。
         const showDrop =
@@ -145,7 +149,7 @@ export default function ChatTabs({
             onDragEnd={clearDragState}
             onClick={() => onSelect(t.id)}
             onContextMenu={(e) => onTabContextMenu(e, t.id)}
-            title={t.title}
+            title={proj ? `${proj} · ${t.title}` : t.title}
           >
             {t.kind === "chat" && !t.readOnly && (
               <span className={`chat-tab-dot${busy ? " busy" : ""}`} />

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { sessionIdFromFile } from "./session-file";
+import { pathLeafName, sessionIdFromFile } from "./session-file";
 
 const UUID = "5426d6d0-c08f-43bd-94df-4d6d99e5c699";
 
@@ -28,5 +28,19 @@ describe("sessionIdFromFile", () => {
 
   it("混合分隔符也能取（便携数据根从别的机器带过来的场景）", () => {
     expect(sessionIdFromFile(`C:\\p/sub\\${UUID}.jsonl`)).toBe(UUID);
+  });
+});
+
+describe("pathLeafName", () => {
+  it("Windows / POSIX / 混合分隔符都取末段", () => {
+    expect(pathLeafName("D:\\MyWorkspaces\\myProject\\claude-fast")).toBe("claude-fast");
+    expect(pathLeafName("/Users/foo/bar")).toBe("bar");
+    expect(pathLeafName("C:\\p/sub\\proj")).toBe("proj");
+  });
+
+  it("末尾分隔符不吃进名字；剥完不剩返回原串", () => {
+    expect(pathLeafName("D:\\proj\\")).toBe("proj");
+    expect(pathLeafName("/")).toBe("/");
+    expect(pathLeafName("")).toBe("");
   });
 });

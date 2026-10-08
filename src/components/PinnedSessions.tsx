@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { pathLeafName } from "../lib/session-file";
 import type { PinnedSessionInfo, Project, SessionInfo } from "../types";
 import SessionRow from "./SessionRow";
 
@@ -23,7 +24,7 @@ interface Props {
 function projectNameOf(projects: Project[], path: string): string {
   const hit = projects.find((p) => p.key === path);
   if (hit) return hit.name;
-  return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+  return pathLeafName(path);
 }
 
 /** 置顶会话聚合区：跨项目列出已置顶会话。没有置顶会话时整块不渲染 */
