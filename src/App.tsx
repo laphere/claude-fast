@@ -1,4 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MutableRefObject,
+} from "react";
 import { api } from "./lib/api";
 import { newSessionId } from "./lib/pty";
 import type {
@@ -99,6 +108,75 @@ function useLast<T>(v: T | null): T | null {
 const SIDEBAR_COLLAPSE_BELOW = 980;
 const SIDEBAR_EXPAND_ABOVE = 1020;
 
+/** CSS 时长字面量（"240ms" / "0.24s"）→ 毫秒；解析不了给 fallback。
+ *  左栏滑行的 WAAPI 时长用它读 --dur-slow，不在 JS 里复制字面量 */
+function cssDurationMs(value: string, fallback: number): number {
+  const m = /^\s*([\d.]+)(ms|s)\s*$/.exec(value);
+  if (!m) return fallback;
+  const n = Number(m[1]);
+  return Number.isFinite(n) ? (m[2] === "s" ? n * 1000 : n) : fallback;
+}
+
+/** chat tab 的渲染包装（memo）：App 级重渲染（收放左栏、toast、其他 tab 的 phase
+ *  上报…）不再重建这条会话页的整棵消息树——ChatView 的 renderStream 每次渲染都
+ *  全量跑，几百条消息的一次重渲染就是几十毫秒。props 全是原值或稳定引用，默认
+ *  浅比较即可命中；per-tab 的内联回调在这一层绑（id 从 tabId 补上），外面传入的
+ *  是 App 级 useCallback。⚠️ 别把 tab 对象当 prop 传进来：phase 频繁变更会带着
+ *  引用变，比引用等于没 memo。TerminalPane 不包：它的渲染只剩一个裸 div */
+const ChatTabPane = memo(function ChatTabPane({
+  tabId,
+  projectPath,
+  title,
+  session,
+  readOnly,
+  active,
+  continueHint,
+  continueBlocked,
+  onToast,
+  onStatusChange,
+  onSessionReady,
+  onTitle,
+  onContinue,
+  killers,
+}: {
+  tabId: string;
+  projectPath: string;
+  title: string;
+  session: SessionInfo | null;
+  readOnly: boolean;
+  active: boolean;
+  continueHint: string;
+  continueBlocked: string | null;
+  onToast: (msg: string, duration?: number) => void;
+  onStatusChange: (id: string, phase: string) => void;
+  onSessionReady: (
+    id: string,
+    meta: { file: string; title: string; titleFromPrompt: boolean },
+  ) => void;
+  onTitle: (id: string, title: string) => void;
+  onContinue: (id: string) => void;
+  killers: MutableRefObject<Map<string, () => Promise<void>>>;
+}) {
+  return (
+    <ChatView
+      projectPath={projectPath}
+      title={title}
+      session={session}
+      onToast={onToast}
+      onStatusChange={(phase) => onStatusChange(tabId, phase)}
+      onSessionReady={(meta) => onSessionReady(tabId, meta)}
+      onTitle={(t) => onTitle(tabId, t)}
+      readOnly={readOnly}
+      continueHint={continueHint}
+      continueBlocked={continueBlocked}
+      onContinue={() => onContinue(tabId)}
+      tabId={tabId}
+      active={active}
+      killers={killers}
+    />
+  );
+});
+
 interface ConfirmState {
   title: string;
   message: string;
@@ -118,16 +196,87 @@ export default function App() {
   const [searchOpen, setSearchOpen] = useState(false);
   /** 左栏项目列表是否收起（收起后内容区占满全宽，仅内存态不落盘） */
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  /** 收/放滑行相位（null = 静止）：驱动 .main-left-overlay——必须走 React state，
+   *  collapsed 翻转时 React 会整体覆写 className，DOM 手加的类会被抹掉 */
+  const [sidebarAnim, setSidebarAnim] = useState<"collapse" | "expand" | null>(null);
   /** 当前收起是否由「窗口过窄自动收起」触发（决定拉宽后要不要自动恢复） */
   const autoCollapsedRef = useRef(false);
   const sidebarCollapsedRef = useRef(sidebarCollapsed);
   sidebarCollapsedRef.current = sidebarCollapsed;
+  const mainLeftRef = useRef<HTMLDivElement>(null);
+  /** 滑行代际号：反向点击时作废在途滑行的收尾回调（finished/安全钟只认最新一代） */
+  const sidebarAnimGenRef = useRef(0);
+  /** 是否有滑行在途（反向续走时起点取实际位移而非显示边，见下方的滑行 effect） */
+  const sidebarSlidingRef = useRef(false);
+
+  /** 左栏收/放总入口（顶栏开关与窗口过窄自动收放共用）。核心口径：**内容列宽度
+   *  点击瞬间一次到位**——展开时渲染里给 .chat-col 挂 margin-left: 360px（flex 填
+   *  剩余即终宽），收起时摘掉自动满宽。会话页只折行一次；终端的 ResizeObserver
+   *  只触发一次（防抖后落进滑行动画中段，被动作遮掩，动画结束后不再二次动作）。
+   *  侧栏本身转为浮层滑行（.main-left-overlay + 下方的 useLayoutEffect）。
+   *  ⚠️ margin 必须由 sidebarAnim 在**渲染里**驱动、不能在这里直接写 DOM：它要
+   *  和浮层类的摘除落在同一次提交——先写 DOM 后等调度器提交的话，中间会隔出
+   *  「margin 已清、侧栏还在文档流外」的渲染帧，内容列闪一帧满宽（展开收尾闪一下） */
+  const applySidebar = useCallback((target: boolean) => {
+    const left = mainLeftRef.current;
+    if (!left || target === sidebarCollapsedRef.current) return;
+    sidebarAnimGenRef.current++;
+    setSidebarCollapsed(target);
+    setSidebarAnim(target ? "collapse" : "expand");
+  }, []);
 
   /** 顶栏开关：手动切换即接管（自动收起标记清除，后续 resize 不再干预） */
   const toggleSidebar = useCallback(() => {
-    setSidebarCollapsed((c) => !c);
+    applySidebar(!sidebarCollapsedRef.current);
     autoCollapsedRef.current = false;
-  }, []);
+  }, [applySidebar]);
+
+  /* 侧栏滑行（WAAPI，纯 transform 合成器动画）：在 layout effect 里起，同一提交里
+   *  .main-left-overlay 已把侧栏转为浮层，起画前无闪跳。时长/曲线读 CSS 变量；
+   *  reduced-motion 按全局一刀切走零时长。收尾双保险（finished + 安全钟）只翻
+   *  sidebarAnim——浮层类摘除与 margin 清除都在同一次 React 提交里落（原子，
+   *  这是「展开收尾不闪」的关键，见 applySidebar 的注释）。几何与末帧一致，那一帧
+   *  不触发内容列排版。
+   *  cleanup **不 cancel 旧动画**：反向点击时 React 先跑旧 cleanup 再进本 effect，
+   *  此刻旧动画的位移还挂在元素上、正是新一轮的起点（读 computed transform 续走）；
+   *  cancel 掉会先弹回无位移再重滑。新动画（后创建）按 replace 语义天然压过旧的，
+   *  旧的到点自行结束、不再参与绘制，收尾回调有代际守卫不会二次清场 */
+  useLayoutEffect(() => {
+    if (sidebarAnim === null) return;
+    const left = mainLeftRef.current;
+    if (!left) return;
+    const gen = sidebarAnimGenRef.current;
+    const collapsed = sidebarAnim === "collapse";
+    const cs = getComputedStyle(left);
+    let fromX = collapsed ? 0 : -360;
+    if (sidebarSlidingRef.current && cs.transform && cs.transform !== "none") {
+      const x = new DOMMatrix(cs.transform).e; // 取 translateX 分量（旧滑行的当前位移）
+      if (Number.isFinite(x)) fromX = x;
+    }
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const durMs = reduced ? 0 : cssDurationMs(cs.getPropertyValue("--dur-slow"), 240);
+    const easing = cs.getPropertyValue("--ease-emph").trim() || "ease";
+    sidebarSlidingRef.current = true;
+    const anim = left.animate(
+      [
+        { transform: `translateX(${fromX}px)` },
+        { transform: `translateX(${collapsed ? -360 : 0}px)` },
+      ],
+      { duration: durMs, easing },
+    );
+    let done = false;
+    const finish = () => {
+      if (done || gen !== sidebarAnimGenRef.current) return;
+      done = true;
+      sidebarSlidingRef.current = false;
+      setSidebarAnim(null); // 浮层类与 margin 的清除由这次提交一起落（原子）
+    };
+    void anim.finished.then(finish).catch(() => {});
+    const safety = window.setTimeout(finish, durMs + 80);
+    return () => {
+      window.clearTimeout(safety);
+    };
+  }, [sidebarAnim]);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [menu, setMenu] = useState<{ x: number; y: number; key: string } | null>(null);
   const [dialog, setDialog] = useState<DialogKind>(null);
@@ -974,10 +1123,10 @@ export default function App() {
       const w = window.innerWidth;
       if (w < SIDEBAR_COLLAPSE_BELOW && !sidebarCollapsedRef.current) {
         autoCollapsedRef.current = true;
-        setSidebarCollapsed(true);
+        applySidebar(true);
       } else if (w > SIDEBAR_EXPAND_ABOVE && sidebarCollapsedRef.current && autoCollapsedRef.current) {
         autoCollapsedRef.current = false;
-        setSidebarCollapsed(false);
+        applySidebar(false);
       }
     };
     const onResize = () => {
@@ -990,7 +1139,8 @@ export default function App() {
       window.removeEventListener("resize", onResize);
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, []);
+    // applySidebar 是 [] 依赖的 useCallback，这里列上只为 exhaustive-deps，仍只订阅一次
+  }, [applySidebar]);
 
   // ---------- 窗口聚焦自动刷新 ----------
 
@@ -1586,8 +1736,14 @@ export default function App() {
       />
 
       <main className="main main-split">
-        <div className={`main-left ${sidebarCollapsed ? "main-left-collapsed" : ""}`}>
-          {/* 抽屉内层：定宽 360（布局全在这层），外层只做「宽度→0 + 裁切」的动画 */}
+        <div
+          ref={mainLeftRef}
+          className={`main-left${sidebarCollapsed ? " main-left-collapsed" : ""}${
+            sidebarAnim ? " main-left-overlay" : ""
+          }`}
+        >
+          {/* 抽屉内层：定宽 360，布局全在这层；外层只承载收起静态态
+              （basis 0 + 裁切）与滑行期间的浮层类（.main-left-overlay） */}
           <div className="main-left-inner">
           {searchOpen && (
             <div className="search-box left-search">
@@ -1646,7 +1802,15 @@ export default function App() {
           </div>
           </div>
         </div>
-        <div className="chat-col">
+        {/* 展开滑行期间给内容列让位：侧栏此刻是文档流外的浮层，靠这 360px 边距
+            预留它回流后的位置（flex 填剩余 = 终宽），内容在点击瞬间一次折行到位。
+            ⚠️ margin 必须与浮层类**同一次提交**变更（所以 style 挂在 sidebarAnim
+            上、不在 applySidebar 里直接写 DOM）——分开落会在收尾隔出
+            「margin 已清、侧栏还在流外」的渲染帧，内容列闪一帧满宽 */}
+        <div
+          className="chat-col"
+          style={sidebarAnim === "expand" ? { marginLeft: "360px" } : undefined}
+        >
           {tabs.length > 0 && (
             <ChatTabs
               tabs={tabs}
@@ -1663,28 +1827,24 @@ export default function App() {
               className={t.id === activeTabId ? "chat-page chat-page-active" : "chat-page"}
             >
               {t.kind === "chat" ? (
-                <ChatView
+                <ChatTabPane
+                  tabId={t.id}
                   projectPath={t.projectPath}
                   title={t.title}
                   session={t.session}
-                  onToast={showToast}
-                  onStatusChange={(phase) => updateChatPhase(t.id, phase)}
-                  onSessionReady={(meta) => adoptChatSession(t.id, meta)}
-                  onTitle={(title) => applyChatTitle(t.id, title)}
                   readOnly={t.readOnly === true}
-                  continueHint={
-                    defaultInteraction === "terminal"
-                      ? "继续对话"
-                      : "继续对话"
-                  }
+                  active={t.id === activeTabId}
+                  continueHint={defaultInteraction === "terminal" ? "继续对话" : "继续对话"}
                   continueBlocked={
                     t.readOnly && t.session
                       ? continueBlockedReason(t.session.sessionId)
                       : null
                   }
-                  onContinue={() => continueReadOnlyTab(t.id)}
-                  tabId={t.id}
-                  active={t.id === activeTabId}
+                  onToast={showToast}
+                  onStatusChange={updateChatPhase}
+                  onSessionReady={adoptChatSession}
+                  onTitle={applyChatTitle}
+                  onContinue={continueReadOnlyTab}
                   killers={tabKillersRef}
                 />
               ) : (

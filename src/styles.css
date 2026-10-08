@@ -821,14 +821,19 @@ code {
   display: flex;
   gap: 0;
   padding: 0;
+  /* 左栏滑行浮层（.main-left-overlay）的定位锚。本元素同时是 overflow 剪切容器
+   * （.main 的 overflow-y:auto 透下来），浮层左滑出界只会被裁掉、LTR 下不出滚动条 */
+  position: relative;
 }
 
-/* 左栏 = 抽屉：外层只做「宽度 → 0 + 裁切」，布局（padding/gap）全在内层
- * .main-left-inner 上、且内层**定宽 360**——收放动画期间项目行文字不换行、
- * 图标不跳，只是被裁掉（宽度动画若直接压内容，每帧 reflow 会把列表抖成毛边）。
- * ⚠️ min-width:0 必须有：flex 子项默认 min-width:auto 会把 basis 卡在内容宽，收不到 0。
- * visibility 而非 display 收尾：它离散可过渡（全程可见、结束才藏），收起后从
- * Tab 焦点序/a11y 树移除——0 宽裁切态里留着可聚焦控件比 display:none 危险得多 */
+/* 左栏 = 抽屉：布局（padding/gap）全在内层 .main-left-inner 上、且内层**定宽 360**，
+ * 项目行文字永不换行。⚠️ min-width:0 必须有：flex 子项默认 min-width:auto 会把
+ * basis 卡在内容宽，收不到 0。
+ * 收/放**不走 flex-basis 动画**（那会让内容列宽度逐帧变化 → 会话页几百条消息逐帧
+ * 重折行、终端的 resize 被防抖推迟到动画结束后才闪一下）：内容列宽度由 App 在点击
+ * 瞬间一次定到位，侧栏转为浮层滑行（.main-left-overlay，纯 transform）。
+ * visibility 离散过渡保留：收起方向**结束时**才翻 hidden——收起后从 Tab 焦点序/
+ * a11y 树移除，0 宽裁切态里留着可聚焦控件比 display:none 危险得多 */
 .main-left {
   flex: 0 0 360px;
   min-width: 0;
@@ -837,9 +842,23 @@ code {
   border-right: 1px solid var(--border);
   min-height: 0;
   overflow: hidden;
-  transition: flex-basis var(--dur-slow) var(--ease-emph),
-    border-color var(--dur-slow) var(--ease-emph),
+  transition: border-color var(--dur-slow) var(--ease-emph),
+    box-shadow var(--dur-slow) var(--ease-emph),
     visibility var(--dur-slow);
+}
+
+/* 收/放滑行期间的侧栏：脱离文档流盖在内容列上方，App 用 WAAPI 滑进/滑出
+ * （transform，纯合成器动画、零排版开销），结束摘类回文档流——几何与末帧一致。
+ * 此刻它盖着会话内容，必须不透明（--bg 与窗口底同色，深浅主题同 token）并带
+ * 阴影分出层次。z-index 60：压过会话页全部浮层（进度轨气泡 45、导出下拉 50），
+ * 让位给 App 级弹层（右键菜单/Modal ≥900）。宽度与 .main-left-inner 对齐 360 */
+.main-left-overlay {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 360px;
+  z-index: 60;
+  background: var(--bg);
+  box-shadow: var(--shadow);
 }
 
 .main-left-inner {
