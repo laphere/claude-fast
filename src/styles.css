@@ -1974,7 +1974,12 @@ mark {
    原生 marker。悬挂缩进用「列表不缩进 + li 负 text-indent + padding」复刻：标记挂在
    列表左缘、折行对齐正文，与原生观感一致。⚠️ text-indent 会继承——li 里的嵌套块
    （子列表/代码块/引用/标题）要归零，否则它们的首行也跟着挂出去；疏列表（li 首子元素
-   是 p）不归零——标记就插在 p 里，p 要继承负值才能把标记挂出去。 */
+   是 p）不归零——标记就插在 p 里，p 要继承负值才能把标记挂出去。
+   ⚠️ 代码块对 li 而言的直接子元素是 .md-code（decorateCodeBlocks 给每个 pre 包的
+   复制按钮挂点，见 lib/code-copy.ts），归零清单必须以它为匹配目标：pre 本体隔着
+   一层 wrapper，负缩进会一路继承进 pre，把首行头部推出 pre 的 padding 盒——pre 是
+   overflow-x:auto 的滚动容器，LTR 下左向溢出既不可滚也不给滚动条，被推出的字符
+   永久不可见。清单里的 pre 留着不碍事（无 wrapper 时兜底）。 */
 .md-body :is(ol.md-ol-numbered, ul.md-ul-bulleted) {
   list-style: none;
   padding-left: 0;
@@ -1985,7 +1990,7 @@ mark {
   text-indent: -1.6em;
 }
 
-.md-body :is(ol.md-ol-numbered, ul.md-ul-bulleted) > li > :is(ul, ol, pre, blockquote, h1, h2, h3, h4) {
+.md-body :is(ol.md-ol-numbered, ul.md-ul-bulleted) > li > :is(ul, ol, pre, blockquote, h1, h2, h3, h4, .md-code) {
   text-indent: 0;
 }
 
