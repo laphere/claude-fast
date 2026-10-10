@@ -278,3 +278,128 @@ describe("斜杠命令与子代理的可见性（command_lifecycle / system/task
     ]);
   });
 });
+
+// 2026-10-10 用户实测：后台任务（子代理）完成时 CLI 把 <task-notification> 当作新
+// prompt 自己开一轮——没有 send() 帮前端置忙，message_start 又要等模型首包，供应商
+// 挂住时这段窗口无限长（真实案例：turn 起了 95 秒 totalAPIDuration 仍为 0），界面上
+// 「已连接 + 发送键」照旧、忙点不亮、停止键/Esc 够不着。修法：init 每轮开头都发，
+// iterate 在「轮起点的 init」处替前端注入 status:thinking。三个不算轮起点的 init
+// 各有专门用例：resume 预热（everDelivered 挡，纯防御——实测预热不发 init，见 chat.ts
+// 字段注释）、setModel 回声（pendingInitEchoes 挡）、轮中第二帧 init（turnActive 挡）；
+// 另有一条锁「interrupt 即轮终」的 turnActive 复位。
+describe("CLI 自发起轮的忙碌点亮（轮起点 init 注入 status:thinking）", () => {
+  /** 一帧 init（各用例复用；同一轮内推两帧即「轮中帧」场景） */
+  const initFrame = (id: string) => ({
+    type: "system",
+    subtype: "init",
+    session_id: id,
+    model: "m-std",
+    permissionMode: "default",
+    tools: [],
+  });
+
+  /** 跑完一轮（send + init + result），返回事件收集数组与管理器——之后可直接 push 新帧 */
+  async function turnDone(id: string): Promise<{ evs: ChatEvent[]; mgr: ChatManager }> {
+    const evs: ChatEvent[] = [];
+    const mgr = new ChatManager((_sid, ev) => evs.push(ev));
+    mgr.start(id, { projectPath: process.cwd() });
+    await mgr.send(id, "hi");
+    fake.push!(initFrame(id));
+    fake.push!({ type: "result", subtype: "success", result: "ok" });
+    await sleep(20);
+    return { evs, mgr };
+  }
+
+  it("一轮结束后 CLI 自己开新轮（无 send）→ 注入 thinking 在 session_ready 之前", async () => {
+    const { evs } = await turnDone("self1");
+    // 轮 1 的 init 也被注入（send 本就置忙，幂等）；result 收轮回 idle
+    expect(evs.filter((e) => e.type === "status")).toEqual([
+      { type: "status", state: "thinking" },
+      { type: "status", state: "idle" },
+    ]);
+    // 后台任务通知触发的轮 2：没有任何 send，init 照样到
+    fake.push!(initFrame("self1"));
+    await sleep(20);
+    const statuses = evs.filter((e) => e.type === "status");
+    expect(statuses).toHaveLength(3);
+    expect(statuses[2]).toEqual({ type: "status", state: "thinking" });
+    // 注入排在 session_ready 前面：前端先置忙再收 init（顺序错了停止键会闪一步慢）
+    const readyIdx = evs.map((e) => e.type).lastIndexOf("session_ready");
+    expect(evs[readyIdx - 1]).toEqual({ type: "status", state: "thinking" });
+    // 轮 2 结束照常回 idle（turnActive 复位，下一轮还能再点亮）
+    fake.push!({ type: "result", subtype: "success", result: "done" });
+    await sleep(20);
+    expect(evs.filter((e) => e.type === "status")[3]).toEqual({ type: "status", state: "idle" });
+  });
+
+  it("resume 预热的 init（进程起来后从未投递过消息）不是轮起点，不注入", async () => {
+    const events: ChatEvent[] = [];
+    const mgr = new ChatManager((_sid, ev) => events.push(ev));
+    mgr.start("prewarm-only", { projectPath: process.cwd() });
+    await mgr.prewarm("prewarm-only");
+    fake.push!(initFrame("prewarm-only"));
+    await sleep(20);
+    // 没有任何 status 事件。防御性用例：实测（2026-10-10 探针，见 chat.ts 的
+    // everDelivered 注释）预热根本不发 init——本用例锁的是「CLI 未来改成预热即发」
+    // 时这道闸门仍兜得住：漏了它「继续对话」一进来就卡在忙碌，isBusy 拦发送，
+    // 用户连第一条消息都发不出去
+    expect(events.some((e) => e.type === "status")).toBe(false);
+    expect(events.some((e) => e.type === "session_ready")).toBe(true);
+  });
+
+  it("setModel 的 init 回声不注入（否则空闲切模型会把界面卡在忙碌）", async () => {
+    const { evs, mgr } = await turnDone("echo1");
+    const before = evs.length;
+    await mgr.setModel("echo1", "opus");
+    fake.push!({ ...initFrame("echo1"), model: "m-opus" });
+    await sleep(20);
+    const fresh = evs.slice(before);
+    expect(fresh.some((e) => e.type === "status")).toBe(false);
+    // 回声照常走 session_ready：前端就靠它拿到新模型名
+    expect(fresh.some((e) => e.type === "session_ready" && e.model === "m-opus")).toBe(true);
+  });
+
+  it("轮进行中再收一帧 init 不注入（turnActive 闸门：热切回声漏记账时的兜底）", async () => {
+    const evs: ChatEvent[] = [];
+    const mgr = new ChatManager((_sid, ev) => evs.push(ev));
+    mgr.start("midturn", { projectPath: process.cwd() });
+    await mgr.send("midturn", "hi");
+    fake.push!(initFrame("midturn")); // 轮起点：注入
+    fake.push!(initFrame("midturn")); // 轮中第二帧（如漏记账的热切回声）：不注入
+    await sleep(20);
+    expect(evs.filter((e) => e.type === "status")).toEqual([
+      { type: "status", state: "thinking" },
+    ]);
+    // 收轮后闸门复位，下一个轮起点 init 恢复注入
+    fake.push!({ type: "result", subtype: "success", result: "ok" });
+    fake.push!(initFrame("midturn"));
+    await sleep(20);
+    expect(evs.filter((e) => e.type === "status")).toEqual([
+      { type: "status", state: "thinking" },
+      { type: "status", state: "idle" },
+      { type: "status", state: "thinking" },
+    ]);
+  });
+
+  it("interrupt 即轮终：不等 CLI 的 result，下一帧 init 仍按轮起点注入", async () => {
+    const evs: ChatEvent[] = [];
+    const mgr = new ChatManager((_sid, ev) => evs.push(ev));
+    mgr.start("intr1", { projectPath: process.cwd() });
+    await mgr.send("intr1", "hi");
+    fake.push!(initFrame("intr1")); // 轮起点：注入
+    await sleep(20);
+    await mgr.interrupt("intr1");
+    // 此刻 CLI 的 result 还没到——interrupt 里不复位 turnActive 的话，下一帧 init
+    // （如 task-notification 自发起轮）会被当成「轮中帧」漏点亮
+    fake.push!(initFrame("intr1"));
+    await sleep(20);
+    expect(evs.filter((e) => e.type === "status")).toEqual([
+      { type: "status", state: "thinking" },
+      { type: "status", state: "thinking" },
+    ]);
+    // CLI 稍后补的 error result 照常收轮（复位幂等）
+    fake.push!({ type: "result", subtype: "error_during_execution", is_error: true });
+    await sleep(20);
+    expect(evs.filter((e) => e.type === "status")[2]).toEqual({ type: "status", state: "idle" });
+  });
+});

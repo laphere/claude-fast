@@ -1098,6 +1098,24 @@ class ChatSession {
    *  从 result 帧的 user_message_uuids **首位**取（= 本轮消费的第一条用户消息，
    *  即这一轮开始动手之前），只在轮次收尾时更新。 */
   private lastTurnUserUuid: string | null = null;
+  /** 轮次是否在跑（init 起轮 / result 或 interrupt 收轮）：给「CLI 自己发起的轮」
+   *  点亮前端忙碌态用，见 iterate 里的轮起点注入。 */
+  private turnActive = false;
+  /** 本进程是否成功投递过至少一条用户消息。预热不对应任何轮：实测（2026-10-10 探针
+   *  %TEMP%\prewarm-init-probe\，bench 入口 + CLI 2.1.283 + resume）预热窗口内一条
+   *  init 都不发（与 docs/agent-sdk-capabilities.md §8.9 一致），此闸门纯防御——CLI
+   *  未来若改成预热即发 init，没有它「继续对话」一进来就会被注入的 thinking 卡死在
+   *  忙碌态（isBusy 拦发送，连第一条消息都发不出去）。 */
+  private everDelivered = false;
+  /** 自己调 setModel / setPermissionMode 后 CLI 会补发一帧 init（模型热切为探针 §6.13
+   *  实证；模式切换未单独立证但同源于 CLI 热应用配置）——按条记账、逐条消费，
+   *  别把这种回声当成新一轮的起点。调用失败要冲销。错账最坏格：CLI 没补发（老 CLI）
+   *  时账面多挂一条，会吃掉下一个真轮起点的 init——send 轮无感（前端本地已置忙，
+   *  message_start 到时 turnActive 补上）；但被吃的恰是 CLI 自发起轮且供应商挂死
+   *  （= 本修复的目标场景）时 message_start 永不到，该轮点亮失效——原 bug 在
+   *  「老 CLI + 空闲时切过模型 + 自发起轮挂死」三重巧合下复发。每次错账最多吃
+   *  一个轮，下一个 result 后自愈。 */
+  private pendingInitEchoes = 0;
 
   /** 进程是否已退出（ChatManager.send 据此拒绝往死会话里塞消息） */
   hasExited(): boolean {
@@ -1225,14 +1243,42 @@ class ChatSession {
   private async iterate(q: Query): Promise<void> {
     try {
       for await (const msg of q) {
-        const events = this.translator.translate(msg);
+        const translated = this.translator.translate(msg);
         // init（session_ready）= 首条用户消息已被处理、进程与 jsonl 都齐了：此刻去要一次
         // AI 标题（终端里这一步由 CLI 自己完成，SDK 宿主得自己问，见 generateTitle）。
         // 放在开头、先把账记上：起名是异步的，不挡住事件下发，也避免重复问。
         // null 不算终态：2.1.283 起首轮此刻会秒回 null，下一轮 init（CLI 放行起名的首个
         // 时点）再补问一次，封顶 TITLE_MAX_ASKS——档位与去重判据见 claimTitleAsk。
-        if (events.some((e) => e.type === "session_ready") && this.claimTitleAsk()) {
+        const hasInit = translated.some((e) => e.type === "session_ready");
+        if (hasInit && this.claimTitleAsk()) {
           void this.generateTitle();
+        }
+        // CLI 自己发起的轮没有 send() 帮前端置忙：后台任务（子代理）完成时 CLI 会把
+        // <task-notification> 当作新 prompt 自己开一轮，而前端的忙碌态只认「自己 send」
+        // 与「模型首包的 message_start」——供应商挂住时（真实案例：turn 起了 95 秒
+        // totalAPIDuration 仍是 0）这段窗口无限长，界面上「已连接 + 发送键」照旧，
+        // 忙点不亮、停止键/Esc 都够不着。init 每轮开头都发（见 translator 的 lastMode
+        // 注释），就在这里替前端把 thinking 置上，前端零改动（置忙/停止/Esc 全走既有
+        // status 处理）。不算轮起点的 init：预热（everDelivered 挡）、热切的回声
+        // （pendingInitEchoes 挡）、已在跑的轮（turnActive 挡——热切回声漏记账时兜底）。
+        let events = translated;
+        let turnStarted = false;
+        if (hasInit) {
+          if (this.pendingInitEchoes > 0) {
+            this.pendingInitEchoes--;
+          } else if (!this.turnActive && this.everDelivered) {
+            events = [{ type: "status", state: "thinking" }, ...events];
+            turnStarted = true;
+          }
+        }
+        if (events.some((e) => e.type === "turn_end")) {
+          this.turnActive = false;
+        } else if (
+          turnStarted ||
+          events.some((e) => e.type === "status" && e.state === "thinking")
+        ) {
+          // 老 CLI 不发每轮 init 时，message_start 的 thinking 也算轮起点
+          this.turnActive = true;
         }
         for (const e of events) this.emit(e);
         // 轮次收尾时记下本轮的用户消息 uuid（rewindFiles 的锚点）。
@@ -1419,6 +1465,7 @@ class ChatSession {
         return false;
       }
       this.enqueue(msg);
+      this.everDelivered = true;
       return true;
     } finally {
       this.delivering--;
@@ -1462,12 +1509,25 @@ class ChatSession {
   async interrupt(): Promise<void> {
     if (this.query) await this.query.interrupt();
     this.queue.withdraw();
+    // 中断即轮终：不等 CLI 的 result——万一它中断后不回 result（边缘行为，无实测
+    // 反例），turnActive 卡真会让下一个自发起轮的 init 被当成「轮中帧」漏点亮。
+    // result 稍后到时只是再置一次 false，幂等
+    this.turnActive = false;
     if (this.delivering > 0) this.interruptRequested = true;
   }
 
   async setPermissionMode(mode: ChatPermissionMode): Promise<void> {
     this.explicitMode = mode;
-    await this.query?.setPermissionMode(toSdkPermissionMode(mode));
+    const q = this.query;
+    if (!q) return;
+    // 切档可能换来一帧 init 回声（见 pendingInitEchoes）：先记账，失败即冲销
+    this.pendingInitEchoes++;
+    try {
+      await q.setPermissionMode(toSdkPermissionMode(mode));
+    } catch (e) {
+      this.pendingInitEchoes--;
+      throw e;
+    }
   }
 
   /** 可选模型表（`Query.supportedModels()`）。进程没起 / 已退出返回 null —— 前端据此
@@ -1489,7 +1549,16 @@ class ChatSession {
    *  经既有 session_ready 翻译把新模型名送到前端——不需要专门的事件。
    *  model 为 null 复位默认。非法名会 reject（供应商 400），交给调用方 toast。 */
   async setModel(model: string | null): Promise<void> {
-    await this.query?.setModel(model ?? undefined);
+    const q = this.query;
+    if (!q) return;
+    // init 回声按条记账（见 pendingInitEchoes），别让 iterate 把它当成新一轮的起点
+    this.pendingInitEchoes++;
+    try {
+      await q.setModel(model ?? undefined);
+    } catch (e) {
+      this.pendingInitEchoes--;
+      throw e;
+    }
   }
 
   /** 斜杠命令表（`Query.supportedCommands()`），`/` 补全的数据源。
